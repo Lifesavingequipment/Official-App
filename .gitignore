@@ -1,0 +1,8 @@
+# race data, names and settings stay on the timing computer - never on GitHub
+timing_data/
+Old/
+*.json
+!VERSION.json
+__pycache__/
+*.pyc
+officials_app.py.new

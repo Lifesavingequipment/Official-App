@@ -1,0 +1,11 @@
+{
+ "app": "1.4",
+ "pico": "2.8",
+ "sha256": "2f17db47a455bad822977e15afda368687c4f46624bab04608932b3cc3c9e8a0",
+ "notes": [
+  "Update button: System \u203a Setup \u203a Updates \u2013 updates come from GitHub",
+  "Team Managers can set crew roles LiveHeats is missing",
+  "Smaller Marshal rows with a small Scratch button",
+  "Crew names (driver, crew, patients) from LiveHeats"
+ ]
+}
