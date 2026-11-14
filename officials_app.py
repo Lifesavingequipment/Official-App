@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -432,6 +432,57 @@ def update_action(d):
             restart_soon()
         return r
     return "not allowed"
+
+
+# ---------------- new event: put today's data away and start clean ----------------
+EVENTS_DIR = os.path.join(DATA, "past_events")
+
+
+def past_events():
+    try:
+        return sorted((d for d in os.listdir(EVENTS_DIR) if os.path.isdir(os.path.join(EVENTS_DIR, d))), reverse=True)[:20]
+    except OSError:
+        return []
+
+
+def new_event(d):
+    global draw
+    if S["state"] in ("ARMED", "RACING") or S["test"]:
+        return "Not during a race or button test"
+    with lock:
+        name = re.sub(r"[^\w\- ]", "", str(d.get("name") or (draw or {}).get("name") or "event")).strip()[:50] or "event"
+        folder = os.path.join(EVENTS_DIR, "%s %s" % (datetime.now().strftime("%Y-%m-%d %H%M"), name))
+        os.makedirs(folder, exist_ok=True)
+        # keep everything from this event: results (also as a spreadsheet), program, LiveHeats ticks, draw, roles, Pico log
+        if history:
+            with open(os.path.join(folder, "results.csv"), "w", encoding="utf-8", newline="") as fh:
+                fh.write(history_csv())
+        for f in (HIST_FILE, FLAGS_FILE, PROGRAM_FILE, DRAW_FILE, ROLES_FILE):
+            if os.path.exists(f):
+                shutil.copy2(f, folder)
+        for f in glob.glob(os.path.join(DATA, "pico_log_*.txt")):
+            shutil.copy2(f, folder)
+        # start clean (settings, Wi-Fi, templates and remembered officials stay)
+        history.clear(); flags.clear(); raced.clear(); checkin.clear(); sent.clear(); role_fix.clear()
+        program.update({"mode": None, "items": [], "lh_sig": "", "ver": program.get("ver", 0) + 1, "manual": [], "seq": 0,
+                        "last_block": [], "breaks": {}, "timing": {}})
+        officials.clear(); requests_.clear()
+        S.update(heat=None, race_heat=None, results=None, race_event=None, event="")
+        for f in (HIST_FILE, FLAGS_FILE, ROLES_FILE):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        if not d.get("keep_draw"):
+            draw = None
+            try:
+                os.remove(DRAW_FILE)
+            except OSError:
+                pass
+        save_program()
+        save_settings()
+    note("New event started - the last one is saved in %s" % folder)
+    return "ok:" + os.path.basename(folder)
 
 
 def update_view():
@@ -1966,6 +2017,7 @@ def snapshot(role="master", local=True, tok=None):
         d["role_fix"] = role_fix
         if role == "master":
             d["update"] = update_view()
+            d["past_events"] = past_events()
         hs = [x for x in (S["heat"], S["race_heat"], (S["results"] or {}).get("heat")) + tuple(nxt) if x]
         d["checkin"] = {x["heat_id"]: checkin.get(x["heat_id"], {}) for x in hs if x.get("heat_id")}
         d["sent"] = {x["heat_id"]: sent[x["heat_id"]] for x in hs if x.get("heat_id") in sent}
@@ -2092,6 +2144,10 @@ class H(BaseHTTPRequestHandler):
         except ValueError:
             data = {}
         cookie = lambda tok: {"Set-Cookie": "irb_token=%s; Max-Age=31536000; Path=/; SameSite=Strict" % tok}
+        if self.path.startswith("/api/new_event"):        # Master: put today's event away and start clean
+            r = new_event(data) if self.role() == "master" else "Only the Master can start a new event"
+            self.send(200, json.dumps({"result": r}))
+            return
         if self.path.startswith("/api/update"):           # Master: check / install / roll back
             r = update_action(data) if self.role() == "master" else "Only the Master can update the program"
             self.send(200, json.dumps({"result": r}))
@@ -3876,6 +3932,22 @@ const a_ssid=()=>(($("wssid")||{}).value??((st.access||{}).net||{}).ssid)||"", a
   a_addr=()=>(($("waddr")||{}).value??((st.access||{}).net||{}).addr)||"";
 function sysCols(a,b,c){ return `<div class="syscols"><div>${a}</div><div>${b}</div><div>${c}</div></div>`; }
 let advOpen=false;
+function askNewEvent(){
+  const q=st.queue_n||0, unconf=st.state==="DONE"&&st.results&&!st.confirmed&&!st.results.practice;
+  $("sheetin").innerHTML=`<h2>Start a new event?</h2>
+    ${q?`<p class="bad-warn">${q} race${q===1?" is":"s are"} not ticked off as entered in LiveHeats. Do that first if you still need to.</p>`:""}
+    ${unconf?`<p class="warn">The last race isn't confirmed yet.</p>`:""}
+    <p>This saves today's results (with a spreadsheet), program and LiveHeats ticks in <b>timing_data › past_events</b>, then clears them from every screen. Approved officials are logged out.</p>
+    <p class="mute">Kept: Wi-Fi, settings, templates, remembered officials. The Pico's race numbers carry on from where they are.</p>
+    <div class="mute">Name for the saved event</div><input type="text" id="evname" value="${esc((st.draw&&st.draw.name)||"")}" placeholder="e.g. Club carnival">
+    <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="evkeep" style="width:auto"> Keep the LiveHeats draw (same event, another day)</label>
+    <div class="row"><button class="btn red" id="evgo">Yes, start new event</button><button class="btn" onclick="closeSheet()">Cancel</button></div>`;
+  $("sheet").classList.add("on");
+  $("evgo").onclick=async()=>{ try{ const j=await (await fetch("/api/new_event",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name:$("evname").value,keep_draw:$("evkeep").checked})})).json();
+    closeSheet(); if(j.result.startsWith("ok:")){ toast("New event started – the last one is saved as "+j.result.slice(3)); hist=[]; queue=[]; histAt=0; drawData=null; await loadProg(); await loadHist(); }
+    else toast(j.result); }catch(e){ toast("No link to the timing computer"); } lastKey=""; render(); };
+}
 function renderSystem(){
   if(!st){ $("system").innerHTML=""; return; }
   const master=st.role==="master", setupOk=st.official;
@@ -3934,7 +4006,10 @@ function renderSystem(){
       adv+=`<p class="mute" style="margin-bottom:0">App v${st.app}</p>`;
     }
     adv+=`</div>`;
-    c=sysCols((master&&st.update?updateCard():"")+draw, wifi+backup+practice, box+adv);
+    const newev=master?`<div class="card"><h2>New event</h2><p class="mute" style="margin-top:0">Clears results, program and check-ins for a fresh start. Everything is saved first.</p>
+      <div class="row" style="margin-top:0"><button class="btn red" ${st.state==="ARMED"||st.state==="RACING"?"disabled":""} onclick="askNewEvent()">Start new event</button></div>
+      ${(st.past_events||[]).length?`<div class="mute" style="margin-top:8px;font-size:14px">Saved events (in timing_data › past_events):<br>${st.past_events.slice(0,4).map(esc).join("<br>")}</div>`:""}</div>`:"";
+    c=sysCols((master&&st.update?updateCard():"")+draw, wifi+backup+practice+newev, box+adv);
   }
   $("system").innerHTML=h+c;
   const cnt=st.test_count||{};
@@ -3954,7 +4029,7 @@ function pageKey(){
   else if(tab==="history") k.push(hist,queue,enterAsk);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
-  else k.push(sysView,dayOpen,updBusy,advOpen,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
+  else k.push(sysView,dayOpen,updBusy,advOpen,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
   return JSON.stringify(k);
 }
 function boardResults(res,title,final){

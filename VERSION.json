@@ -1,10 +1,9 @@
 {
- "app": "1.4.1",
+ "app": "1.4.2",
  "pico": "2.8",
- "sha256": "96717c8cae3a54a0d272f96de700c4a40cf36836703727a8efb2a48e8cb59f45",
+ "sha256": "7c1aedd952db02ea78df5061f12ee3d38e047df21c724a3a5fd9535aecc4e415",
  "notes": [
-  "Tidier System page: three columns that fit one screen",
-  "Setup: Updates, LiveHeats, Wi-Fi, Backup and Practice up front; rarely-used settings under Advanced",
-  "Timing box card: connection and wiring together"
+  "Start new event button (System \u203a Setup): saves the event, then clears results, program and check-ins",
+  "Saved events are kept in timing_data \u203a past_events, with a results spreadsheet"
  ]
 }
