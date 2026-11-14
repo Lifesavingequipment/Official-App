@@ -1,8 +1,13 @@
 {
- "app": "1.4.4",
+ "app": "1.5.0",
  "pico": "2.8",
- "sha256": "e7fa8cc5d060426adb9c435ae8a91f89ab701e917ca24eaa7c96854f71f851d8",
+ "sha256": "ed7771476e8be43a84d9baccbd182cc7d2f37bac5e72bf72b5b7b96a8c124964",
  "notes": [
-  "Setup is now one tidy list \u2013 a line per item with its button on the right \u2013 that fits one screen"
+  "Every screen now adjusts to the device: phone, tablet, laptop and TV",
+  "Laptop: Race, Program and Results fit one screen, even with Windows scaling on",
+  "Marshal tab and LiveHeats entry use two columns on wide screens",
+  "Marshalling screen fits tablets held either way",
+  "Big monitors and TVs: officials screens are 25% larger",
+  "Phones: bigger tabs and help button"
  ]
 }

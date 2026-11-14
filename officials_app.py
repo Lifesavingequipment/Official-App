@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.5.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -2491,53 +2491,53 @@ body.board header,body.board #nextbar{display:none}
 .bqr>div{text-align:center;font-weight:800;font-size:1.6vh;line-height:1.2}.bqr svg{width:13vh;height:13vh;display:block;margin:0 auto 4px}
 .homebtn{position:fixed;left:10px;bottom:10px;z-index:5}
 .mwrap{max-width:720px;margin:0 auto}
-.mb{display:grid;gap:1.4vh}
-.mb .mbtop{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;font-weight:800;font-size:clamp(16px,2.4vh,26px)}
-.mb .mbclock{font:900 clamp(22px,4vh,44px) ui-monospace,Consolas,monospace}
-.mb .mbstart{background:var(--idle);color:#fff;border-radius:12px;padding:.6vh 1.2vw;font-size:clamp(15px,2.4vh,26px);font-weight:700}
-.mb .mbmain{display:grid;grid-template-columns:3fr 2fr;gap:1.4vh 1.4vw;align-items:start}
+.mb{--u:min(1vh,.62vw);display:grid;gap:calc(1.4*var(--u))}
+.mb .mbtop{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;font-weight:800;font-size:clamp(16px,calc(2.4*var(--u)),26px)}
+.mb .mbclock{font:900 clamp(22px,calc(4*var(--u)),44px) ui-monospace,Consolas,monospace}
+.mb .mbstart{background:var(--idle);color:#fff;border-radius:12px;padding:calc(.6*var(--u)) 1.2vw;font-size:clamp(15px,calc(2.4*var(--u)),26px);font-weight:700}
+.mb .mbmain{display:grid;grid-template-columns:3fr 2fr;gap:calc(1.4*var(--u)) 1.4vw;align-items:start}
 @media (max-width:900px){.mb .mbmain{grid-template-columns:1fr}}
-.mb .mbnow{background:#fff;border:4px solid var(--amber);border-radius:16px;padding:1.4vh 1.2vw}
-.mb .mbtag{display:inline-block;background:var(--amber);color:#fff;font:900 clamp(18px,3vh,34px) system-ui;border-radius:10px;padding:.3vh 1vw;letter-spacing:1px}
-.mb .mbh{font:800 clamp(20px,3.6vh,42px)/1.15 system-ui;margin:.6vh 0}
-.mb .mbm{color:var(--mute);font-weight:700;font-size:clamp(14px,2.2vh,24px)}
-.mb .mbl{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:.4vh 1vw;margin-top:1vh}
-.mb .mbl>b{font:900 clamp(20px,3.8vh,44px) system-ui;width:1.6em;height:1.6em;border-radius:50%;background:var(--idle);color:#fff;display:flex;align-items:center;justify-content:center;font-size:clamp(16px,2.8vh,32px)}
-.mb .mbl>span{font:700 clamp(17px,3.2vh,38px)/1.15 system-ui;overflow-wrap:anywhere;padding:.5vh 0;border-bottom:1px solid var(--soft)}
-.mb .mbl>i{font:800 normal clamp(13px,2.2vh,24px) system-ui;border-radius:99px;padding:.3vh .8vw;white-space:nowrap;text-align:center}
+.mb .mbnow{background:#fff;border:4px solid var(--amber);border-radius:16px;padding:calc(1.4*var(--u)) 1.2vw}
+.mb .mbtag{display:inline-block;background:var(--amber);color:#fff;font:900 clamp(18px,calc(3*var(--u)),34px) system-ui;border-radius:10px;padding:calc(.3*var(--u)) 1vw;letter-spacing:1px}
+.mb .mbh{font:800 clamp(20px,calc(3.6*var(--u)),42px)/1.15 system-ui;margin:calc(.6*var(--u)) 0}
+.mb .mbm{color:var(--mute);font-weight:700;font-size:clamp(14px,calc(2.2*var(--u)),24px)}
+.mb .mbl{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:calc(.4*var(--u)) 1vw;margin-top:calc(1*var(--u))}
+.mb .mbl>b{font:900 clamp(20px,calc(3.8*var(--u)),44px) system-ui;width:1.6em;height:1.6em;border-radius:50%;background:var(--idle);color:#fff;display:flex;align-items:center;justify-content:center;font-size:clamp(16px,calc(2.8*var(--u)),32px)}
+.mb .mbl>span{font:700 clamp(17px,calc(3.2*var(--u)),38px)/1.15 system-ui;overflow-wrap:anywhere;padding:calc(.5*var(--u)) 0;border-bottom:1px solid var(--soft)}
+.mb .mbl>i{font:800 normal clamp(13px,calc(2.2*var(--u)),24px) system-ui;border-radius:99px;padding:calc(.3*var(--u)) .8vw;white-space:nowrap;text-align:center}
 .mb .st-in{background:var(--green);color:#fff}.mb .st-out{background:var(--red);color:#fff}.mb .st-wait{background:#fff4d6;color:var(--amber);border:2px solid var(--amber)}
 .mb .scr>span{text-decoration:line-through;color:#6b2226}
-.mb .mbside{display:grid;gap:1.4vh}
-.mb .mbcard{background:#fff;border:2px solid var(--line);border-radius:14px;padding:1.2vh 1vw}
-.mb .mbcard .mbl>span{font-size:clamp(14px,2.2vh,24px)}.mb .mbcard .mbl>b{font-size:clamp(13px,1.9vh,22px)}.mb .mbcard .mbl>i{font-size:clamp(11px,1.6vh,18px)}
-.mb .mbs{display:grid;grid-template-columns:1fr 1fr;gap:.3vh 1vw;margin-top:.8vh}
-.mb .mbs>div{display:flex;gap:.5vw;align-items:baseline;font:600 clamp(13px,2vh,22px)/1.2 system-ui;min-width:0}
+.mb .mbside{display:grid;gap:calc(1.4*var(--u))}
+.mb .mbcard{background:#fff;border:2px solid var(--line);border-radius:14px;padding:calc(1.2*var(--u)) 1vw}
+.mb .mbcard .mbl>span{font-size:clamp(14px,calc(2.2*var(--u)),24px)}.mb .mbcard .mbl>b{font-size:clamp(13px,calc(1.9*var(--u)),22px)}.mb .mbcard .mbl>i{font-size:clamp(11px,calc(1.6*var(--u)),18px)}
+.mb .mbs{display:grid;grid-template-columns:1fr 1fr;gap:calc(.3*var(--u)) 1vw;margin-top:calc(.8*var(--u))}
+.mb .mbs>div{display:flex;gap:.5vw;align-items:baseline;font:600 clamp(13px,calc(2*var(--u)),22px)/1.2 system-ui;min-width:0}
 .mb .mbs b{flex:0 0 1.5em;text-align:right;color:var(--mute)}.mb .mbs span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mb .mbs i{font-style:normal;font-weight:900}.mb .mbs .present i{color:var(--green)}.mb .mbs .scratched span{text-decoration:line-through;color:#6b2226}.mb .mbs .scratched i{color:var(--red)}
 .bqr.inl{position:static;justify-content:center;align-self:start}
-.mb .mbgrid{display:grid;grid-template-columns:1fr auto;gap:1.4vh 1.4vw;align-items:start}
-@media (max-width:900px){.mb .mbgrid{grid-template-columns:1fr}.mb .mbaside{display:none}}
-.mb .mbrows{display:grid;gap:1vh}
-.mb .mbrow{display:flex;gap:1vw;align-items:center;background:#fff;border:2px solid var(--line);border-radius:12px;padding:.8vh 1vw;font:700 clamp(14px,2.3vh,26px)/1.2 system-ui}
+.mb .mbgrid{display:grid;grid-template-columns:1fr auto;gap:calc(1.4*var(--u)) 1.4vw;align-items:start}
+@media (max-width:1000px){.mb .mbgrid{grid-template-columns:1fr}.mb .mbaside{display:none}}
+.mb .mbrows{display:grid;gap:calc(1*var(--u))}
+.mb .mbrow{display:flex;gap:1vw;align-items:center;background:#fff;border:2px solid var(--line);border-radius:12px;padding:calc(.8*var(--u)) 1vw;font:700 clamp(14px,calc(2.3*var(--u)),26px)/1.2 system-ui}
 .mb .mbrow .lab{flex:1;min-width:0}.mb .mbrow .lab small{color:var(--mute);font-weight:600}
-.mb .tg{flex:0 0 auto;border-radius:99px;padding:.3vh .9vw;font:900 clamp(12px,2vh,22px) system-ui;letter-spacing:.5px;color:#fff}
+.mb .tg{flex:0 0 auto;border-radius:99px;padding:calc(.3*var(--u)) .9vw;font:900 clamp(12px,calc(2*var(--u)),22px) system-ui;letter-spacing:.5px;color:#fff}
 .mb .tg.race{background:var(--idle)}.mb .tg.closed{background:#5d6b78}.mb .tg.req{background:var(--amber)}.mb .tg.now{background:var(--red)}.mb .tg.next{background:#fff;color:var(--ink);border:2px solid var(--line)}
-.mb .mbbig{background:#fff;border:4px solid var(--amber);border-radius:16px;padding:1.2vh 1.2vw}
+.mb .mbbig{background:#fff;border:4px solid var(--amber);border-radius:16px;padding:calc(1.2*var(--u)) 1.2vw}
 .mb .mbbig.late{border-color:var(--red)}
-.mb .mbbig .hd{display:flex;gap:1vw;align-items:center;flex-wrap:wrap;font:800 clamp(18px,3.2vh,38px)/1.15 system-ui}
+.mb .mbbig .hd{display:flex;gap:1vw;align-items:center;flex-wrap:wrap;font:800 clamp(18px,calc(3.2*var(--u)),38px)/1.15 system-ui}
 .mb .mbbig .mbl{grid-template-columns:auto 1fr auto auto 1fr auto}
-@media (max-width:1100px){.mb .mbbig .mbl{grid-template-columns:auto 1fr auto}}
-.mb .mbbig .mbl{gap:.2vh .8vw;margin-top:.6vh}
-.mb .mbbig .mbl>span{font-size:clamp(15px,2.5vh,30px);padding:.25vh 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.mb .mbbig .mbl>b{font-size:clamp(13px,2vh,24px)}.mb .mbbig .mbl>i{font-size:clamp(11px,1.6vh,19px);padding:.2vh .6vw}
-.mb .mbbig .hd{font-size:clamp(17px,2.8vh,34px)}.mb .mbbig{padding:.8vh 1vw}
+@media (max-width:699px){.mb .mbbig .mbl{grid-template-columns:auto 1fr auto}}
+.mb .mbbig .mbl{gap:calc(.2*var(--u)) .8vw;margin-top:calc(.6*var(--u))}
+.mb .mbbig .mbl>span{font-size:clamp(15px,calc(2.5*var(--u)),30px);padding:calc(.25*var(--u)) 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mb .mbbig .mbl>b{font-size:clamp(13px,calc(2*var(--u)),24px)}.mb .mbbig .mbl>i{font-size:clamp(11px,calc(1.6*var(--u)),19px);padding:calc(.2*var(--u)) .6vw}
+.mb .mbbig .hd{font-size:clamp(17px,calc(2.8*var(--u)),34px)}.mb .mbbig{padding:calc(.8*var(--u)) 1vw}
 .mb .st-none{visibility:hidden}
-.mb .mbrow{padding:.5vh 1vw}
-@media (max-width:1100px){.mb .mbbig .mbl>span{white-space:normal}}
-.mb .mbaside{display:grid;gap:1.4vh;width:clamp(200px,20vw,340px)}
-.mb .mbnote{background:var(--blue);color:#fff;border-radius:14px;padding:1.2vh 1vw;font:800 clamp(15px,2.4vh,28px)/1.25 system-ui}
+.mb .mbrow{padding:calc(.5*var(--u)) 1vw}
+@media (max-width:699px){.mb .mbbig .mbl>span{white-space:normal}}
+.mb .mbaside{display:grid;gap:calc(1.4*var(--u));width:clamp(200px,20vw,340px)}
+.mb .mbnote{background:var(--blue);color:#fff;border-radius:14px;padding:calc(1.2*var(--u)) 1vw;font:800 clamp(15px,calc(2.4*var(--u)),28px)/1.25 system-ui}
 .mb .mbaside .bqr.inl{flex-direction:column;align-items:center}
-.mb .mbbreak{background:#fff4d6;border:3px solid var(--amber);border-radius:14px;padding:1.2vh 1vw;font:800 clamp(18px,3vh,34px) system-ui}
+.mb .mbbreak{background:#fff4d6;border:3px solid var(--amber);border-radius:14px;padding:calc(1.2*var(--u)) 1vw;font:800 clamp(18px,calc(3*var(--u)),34px) system-ui}
 .mpick{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 10px;-webkit-overflow-scrolling:touch}
 .mpick button{flex:0 0 auto;min-width:96px;border:2px solid var(--line);background:#fff;border-radius:12px;padding:6px 10px;font:800 17px system-ui;color:var(--ink);text-align:left;line-height:1.15}
 .mpick button small{display:block;font-weight:600;font-size:12px;color:var(--mute)}
@@ -2564,9 +2564,9 @@ body.board header,body.board #nextbar{display:none}
 .mpat{display:block;font:600 14px/1.25 system-ui;color:var(--blue);margin-top:1px}
 .mlane.scratched .mpat{text-decoration:line-through;color:#6b2226}
 .mb .mbp{font-style:normal;font-weight:600;color:var(--blue)}
-.mb.tight .mbbig .mbl>span{font-size:clamp(13px,2.05vh,26px);padding:.1vh 0}.mb.tight .mbbig .mbl>b{font-size:clamp(12px,1.7vh,22px)}
-.mb.tight .mbbig .hd{font-size:clamp(15px,2.3vh,30px)}.mb.tight .mbbig{padding:.5vh 1vw}.mb.tight .mbrows{gap:.6vh}
-.mb.tight .mbbig .mbm{font-size:clamp(12px,1.8vh,22px)}.mb.tight .mbrow{padding:.3vh 1vw}
+.mb.tight .mbbig .mbl>span{font-size:clamp(13px,calc(2.05*var(--u)),26px);padding:calc(.1*var(--u)) 0}.mb.tight .mbbig .mbl>b{font-size:clamp(12px,calc(1.7*var(--u)),22px)}
+.mb.tight .mbbig .hd{font-size:clamp(15px,calc(2.3*var(--u)),30px)}.mb.tight .mbbig{padding:calc(.5*var(--u)) 1vw}.mb.tight .mbrows{gap:calc(.6*var(--u))}
+.mb.tight .mbbig .mbm{font-size:clamp(12px,calc(1.8*var(--u)),22px)}.mb.tight .mbrow{padding:calc(.3*var(--u)) 1vw}
 .tmppl{color:var(--ink)!important;margin-top:3px}.tmppl b{color:var(--mute);font-weight:700}
 .mlane.scratched .nmx{text-decoration:line-through;color:#6b2226}.mlane.scratched .mnm small{color:var(--red);font-weight:800}
 .mpick button .mpd{max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -2680,6 +2680,71 @@ border:2px solid var(--line);border-radius:10px;padding:.25em .7em;line-height:1
  #results td.tm .split,#history td.tm .split{display:block;margin-left:0}
  .split{overflow-wrap:anywhere;font-size:13px}
  #results td.ed{grid-column:3;grid-row:1/3;align-self:center;width:auto}
+}
+
+/* ================= fit every screen: phone, tablet, laptop, TV ================= */
+.ofrow .ofs{font-size:14px;white-space:nowrap}
+.mlanes{display:block}
+/* phones: bigger targets for wet fingers, nothing under 13px */
+@media (max-width:599px){
+ header.six .tab{padding:11px 2px}.tab{padding:12px 1px}
+ .qbtn{width:38px;height:38px;font-size:18px}
+ .mpick button small{font-size:13px}.rst i{font-size:13px;padding:2px 8px}
+ .ofrow{flex-wrap:nowrap}.ofrow .nm{flex:1 1 0;min-width:0;overflow-wrap:anywhere}.ofrow .ofc{display:none}
+ .mb .mbl>i,.mb .mbbig .mbl>i{font-size:13px}
+}
+/* tablets held upright: use the width – two columns where a phone has one */
+@media (min-width:600px) and (max-width:899px){
+ main{padding-bottom:40px}
+ th,td{padding:7px 8px}td{vertical-align:middle}
+ td .crew{display:inline;margin-left:8px}td.tm>div,td.tm .split{display:inline;margin-left:10px}
+ .entt{columns:2;column-gap:22px}.entt .er{break-inside:avoid}
+ .syscols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+ .syscols>div{display:grid;gap:12px;align-content:start;min-width:0}.syscols .card{margin:0}
+ .cols .grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+ .lane{padding:8px 10px}.lane .n{font-size:17px}.lane .t{font-size:17px}
+ .mlanes{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:repeat(var(--mr,5),auto);grid-auto-flow:column;gap:0 10px}
+ .mwrap{max-width:none}
+ .ofrow{flex-wrap:nowrap}.ofrow .nm{flex:1 1 0;min-width:0;overflow-wrap:anywhere}.ofrow .ofc{display:none}
+}
+/* laptops, tablets on their side, TVs */
+@media (min-width:900px){
+ .mwrap{max-width:1180px}
+ .mlanes{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:repeat(var(--mr,5),auto);grid-auto-flow:column;gap:0 12px}
+ .mlane{margin-top:5px}.mtap{min-height:46px;padding:4px 8px}.mscr{height:44px}
+ .msend{margin-top:8px;padding:10px;min-height:48px}.mcard{padding:10px 12px}.mpick{padding-bottom:6px}
+ .entt{columns:2;column-gap:28px}.entt .er{break-inside:avoid;padding:6px 2px}
+ .ofrow{flex-wrap:nowrap;padding:5px 0}.ofrow .nm{flex:1 1 0;min-width:0;overflow-wrap:anywhere}
+ .ofrow .btn.sm{min-height:34px;padding:4px 10px;font-size:14px}
+ .chk1{padding:6px 0}.chk1 .mk{flex-basis:26px;height:26px;font-size:14px}.chk1 .tx small{font-size:14px}
+ .qrs{gap:12px}.syscols .card p{margin:6px 0}
+}
+@media (min-width:900px) and (max-width:1399px){.ofrow .ofc{display:none}}
+/* short screens (a laptop at 125-150% scaling): squeeze the chrome so the work fits */
+@media (min-width:900px) and (max-height:820px){
+ th,td{padding:3px 8px}td.ed .btn.sm{min-height:30px;padding:3px 12px}
+ .cols>div,.cols{gap:8px}
+}
+@media (min-width:900px) and (max-height:700px){
+ header{padding:5px 12px}header .tab{padding:7px 8px;font-size:16px}.qbtn{width:32px;height:32px;font-size:17px}
+ #nextbar{margin-top:6px;padding:4px 12px;font-size:16px}#nextbar .btn{min-height:34px;padding:4px 12px}
+ main{padding-top:8px;padding-bottom:6px}.cols{margin-top:8px;height:calc(100% - 8px)}
+ .banner{padding:7px 14px}.banner .big{font-size:22px}.banner .clock{font-size:32px}.sub{font-size:15px}
+ .card{padding:8px 12px}h2{font-size:17px;margin-bottom:4px}
+ .lane{padding:6px 10px}.lane .n{font-size:17px}.lane .t{font-size:17px;margin-top:0}.lane .crew{-webkit-line-clamp:2}
+ .start .btn{min-height:58px;padding:10px 12px;font-size:22px}
+ .warn{padding:6px 10px;margin-top:6px}.vid{font-size:12.5px}
+ .prow{padding:5px 6px}
+ .mtap{min-height:40px}.mno{flex-basis:32px;height:32px;font-size:17px}.mscr{height:38px}.mlane{margin-top:4px}
+ .mpick button{padding:3px 10px}.mhelp{display:none}.mbar{margin-top:6px}
+ .sysnav{margin-bottom:8px}.sysnav .btn{min-height:38px;padding:4px 12px}
+ .entt .er{padding:4px 2px}.entnav{margin-bottom:2px}.entbtn{padding:8px;min-height:44px}
+}
+@media (max-width:1000px){.mb .mbgrid{grid-template-columns:1fr}.mb .mbaside{display:none}}
+/* big screens (desk monitor, TV used as the timing screen): everything 25% larger instead of a thin strip */
+@media (min-width:1700px) and (min-height:900px){
+ body:not(.board){zoom:1.25}
+ body.board .tmv,body.board .home{zoom:1.3}
 }
 .hold i{position:absolute;left:0;top:0;bottom:0;width:0;background:rgba(255,255,255,.3)}
 .hold span{position:relative}
@@ -3611,16 +3676,18 @@ function renderMarshal(){
     ${sentOf(ht.heat_id)?`<div class="mcount sent">Sent ${esc(sentOf(ht.heat_id).at)}</div>`:`<div class="mcount ${left?"":"all"}">${left?left+" to come":"All here"}</div>`}</div>
     <div class="mbar"><i style="width:${100*inn/lanes.length}%"></i><i class="x" style="width:${100*out/lanes.length}%"></i></div>
     <div class="mmeta" style="margin:4px 0 6px">${inn} in${out?" · "+out+" scratched":""}${can?" · tap a crew when they arrive":""}</div>`;
+  h+=`<div class="mlanes" style="--mr:${Math.ceil(lanes.length/2)}">`;
   for(const [l,c] of lanes){ const s=ck[l]||"";
     h+=`<div class="mlane ${s}"><button class="mtap" ${can?`onclick="mark('${ht.heat_id}',${l},'${s==="present"?"":"present"}')"`:"disabled"}>
         <span class="mno">${l}</span><span class="mnm"><span class="nmx">${esc(c||"Lane "+l)}</span>${pats(ht,l).length?`<span class="mpat">${esc(pats(ht,l).join(" · "))}</span>`:""}${s==="scratched"?`<small>SCRATCHED</small>`:""}</span>
         <span class="mtick">${s==="present"?"✓":""}</span></button>
       ${can?`<button class="mscr" aria-label="${s==="scratched"?"Undo scratch":"Scratch lane "+l}" onclick="mark('${ht.heat_id}',${l},'${s==="scratched"?"":"scratched"}')">${s==="scratched"?"Undo":"✕<small>Scratch</small>"}</button>`:""}</div>`; }
+  h+=`</div>`;
   const sd=sentOf(ht.heat_id);
   if(can) h+=sd?`<div class="msent"><b>✓ Patients sent at ${esc(sd.at)}</b>${sd.missing&&sd.missing.length?`<span>Not checked in: lane ${sd.missing.join(", ")}</span>`:""}
       <button class="btn sm" onclick="sendPatients('${ht.heat_id}',false)">Undo</button></div>`
     :`<button class="btn pri msend" onclick="sendPatients('${ht.heat_id}',true)">Patients sent ›</button>`;
-  h+=`</div><p class="mute" style="margin:8px 4px">Tap a crew again to undo. Press <b>Patients sent</b> when the heat's patients go out on the water – the heat then shows as closed on the marshalling screen.</p>`;
+  h+=`</div><p class="mute mhelp" style="margin:8px 4px">Tap a crew again to undo. Press <b>Patients sent</b> when the heat's patients go out on the water – the heat then shows as closed on the marshalling screen.</p>`;
   if(can) h+=`<div class="row" style="margin:4px;align-items:center"><span class="mute">Heats of patients seated in marshalling:</span>
     ${[2,3].map(n=>`<button class="btn sm ${(mUp.required||2)===n?"pri":""}" onclick="mReq(${n})">${n}</button>`).join("")}</div>`;
   const old=document.querySelector(".mpick"), oldX=old?old.scrollLeft:0;
@@ -3804,7 +3871,7 @@ function officialsCard(){
   h+=`<p style="font-weight:800;margin:10px 0 4px">${LV.map(l=>ROLE_NAME[l]+" "+n[l]).join(" · ")}${n.master?" · Master phone "+n.master:""}</p>`;
   if(n.starter>2) h+=`<p class="warn">${n.starter} Starters approved – usually one plus a backup. Check this is right.</p>`;
   for(const o of a.officials) h+=`<div class="ofrow"><span class="nm">${esc(o.name)}${o.regular?" ★":""}</span><span class="chip ${o.role==="starter"?"now":"next"}">${ROLE_NAME[o.role]}</span>
-    <span class="mute" style="font-size:14px"><span class="dot ${o.mins>=2?"off":""}"></span>${o.mins<2?"connected":"not seen "+(o.mins>=60?Math.floor(o.mins/60)+" h":o.mins+" min")}</span>
+    <span class="mute ofs"><span class="dot ${o.mins>=2?"off":""}"></span>${o.mins<2?"<span class='ofc'>connected</span>":"not seen "+(o.mins>=60?Math.floor(o.mins/60)+" h":o.mins+" min")}</span>
     <button class="btn sm" onclick="offSheet('${o.id}')">Change</button></div>`;
   if(a.officials.length) h+=`<div class="row"><button class="btn red" onclick="askClose()">Close event</button></div>`;
   h+=`</div>`;
