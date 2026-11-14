@@ -1,11 +1,10 @@
 {
- "app": "1.4",
+ "app": "1.4.1",
  "pico": "2.8",
- "sha256": "2f17db47a455bad822977e15afda368687c4f46624bab04608932b3cc3c9e8a0",
+ "sha256": "96717c8cae3a54a0d272f96de700c4a40cf36836703727a8efb2a48e8cb59f45",
  "notes": [
-  "Update button: System \u203a Setup \u203a Updates \u2013 updates come from GitHub",
-  "Team Managers can set crew roles LiveHeats is missing",
-  "Smaller Marshal rows with a small Scratch button",
-  "Crew names (driver, crew, patients) from LiveHeats"
+  "Tidier System page: three columns that fit one screen",
+  "Setup: Updates, LiveHeats, Wi-Fi, Backup and Practice up front; rarely-used settings under Advanced",
+  "Timing box card: connection and wiring together"
  ]
 }

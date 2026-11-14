@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.4"
+APP_VERSION = "1.4.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -2369,6 +2369,11 @@ body.board header,body.board #nextbar{display:none}
 .rst i{font:800 normal 12px system-ui;border-radius:99px;padding:2px 9px;border:2px solid var(--line);color:var(--mute);background:#fff;white-space:nowrap}
 .rst i.on{background:var(--green);border-color:var(--green);color:#fff}
 .sysnav{display:flex;gap:8px;margin-bottom:12px}.sysnav .btn{flex:1}
+.syscols>div>.card:first-child{margin-top:0}
+@media (min-width:900px){.syscols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start}
+  .syscols>div{display:grid;gap:12px;align-content:start}.syscols .card{margin:0}}
+.advh{all:unset;display:flex;justify-content:space-between;align-items:center;width:100%;cursor:pointer}.advh span{color:var(--blue);font-weight:700}
+.advs{border-top:1px solid var(--soft);padding:10px 0 4px;margin-top:8px}
 .chk1{display:flex;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--soft)}
 .chk1 .mk{flex:0 0 30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:900 16px system-ui;color:#fff;background:var(--amber)}
 .chk1.ok .mk{background:var(--green)}.chk1.opt .mk{background:#8e9cab}.chk1.ok.opt .mk{background:var(--green)}
@@ -2807,7 +2812,7 @@ function dayChecks(){
   c.push({ok:st.connected&&!st.faults.length,label:"Timing box connected",hint:!st.connected?"Plug the Pico in by USB":st.faults.length?"Check wiring: "+st.faults.join(", "):"Pico on "+st.port+", wiring OK"});
   c.push({ok:pg.mode!=null,label:"Heats for today",hint:pg.mode==="on"?"Program on":pg.mode==="off"?"No program – heats chosen by hand":"Choose the program, or No program",btn:"Program",act:"goTab('program')"});
   if(st.has_test){ const today=lt&&lt.date===st.today, bad=today&&(lt.missing.length||(lt.clash||[]).length);
-    c.push({ok:today&&!bad,label:"Button test",hint:st.test?"Running now – press every button, then end the test":!today?"Not done today – use the Button test card below":bad?"Found problems – fix and test again":"Done today, all buttons working"}); }
+    c.push({ok:today&&!bad,label:"Button test",hint:st.test?"Running now – press every button, then end the test":!today?"Not done today – use the Button test card":bad?"Found problems – fix and test again":"Done today, all buttons working"}); }
   const ns=a.officials.filter(o=>o.role==="starter").length, nm=a.officials.filter(o=>o.role==="marshal").length, na=a.officials.filter(o=>o.role==="admin").length;
   c.push({opt:true,ok:a.officials.length>0,label:"Officials approved",hint:a.officials.length?`Starter ${ns} · Marshal ${nm} · Admin ${na}`:"None yet – they scan the join card and ask for access"});
   c.push({opt:true,ok:!!(st.join&&st.join.ssid),label:"Join card ready",hint:st.join&&st.join.ssid?"Wi-Fi: "+st.join.ssid:"Add the Wi-Fi name and password",btn:st.join&&st.join.ssid?"":"Setup",act:"sysView='setup';lastKey='';render()"});
@@ -3704,7 +3709,7 @@ function officialsCard(){
     <div class="row" style="margin-top:8px">${LV.map(l=>`<button class="btn ${r.usual===l?"pri":""}" onclick="approve('${r.id}','${l}')">${ROLE_NAME[l]}</button>`).join("")}
       <button class="btn red" onclick="offDo({decline:'${r.id}'},'Declined')">Decline</button></div>
     <label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="rem_${r.id}" ${r.usual?"checked":""} style="width:auto"> Remember ${esc(r.name)} for next time</label></div>`;
-  if(!a.requests.length) h+=`<p class="mute" style="margin-top:0">Officials scan the card, tap <b>Officials</b> and type their name. Their request and code show here.</p>`;
+  if(!a.requests.length) h+=`<p class="mute" style="margin-top:0">Officials scan the join card and tap <b>Officials</b>. Requests show here.</p>`;
   h+=`<p style="font-weight:800;margin:10px 0 4px">${LV.map(l=>ROLE_NAME[l]+" "+n[l]).join(" · ")}${n.master?" · Master phone "+n.master:""}</p>`;
   if(n.starter>2) h+=`<p class="warn">${n.starter} Starters approved – usually one plus a backup. Check this is right.</p>`;
   for(const o of a.officials) h+=`<div class="ofrow"><span class="nm">${esc(o.name)}${o.regular?" ★":""}</span><span class="chip ${o.role==="starter"?"now":"next"}">${ROLE_NAME[o.role]}</span>
@@ -3759,9 +3764,9 @@ function joinCodes(px){ const j=st.join||{}; let h=`<div class="qrs">`;
   return h+`<div>${j.ssid?"2. ":""}IRB Racing App${qrSvg(j.url,px)}<div class="mute">${esc(j.url)}</div></div></div>`; }
 function joinCard(){
   const j=st.join||{};
-  return `<div class="card"><h2>Join card</h2><p class="mute">Print and laminate it, or share the picture. Scan 1 to join the Wi-Fi, then 2 to open the app.</p>
-    ${j.ssid?"":`<p class="warn">No Wi-Fi saved yet${st.role==="master"?" – add it under Setup":" – ask the Master"}. The app code works once people are on the Wi-Fi.</p>`}
-    ${joinCodes(180)}<div class="row"><button class="btn pri" onclick="downloadCard()">Download</button><button class="btn" onclick="printCard()">Print</button></div></div>`; }
+  return `<div class="card"><h2>Join card</h2>
+    ${j.ssid?"":`<p class="warn" style="margin-top:0">Add the Wi-Fi ${st.role==="master"?"under <b>Setup</b>":"– ask the Master"} for the Wi-Fi code.</p>`}
+    ${joinCodes(st.role==="master"?130:180)}<div class="row"><button class="btn pri" onclick="downloadCard()">Download</button><button class="btn" onclick="printCard()">Print</button></div></div>`; }
 function cardCanvas(){
   const j=st.join||{}, codes=(j.ssid?[["1. Wi-Fi",wifiText(j),j.ssid]]:[]).concat([[(j.ssid?"2. ":"")+"IRB Racing App",j.url,j.url]]);
   const W=codes.length*560+80, c=document.createElement("canvas"); c.width=W; c.height=760; const x=c.getContext("2d");
@@ -3835,7 +3840,7 @@ function testCard(){
       <div class="row"><button class="btn ${left.length?"":"pri"}" onclick="cmd('test off')">End test</button></div></div>`;
   }
   const lt=st.last_test, today=lt&&lt.date===st.today;
-  return `<div class="card"><h2>Button test</h2><p class="mute">Do this each morning, before racing. It is the only way to find a broken FINISH cable.</p>
+  return `<div class="card"><h2>Button test</h2><p class="mute">Every morning before racing – the only way to find a broken FINISH cable.</p>
     ${lt?`<p class="${today&&!lt.missing.length&&!(lt.clash||[]).length?"ok":"bad"}">Last test: ${esc(lt.date)} ${esc(lt.at)} – ${lt.missing.length?"not working: "+esc(lt.missing.join(", ")):"all buttons worked"}${
       (lt.clash||[]).length?". Went off together: "+esc(lt.clash.join(", ")):""}</p>`:`<p class="bad">Not done yet.</p>`}
     <div class="row"><button class="btn pri" ${st.state==="IDLE"||st.state==="DONE"?"":"disabled"} onclick="cmd('test on')">Start button test</button></div></div>`;
@@ -3867,56 +3872,71 @@ function askRollback(){ $("sheetin").innerHTML=`<h2>Go back to the previous vers
   <div class="row"><button class="btn red" onclick="closeSheet();updDo({rollback:true},'Going back – restarting…')">Yes, go back</button><button class="btn" onclick="closeSheet()">Cancel</button></div>`; $("sheet").classList.add("on"); }
 function restartWait(){ const was=st.app; let n=0; const iv=setInterval(async()=>{ n++;
     try{ const s=await (await fetch("/api/state",{cache:"no-store"})).json(); if(s.app!==was||n>40){ clearInterval(iv); location.reload(); } }catch(e){} },1000); }
+const a_ssid=()=>(($("wssid")||{}).value??((st.access||{}).net||{}).ssid)||"", a_pass=()=>(($("wpass")||{}).value??((st.access||{}).net||{}).pass)||"",
+  a_addr=()=>(($("waddr")||{}).value??((st.access||{}).net||{}).addr)||"";
+function sysCols(a,b,c){ return `<div class="syscols"><div>${a}</div><div>${b}</div><div>${c}</div></div>`; }
+let advOpen=false;
 function renderSystem(){
   if(!st){ $("system").innerHTML=""; return; }
   const master=st.role==="master", setupOk=st.official;
   if(!setupOk) sysView="today";
-  const conn=`<div class="card"><h2>Connection</h2>${st.connected?`<p class="ok">Pico connected on ${esc(st.port)} – program v${esc(st.fw||"?")}</p>`
-      :`<p class="bad">Pico not connected. Plug it in by USB and close Thonny.</p>`}<p class="mute" style="margin-bottom:0">App v${st.app}</p></div>`;
-  let wiring="";
-  if(st.connected){ const items=st.lanes.map(l=>"Lane "+l).concat(["SET","GO"]);
-    wiring=`<div class="card"><h2>Wiring check (live)</h2>${st.state==="RACING"?`<p class="mute">Checked again after the race.</p>`:""}
-      <table>${items.map(i=>`<tr><td>${i}</td><td class="${st.faults.includes(i)?"bad":"ok"}">${st.faults.includes(i)?"FAULT – open circuit or held":"OK"}</td></tr>`).join("")}</table>
-      <p class="mute" style="margin-bottom:0">FINISH can't be checked here – use the button test.</p></div>`; }
+  const items=st.lanes.map(l=>"Lane "+l).concat(["SET","GO"]);
+  // timing box: connection + wiring in one card; the full table only when something's wrong
+  const box=`<div class="card"><h2>Timing box</h2>${st.connected?`<p class="ok" style="margin:0">Pico connected on ${esc(st.port)} · program v${esc(st.fw||"?")}</p>
+      ${st.faults.length?`<table style="margin-top:6px">${items.map(i=>`<tr><td>${i}</td><td class="${st.faults.includes(i)?"bad":"ok"}">${st.faults.includes(i)?"FAULT – open circuit or held":"OK"}</td></tr>`).join("")}</table>`
+        :`<p class="mute" style="margin:4px 0 0">Wiring OK: ${items.join(", ")}${st.state==="RACING"?" (checked again after the race)":""}. FINISH is checked by the button test.</p>`}`
+      :`<p class="bad" style="margin:0">Pico not connected – plug it in by USB and close Thonny.</p>`}</div>`;
   const test=st.connected&&st.has_test&&(master||st.role==="starter")?testCard():"";
-  const screens=`<div class="card"><h2>Screens</h2><p class="mute">Read-only pages for a TV, tablet or phone. No login needed.</p>
-    <div class="row"><a class="btn" href="/#board" target="_blank" style="text-decoration:none">Results screen</a>
+  const screens=`<div class="card"><h2>Screens <span class="mute" style="font-weight:500;font-size:14px">– read-only, no login</span></h2><div class="row" style="margin-top:0"><a class="btn" href="/#board" target="_blank" style="text-decoration:none">Results screen</a>
     <a class="btn" href="/#marshalling" target="_blank" style="text-decoration:none">Marshalling screen</a>
-    <a class="btn" href="/#team" target="_blank" style="text-decoration:none">Team Manager view</a>
+    <a class="btn" href="/#team" target="_blank" style="text-decoration:none">Team Manager</a>
     ${st.role==="admin"?`<button class="btn" onclick="goTab('marshal')">Marshal screen</button>`:""}</div></div>`;
-  const batt=st.batt!=null?`<div class="card"><h2>Battery</h2><p class="${st.batt<24?"bad":"ok"}" style="font-size:22px">${st.batt.toFixed(1)} V</p>
-    <p class="mute">24 V LiFePO4: about 26.4 V full at rest, charge below 24.0 V, stop below 23.0 V.${st.batt_old?" (Reading is over a minute old.)":""}</p></div>`:"";
+  const batt=st.batt!=null?`<div class="card"><h2>Battery</h2><p class="${st.batt<24?"bad":"ok"}" style="font-size:22px;margin:0">${st.batt.toFixed(1)} V</p>
+    <p class="mute" style="margin-bottom:0">Full about 26.4 V · charge below 24.0 V · stop below 23.0 V.${st.batt_old?" (Over a minute old.)":""}</p></div>`:"";
   let h=setupOk?`<div class="sysnav"><button class="btn ${sysView==="today"?"pri":""}" onclick="sysView='today';lastKey='';render()">Today</button>
     <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&st.update&&st.update.newer?' <span class="badge">1</span>':""}</button></div>`:"";
   let c="";
   if(sysView==="today"){
-    if(master&&st.access){ const waiting=st.access.requests.length;
-      c+=(waiting?officialsCard()+dayCard():dayCard()+officialsCard())+test+screens+joinCard()+batt; }
-    else c+=conn+(st.faults.length||st.role==="starter"?wiring:"")+test+pinCard()+(st.official?screens:"")+batt;
+    if(master&&st.access) c=sysCols(dayCard(), officialsCard()+test+screens, joinCard()+batt);
+    else c=sysCols(box+test, pinCard(), (st.official?screens:"")+batt);
   } else {
-    c+=`<div class="card"><h2>LiveHeats draw</h2>${st.draw?`<p><b>${esc(st.draw.name)}</b></p>
-      <p class="mute">${st.draw.divisions} divisions, ${st.draw.heats} heats · updated ${esc(st.draw.loaded_at)}.
-      Updates by itself after every race when there's internet.</p>`
-      :`<p class="mute">No draw loaded. Crew names are optional – timing works without them.</p>`}
-      <div class="row"><button class="btn" onclick="openLoad()">${st.draw?"Reload / change draw":"Load LiveHeats draw"}</button></div></div>`;
-    if(master&&st.update) c+=updateCard();
-    if(master&&st.access) c+=settingsCard();
-    c+=`<div class="card"><h2>Backup</h2>${st.backup?`<p class="${st.backup.ok?"ok":"bad"}">${st.backup.ok?"Copied at "+esc(st.backup.at)+" to "+esc(st.backup.where):esc(st.backup.msg)}</p>`:""}
-      <p class="mute">Results are copied after every race to any USB stick that has a folder called <b>IRB_backup</b> on it.</p>
-      ${master?`<div class="row"><button class="btn" onclick="post('/api/backup',{}).then(()=>toast('Backup done'))">Back up now</button></div>`:""}</div>`;
-    if(master) c+=`<div class="card"><h2>Practice mode</h2><p class="mute">For training: everything works, but races aren't saved here or listed for LiveHeats. (The Pico still keeps its own record.)</p>
-      <div class="row"><button class="btn ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Practice is ON – turn off":"Turn practice on"}</button></div></div>`;
-    if(st.local||!st.me) c+=`<div class="card"><h2>Your name</h2><p class="mute">Shown next to every change you make on this device.</p>
-      <div class="row"><input type="text" id="myname" value="${esc(myName())}" placeholder="Name or initials" style="max-width:240px">
-      <button class="btn" onclick="setMyName($('myname').value);toast('Saved');lastKey='';render()">Save</button></div></div>`;
-    c+=conn+wiring+`<div class="card"><h2>Screen</h2><p class="mute" style="margin-bottom:0">${wakeMsg}</p></div>`;
-    if(st.connected){
-      c+=`<div class="card"><h2>Pico messages</h2><div class="msgs">${st.messages.map(m=>esc(m[0]+"  "+m[1])).join("\n")||"—"}</div></div>`;
-      if(master) c+=`<div class="card"><h2>Restart timing program</h2><p class="mute">Only if the screen says the timing program stopped. Clears any race in progress.</p>
-        <button class="btn red" onclick="if(confirm('Restart the timing program on the Pico?'))cmd('restart')">Restart timing program</button></div>`;
+    const draw=`<div class="card"><h2>LiveHeats draw</h2>${st.draw?`<p style="margin:0"><b>${esc(st.draw.name)}</b></p>
+      <p class="mute">${st.draw.divisions} divisions · ${st.draw.heats} heats · updated ${esc(st.draw.loaded_at)}</p>`
+      :`<p class="mute">No draw loaded – timing works without one.</p>`}
+      <div class="row" style="margin-top:0"><button class="btn" onclick="openLoad()">${st.draw?"Reload / change":"Load LiveHeats draw"}</button></div></div>`;
+    const a=st.access||{net:{ssid:"",pass:"",addr:""},auto_url:"",master_pin:""};
+    const wifi=master&&st.access?`<div class="card"><h2>Wi-Fi for the join card</h2>
+      <div class="row" style="margin-top:0"><input type="text" id="wssid" value="${esc(a.net.ssid)}" placeholder="Wi-Fi name" style="flex:1 1 140px">
+      <input type="text" id="wpass" value="${esc(a.net.pass)}" placeholder="Password" style="flex:1 1 140px">
+      <button class="btn" onclick="offDo({net:{ssid:$('wssid').value,pass:$('wpass').value,addr:a_addr()}},'Saved')">Save</button></div></div>`:"";
+    const backup=`<div class="card"><h2>Backup</h2>${st.backup?`<p class="${st.backup.ok?"ok":"bad"}" style="margin:0">${st.backup.ok?"Copied "+esc(st.backup.at)+" to "+esc(st.backup.where):esc(st.backup.msg)}</p>`:""}
+      <p class="mute">After every race, to any USB stick with an <b>IRB_backup</b> folder.</p>
+      ${master?`<div class="row" style="margin-top:0"><button class="btn" onclick="post('/api/backup',{}).then(()=>toast('Backup done'))">Back up now</button></div>`:""}</div>`;
+    const practice=master?`<div class="card"><h2>Practice mode</h2><p class="mute" style="margin-top:0">For training – races aren't saved or listed for LiveHeats.</p>
+      <div class="row" style="margin-top:0"><button class="btn ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Practice is ON – turn off":"Turn practice on"}</button></div></div>`:"";
+    let adv=`<div class="card"><button class="advh" onclick="advOpen=!advOpen;lastKey='';render()"><h2 style="margin:0">Advanced</h2><span>${advOpen?"▴ Hide":"▾ Show"}</span></button>`;
+    if(advOpen){
+      if(master&&st.access) adv+=`<div class="advs"><b>App address</b><div class="mute">Leave empty to use ${esc(a.auto_url)}. Set it once the router gives this computer a fixed address.</div>
+        <div class="row" style="margin-top:4px"><input type="text" id="waddr" value="${esc(a.net.addr)}" placeholder="${esc(a.auto_url)}" style="flex:1 1 200px">
+        <button class="btn" onclick="offDo({net:{ssid:a_ssid(),pass:a_pass(),addr:$('waddr').value}},'Saved')">Save</button></div></div>
+        <div class="advs"><b>Master phone PIN</b><div class="mute">Lets a phone be a second Master. Empty = off.</div>
+        <div class="row" style="margin-top:4px"><input type="text" id="mpin" inputmode="numeric" value="${esc(a.master_pin)}" placeholder="off" style="max-width:140px">
+        <button class="btn" onclick="offDo({master_pin:$('mpin').value},'Saved')">Save</button></div></div>
+        ${a.regulars&&a.regulars.length?`<div class="advs"><b>Remembered officials</b>${a.regulars.map(r=>`<div class="ofrow"><span class="nm">${esc(r.name)}</span>
+          <span class="mute">${ROLE_NAME[r.role]}</span><button class="btn sm" onclick="offDo({forget:'${esc(r.name).replace(/'/g,"")}'},'Forgotten')">Forget</button></div>`).join("")}</div>`:""}`;
+      if(st.local||!st.me) adv+=`<div class="advs"><b>Your name</b><div class="mute">Shown next to changes made on this device.</div>
+        <div class="row" style="margin-top:4px"><input type="text" id="myname" value="${esc(myName())}" placeholder="Name or initials" style="max-width:220px">
+        <button class="btn" onclick="setMyName($('myname').value);toast('Saved');lastKey='';render()">Save</button></div></div>`;
+      adv+=`<div class="advs"><b>Screen</b><div class="mute">${wakeMsg}</div></div>`;
+      if(st.connected) adv+=`<div class="advs"><b>Pico messages</b><div class="msgs">${st.messages.map(m=>esc(m[0]+"  "+m[1])).join("\n")||"—"}</div></div>`;
+      if(master&&st.connected) adv+=`<div class="advs"><b>Restart timing program</b><div class="mute">Only if the screen says the timing program stopped. Clears any race in progress.</div>
+        <div class="row" style="margin-top:4px"><button class="btn red" onclick="if(confirm('Restart the timing program on the Pico?'))cmd('restart')">Restart timing program</button></div></div>`;
+      adv+=`<p class="mute" style="margin-bottom:0">App v${st.app}</p>`;
     }
+    adv+=`</div>`;
+    c=sysCols((master&&st.update?updateCard():"")+draw, wifi+backup+practice, box+adv);
   }
-  $("system").innerHTML=h+`<div class="sysgrid">${c}</div>`;
+  $("system").innerHTML=h+c;
   const cnt=st.test_count||{};
   if(st.test) document.querySelectorAll(".tests div").forEach(d=>{ const n=d.dataset.t;
     if((cnt[n]||0)>(prevCounts[n]||0)){ d.classList.remove("flash"); void d.offsetWidth; d.classList.add("flash"); } });
@@ -3934,7 +3954,7 @@ function pageKey(){
   else if(tab==="history") k.push(hist,queue,enterAsk);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
-  else k.push(sysView,dayOpen,updBusy,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
+  else k.push(sysView,dayOpen,updBusy,advOpen,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
   return JSON.stringify(k);
 }
 function boardResults(res,title,final){
