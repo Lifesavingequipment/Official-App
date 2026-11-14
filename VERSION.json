@@ -1,10 +1,8 @@
 {
- "app": "1.4.3",
+ "app": "1.4.4",
  "pico": "2.8",
- "sha256": "2cedaead9f579476310cedc720effabba4efc3f3fce248b2f9c0e076f3bcf1be",
+ "sha256": "e7fa8cc5d060426adb9c435ae8a91f89ab701e917ca24eaa7c96854f71f851d8",
  "notes": [
-  "Fix: after an update the Pico could stay 'port in use' \u2013 the Pico link now closes cleanly before the restart",
-  "The Pico link restarts by itself after any unexpected error",
-  "If the Pico's port stays busy, the app says to unplug and replug it"
+  "Setup is now one tidy list \u2013 a line per item with its button on the right \u2013 that fits one screen"
  ]
 }

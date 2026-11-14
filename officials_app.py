@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.4"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -2449,10 +2449,20 @@ body.board header,body.board #nextbar{display:none}
 .rst{display:inline-flex;gap:4px;flex-wrap:wrap;vertical-align:middle}
 .rst i{font:800 normal 12px system-ui;border-radius:99px;padding:2px 9px;border:2px solid var(--line);color:var(--mute);background:#fff;white-space:nowrap}
 .rst i.on{background:var(--green);border-color:var(--green);color:#fff}
-.sysnav{display:flex;gap:8px;margin-bottom:12px}.sysnav .btn{flex:1}
+.sysnav{display:flex;gap:8px;margin-bottom:10px}.sysnav .btn{flex:1;padding:8px 12px}
 .syscols>div>.card:first-child{margin-top:0}
 @media (min-width:900px){.syscols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start}
   .syscols>div{display:grid;gap:12px;align-content:start}.syscols .card{margin:0}}
+.slist{max-width:1100px;margin:0 auto;padding:4px 16px}
+.srow{display:grid;grid-template-columns:190px minmax(0,1fr) auto;gap:4px 14px;align-items:center;padding:5px 0;min-height:44px;border-bottom:1px solid var(--soft)}
+.slist>.srow:last-child,.sadv>.srow:last-child{border-bottom:0}
+.srow .sn{font-weight:800}.srow .ss{min-width:0;overflow-wrap:anywhere}.srow .sb{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.srow .sb .btn{padding:5px 12px;min-height:36px;font-size:15px}.srow.hi{background:#e3edf9;margin:0 -16px;padding:8px 16px}
+.srow .sin{display:flex;gap:8px;flex-wrap:wrap}.srow .sin input{flex:1 1 150px;padding:5px 10px;min-height:36px}
+.snotes{margin:4px 0 0;padding-left:18px;font-size:14px}.okb{color:var(--blue)}
+.sadv{border-top:2px solid var(--line);margin-top:2px;padding-left:12px;background:#f7f9fb;margin:0 -16px;padding:0 16px}
+.rchip{display:inline-flex;gap:6px;align-items:center;margin:2px 6px 2px 0}
+@media (max-width:700px){.srow{grid-template-columns:1fr auto}.srow .ss{grid-column:1/-1;grid-row:2}}
 .advh{all:unset;display:flex;justify-content:space-between;align-items:center;width:100%;cursor:pointer}.advh span{color:var(--blue);font-weight:700}
 .advs{border-top:1px solid var(--soft);padding:10px 0 4px;margin-top:8px}
 .chk1{display:flex;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--soft)}
@@ -3997,44 +4007,51 @@ function renderSystem(){
     if(master&&st.access) c=sysCols(dayCard(), officialsCard()+test+screens, joinCard()+batt);
     else c=sysCols(box+test, pinCard(), (st.official?screens:"")+batt);
   } else {
-    const draw=`<div class="card"><h2>LiveHeats draw</h2>${st.draw?`<p style="margin:0"><b>${esc(st.draw.name)}</b></p>
-      <p class="mute">${st.draw.divisions} divisions · ${st.draw.heats} heats · updated ${esc(st.draw.loaded_at)}</p>`
-      :`<p class="mute">No draw loaded – timing works without one.</p>`}
-      <div class="row" style="margin-top:0"><button class="btn" onclick="openLoad()">${st.draw?"Reload / change":"Load LiveHeats draw"}</button></div></div>`;
-    const a=st.access||{net:{ssid:"",pass:"",addr:""},auto_url:"",master_pin:""};
-    const wifi=master&&st.access?`<div class="card"><h2>Wi-Fi for the join card</h2>
-      <div class="row" style="margin-top:0"><input type="text" id="wssid" value="${esc(a.net.ssid)}" placeholder="Wi-Fi name" style="flex:1 1 140px">
-      <input type="text" id="wpass" value="${esc(a.net.pass)}" placeholder="Password" style="flex:1 1 140px">
-      <button class="btn" onclick="offDo({net:{ssid:$('wssid').value,pass:$('wpass').value,addr:a_addr()}},'Saved')">Save</button></div></div>`:"";
-    const backup=`<div class="card"><h2>Backup</h2>${st.backup?`<p class="${st.backup.ok?"ok":"bad"}" style="margin:0">${st.backup.ok?"Copied "+esc(st.backup.at)+" to "+esc(st.backup.where):esc(st.backup.msg)}</p>`:""}
-      <p class="mute">After every race, to any USB stick with an <b>IRB_backup</b> folder.</p>
-      ${master?`<div class="row" style="margin-top:0"><button class="btn" onclick="post('/api/backup',{}).then(()=>toast('Backup done'))">Back up now</button></div>`:""}</div>`;
-    const practice=master?`<div class="card"><h2>Practice mode</h2><p class="mute" style="margin-top:0">For training – races aren't saved or listed for LiveHeats.</p>
-      <div class="row" style="margin-top:0"><button class="btn ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Practice is ON – turn off":"Turn practice on"}</button></div></div>`:"";
-    let adv=`<div class="card"><button class="advh" onclick="advOpen=!advOpen;lastKey='';render()"><h2 style="margin:0">Advanced</h2><span>${advOpen?"▴ Hide":"▾ Show"}</span></button>`;
+    // Setup: one tidy list – a line per item, status in the middle, button on the right
+    const a=st.access||{net:{ssid:"",pass:"",addr:""},auto_url:"",master_pin:"",regulars:[]};
+    const racing=st.state==="ARMED"||st.state==="RACING";
+    const row=(name,status,btns,cls)=>`<div class="srow ${cls||""}"><div class="sn">${name}</div><div class="ss">${status}</div><div class="sb">${btns||""}</div></div>`;
+    let L="";
+    if(master&&st.update){ const u=st.update;
+      L+=row("Updates", u.newer?`<b class="okb">New version v${esc(u.latest)} available</b>${u.notes.length?`<ul class="snotes">${u.notes.map(n=>`<li>${esc(n)}</li>`).join("")}</ul>`:""}`
+          :`v${esc(u.current)}${u.latest?` · <span class="ok">up to date</span>${u.checked?" (checked "+esc(u.checked)+")":""}`:""}${u.msg?`<div class="warn" style="margin-top:4px">${esc(u.msg)}</div>`:""}`,
+        (u.newer?`<button class="btn pri" ${racing||updBusy?"disabled":""} onclick="askUpdate()">Update</button>`:"")
+        +`<button class="btn" ${updBusy?"disabled":""} onclick="updDo({check:true},'Checked')">Check</button>`
+        +(u.prev?`<button class="btn" ${racing||updBusy?"disabled":""} onclick="askRollback()">Go back${u.prev!=="earlier"?" to v"+esc(u.prev):""}</button>`:""), u.newer?"hi":""); }
+    L+=row("LiveHeats draw", st.draw?`<b>${esc(st.draw.name)}</b><span class="mute"> · ${st.draw.divisions} divisions · ${st.draw.heats} heats</span>`:`<span class="mute">None loaded – timing works without one</span>`,
+      `<button class="btn" onclick="openLoad()">${st.draw?"Reload":"Load"}</button>`);
+    if(master&&st.access) L+=row("Wi-Fi for join card", `<div class="sin"><input type="text" id="wssid" value="${esc(a.net.ssid)}" placeholder="Wi-Fi name">
+        <input type="text" id="wpass" value="${esc(a.net.pass)}" placeholder="Password"></div>`,
+      `<button class="btn" onclick="offDo({net:{ssid:$('wssid').value,pass:$('wpass').value,addr:a_addr()}},'Saved')">Save</button>`);
+    L+=row("Backup", st.backup?`<span class="${st.backup.ok?"ok":"bad"}">${st.backup.ok?"Copied "+esc(st.backup.at):esc(st.backup.msg)}</span>`:`<span class="mute">USB stick with an <b>IRB_backup</b> folder</span>`,
+      master?`<button class="btn" onclick="post('/api/backup',{}).then(()=>toast('Backup done'))">Back up now</button>`:"");
+    if(master) L+=row("Practice mode", st.practice?`<b class="bad">ON – races aren't saved</b>`:`<span class="mute">Off · for training, races aren't saved</span>`,
+      `<button class="btn ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Turn off":"Turn on"}</button>`);
+    L+=row("Timing box", st.connected?(st.faults.length?`<span class="bad">Wiring fault: ${esc(st.faults.join(", "))}</span>`
+        :`<span class="ok">Pico on ${esc(st.port)} · v${esc(st.fw||"?")} · wiring OK</span>`):`<span class="bad">Pico not connected – plug it in by USB</span>`, "");
+    if(master) L+=row("New event", (st.past_events||[]).length?`<span class="mute">Last saved: ${esc(st.past_events[0])}</span>`:`<span class="mute">Saves today, then clears for a fresh start</span>`,
+      `<button class="btn red" ${racing?"disabled":""} onclick="askNewEvent()">Start new event</button>`);
+    L+=row("Advanced", `<span class="mute">App address, Master phone PIN, your name, Pico messages, restart</span>`,
+      `<button class="btn" onclick="advOpen=!advOpen;lastKey='';render()">${advOpen?"Hide ▴":"Show ▾"}</button>`);
     if(advOpen){
-      if(master&&st.access) adv+=`<div class="advs"><b>App address</b><div class="mute">Leave empty to use ${esc(a.auto_url)}. Set it once the router gives this computer a fixed address.</div>
-        <div class="row" style="margin-top:4px"><input type="text" id="waddr" value="${esc(a.net.addr)}" placeholder="${esc(a.auto_url)}" style="flex:1 1 200px">
-        <button class="btn" onclick="offDo({net:{ssid:a_ssid(),pass:a_pass(),addr:$('waddr').value}},'Saved')">Save</button></div></div>
-        <div class="advs"><b>Master phone PIN</b><div class="mute">Lets a phone be a second Master. Empty = off.</div>
-        <div class="row" style="margin-top:4px"><input type="text" id="mpin" inputmode="numeric" value="${esc(a.master_pin)}" placeholder="off" style="max-width:140px">
-        <button class="btn" onclick="offDo({master_pin:$('mpin').value},'Saved')">Save</button></div></div>
-        ${a.regulars&&a.regulars.length?`<div class="advs"><b>Remembered officials</b>${a.regulars.map(r=>`<div class="ofrow"><span class="nm">${esc(r.name)}</span>
-          <span class="mute">${ROLE_NAME[r.role]}</span><button class="btn sm" onclick="offDo({forget:'${esc(r.name).replace(/'/g,"")}'},'Forgotten')">Forget</button></div>`).join("")}</div>`:""}`;
-      if(st.local||!st.me) adv+=`<div class="advs"><b>Your name</b><div class="mute">Shown next to changes made on this device.</div>
-        <div class="row" style="margin-top:4px"><input type="text" id="myname" value="${esc(myName())}" placeholder="Name or initials" style="max-width:220px">
-        <button class="btn" onclick="setMyName($('myname').value);toast('Saved');lastKey='';render()">Save</button></div></div>`;
-      adv+=`<div class="advs"><b>Screen</b><div class="mute">${wakeMsg}</div></div>`;
-      if(st.connected) adv+=`<div class="advs"><b>Pico messages</b><div class="msgs">${st.messages.map(m=>esc(m[0]+"  "+m[1])).join("\n")||"—"}</div></div>`;
-      if(master&&st.connected) adv+=`<div class="advs"><b>Restart timing program</b><div class="mute">Only if the screen says the timing program stopped. Clears any race in progress.</div>
-        <div class="row" style="margin-top:4px"><button class="btn red" onclick="if(confirm('Restart the timing program on the Pico?'))cmd('restart')">Restart timing program</button></div></div>`;
-      adv+=`<p class="mute" style="margin-bottom:0">App v${st.app}</p>`;
+      let A="";
+      if(master&&st.access) A+=row("App address", `<div class="sin"><input type="text" id="waddr" value="${esc(a.net.addr)}" placeholder="${esc(a.auto_url)}"></div>
+          <div class="mute" style="font-size:13px">Empty = ${esc(a.auto_url)} · set it once the router gives this computer a fixed address</div>`,
+          `<button class="btn" onclick="offDo({net:{ssid:a_ssid(),pass:a_pass(),addr:$('waddr').value}},'Saved')">Save</button>`)
+        +row("Master phone PIN", `<div class="sin"><input type="text" id="mpin" inputmode="numeric" value="${esc(a.master_pin)}" placeholder="off" style="max-width:140px"></div>
+          <div class="mute" style="font-size:13px">Lets a phone be a second Master · empty = off</div>`, `<button class="btn" onclick="offDo({master_pin:$('mpin').value},'Saved')">Save</button>`)
+        +(a.regulars&&a.regulars.length?row("Remembered officials", a.regulars.map(r=>`<span class="rchip">${esc(r.name)} · ${ROLE_NAME[r.role]}
+          <button class="btn sm" onclick="offDo({forget:'${esc(r.name).replace(/'/g,"")}'},'Forgotten')">✕</button></span>`).join(" "),""):"");
+      if(st.local||!st.me) A+=row("Your name", `<div class="sin"><input type="text" id="myname" value="${esc(myName())}" placeholder="Name or initials" style="max-width:200px"></div>`,
+        `<button class="btn" onclick="setMyName($('myname').value);toast('Saved');lastKey='';render()">Save</button>`);
+      A+=row("Screen", `<span class="mute">${wakeMsg}</span>`, "");
+      if(st.connected) A+=row("Pico messages", `<div class="msgs" style="max-height:120px;overflow:auto">${st.messages.map(m=>esc(m[0]+"  "+m[1])).join("\n")||"—"}</div>`, "");
+      if(master&&st.connected) A+=row("Restart timing program", `<span class="mute">Only if the screen says the timing program stopped – clears any race in progress</span>`,
+        `<button class="btn red" onclick="if(confirm('Restart the timing program on the Pico?'))cmd('restart')">Restart</button>`);
+      A+=row("App version", `v${esc(st.app)}`, "");
+      L+=`<div class="sadv">${A}</div>`;
     }
-    adv+=`</div>`;
-    const newev=master?`<div class="card"><h2>New event</h2><p class="mute" style="margin-top:0">Clears results, program and check-ins for a fresh start. Everything is saved first.</p>
-      <div class="row" style="margin-top:0"><button class="btn red" ${st.state==="ARMED"||st.state==="RACING"?"disabled":""} onclick="askNewEvent()">Start new event</button></div>
-      ${(st.past_events||[]).length?`<div class="mute" style="margin-top:8px;font-size:14px">Saved events (in timing_data › past_events):<br>${st.past_events.slice(0,4).map(esc).join("<br>")}</div>`:""}</div>`:"";
-    c=sysCols((master&&st.update?updateCard():"")+draw, wifi+backup+practice+newev, box+adv);
+    c=`<div class="card slist">${L}</div>`;
   }
   $("system").innerHTML=h+c;
   const cnt=st.test_count||{};
