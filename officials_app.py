@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -379,11 +379,9 @@ def restart_soon():
     # give the screen a moment to hear "ok", then start the new version
     def go():
         time.sleep(1.5)
-        try:
-            if ser:
-                ser.close()                        # free the Pico's port for the new version
-        except Exception:
-            pass
+        STOPPING.set()                             # the Pico link closes its own port...
+        PORT_FREE.wait(4)                          # ...and we wait for that (at most 4 s)
+        time.sleep(0.5)
         if os.environ.get("IRB_LAUNCHER"):          # IRB_start.bat / the Pi service start us again
             os._exit(3)
         os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
@@ -1860,10 +1858,28 @@ def note(text):
         messages.append([datetime.now().strftime("%H:%M:%S"), text])
 
 
+STOPPING = threading.Event()      # set before a restart: the Pico link closes its own port, then says so
+PORT_FREE = threading.Event()
+
+
 def serial_loop():
+    # never stops for good: anything unexpected is noted and the link starts again
+    while not STOPPING.is_set():
+        try:
+            serial_loop_once()
+        except Exception as e:
+            with lock:
+                S["connected"] = False
+            note("Pico link restarted after an error: %s" % str(e)[:120])
+            time.sleep(2)
+    PORT_FREE.set()
+
+
+def serial_loop_once():
     global ser, last_rx
     told = None               # last problem printed, so it isn't repeated every 2 s
-    while True:
+    busy_since = None
+    while not STOPPING.is_set():
         port = find_port()
         if not port:
             with lock:
@@ -1886,9 +1902,10 @@ def serial_loop():
             note("Connected to Pico on %s" % port)
             last_rx = time.time()
             told = None
+            busy_since = None
             s.write(b"j\r\n")           # ask for full status
             buf = b""
-            while True:
+            while not STOPPING.is_set():
                 chunk = s.read(512)
                 if chunk:
                     buf += chunk
@@ -1909,20 +1926,28 @@ def serial_loop():
                 told = "lost"
             elif "Access is denied" in msg or "busy" in msg.lower() or "PermissionError" in msg:
                 # Windows also says this for a moment while a Pico is being plugged in
-                if told not in ("busy", "lost"):
+                busy_since = busy_since or time.time()
+                if told not in ("busy", "lost", "stuck"):
                     note("Pico port is in use - close Thonny.")
                     told = "busy"
+                elif told == "busy" and time.time() - busy_since > 10:
+                    note("Pico port still in use - unplug the Pico's USB, wait 3 seconds and plug it back in.")
+                    told = "stuck"
             elif told != "other":
                 note("Can't open the Pico port: %s" % msg)
                 told = "other"
         finally:
             # Windows keeps a port locked until it is closed, so always let go of it.
             if s is not None:
+                with lock:
+                    if ser is s:
+                        ser = None
                 try:
                     s.close()
-                except (serial.SerialException, OSError):
+                except Exception:
                     pass
-        time.sleep(2)
+        if not STOPPING.is_set():
+            time.sleep(2)
 
 
 ADJUST = re.compile(r"^(ok|place|dq|dnf|clear|legs|tie)\b")

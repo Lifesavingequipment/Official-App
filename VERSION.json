@@ -1,9 +1,10 @@
 {
- "app": "1.4.2",
+ "app": "1.4.3",
  "pico": "2.8",
- "sha256": "7c1aedd952db02ea78df5061f12ee3d38e047df21c724a3a5fd9535aecc4e415",
+ "sha256": "2cedaead9f579476310cedc720effabba4efc3f3fce248b2f9c0e076f3bcf1be",
  "notes": [
-  "Start new event button (System \u203a Setup): saves the event, then clears results, program and check-ins",
-  "Saved events are kept in timing_data \u203a past_events, with a results spreadsheet"
+  "Fix: after an update the Pico could stay 'port in use' \u2013 the Pico link now closes cleanly before the restart",
+  "The Pico link restarts by itself after any unexpected error",
+  "If the Pico's port stays busy, the app says to unplug and replug it"
  ]
 }
