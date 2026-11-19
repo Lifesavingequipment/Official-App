@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -46,6 +46,9 @@ TEMPLATES_FILE = os.path.join(DATA, "templates.json")   # saved programs to reus
 LIVEHEATS_API = "https://liveheats.com/api/graphql"
 # where updates come from (the club's GitHub repository). Only the Master can install one.
 UPDATE_URL = os.environ.get("IRB_UPDATE_URL", "https://raw.githubusercontent.com/Lifesavingequipment/official-app/main/")
+# with a key (a read-only GitHub token) updates come through the GitHub API instead, which also works for a private repository
+UPDATE_API = os.environ.get("IRB_UPDATE_API", "https://api.github.com/repos/Lifesavingequipment/Official-App/contents/")
+UPD_KEY = {"v": ""}
 OLD_DIR = os.path.join(BASE, "Old")
 
 # IRB events and their usual number of legs (SLSA Surf Sports Manual, 38th ed.)
@@ -137,6 +140,8 @@ def load_settings():
             OWNER["pin"] = str(s["owner_pin"])
         if isinstance(s.get("events"), list):
             apply_events(s["events"])
+        if isinstance(s.get("upd_key"), str):
+            UPD_KEY["v"] = s["upd_key"][:300]
         if isinstance(s.get("kit"), str) and s["kit"].strip():
             KIT["text"] = s["kit"][:2000]
         if find_event(s.get("event", "")):
@@ -175,7 +180,7 @@ def save_settings():
             json.dump({"event": S["event"], "heat": S["heat"], "master_pin": PINS["master"], "officials": officials,
                        "access_day": access_day[0], "regulars": regulars, "net": NET, "last_test": S["last_test"],
                        "setup_done": SETUP["done"], "brand": BRAND, "owner_pin": OWNER["pin"], "events": EVENTS[1:],
-                       "kit": KIT["text"]}, fh)
+                       "kit": KIT["text"], "upd_key": UPD_KEY["v"]}, fh)
     except OSError:
         pass                    # still used for this session
 
@@ -371,18 +376,52 @@ def vtuple(v):
 
 
 def fetch_url(name, timeout=20):
+    if UPD_KEY["v"]:
+        req = urllib.request.Request(UPDATE_API + name + "?ref=main",
+                                     headers={"User-Agent": "IRB-timing-app/" + APP_VERSION, "Authorization": "Bearer " + UPD_KEY["v"],
+                                              "Accept": "application/vnd.github.raw", "X-GitHub-Api-Version": "2022-11-28",
+                                              "Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
     req = urllib.request.Request(UPDATE_URL + name + "?t=%d" % time.time(),
                                  headers={"User-Agent": "IRB-timing-app/" + APP_VERSION, "Cache-Control": "no-cache"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
 
+def upd_error(e):
+    code = getattr(e, "code", None)
+    if code in (401, 403) and UPD_KEY["v"]:
+        return "The updates key was refused - it may have expired. The owner adds a new one under Setup › Advanced › Updates key."
+    if code == 404:
+        return ("Updates not found - check the updates key can read the repository." if UPD_KEY["v"] else
+                "Updates not found - if the repository is private, the owner adds an updates key under Setup › Advanced.")
+    return "Couldn't check for updates - is this computer on the internet? (%s)" % str(e)[:80]
+
+
+def key_action(d):
+    # owner only: the read-only GitHub key for a private repository ("" = none)
+    if not owner_ok():
+        return OWNER_MSG
+    v = str(d.get("key") or "").strip()
+    if v and not re.match(r"^(github_pat_|ghp_)[A-Za-z0-9_]{20,250}$", v):
+        return "That doesn't look like a GitHub key - it starts with github_pat_"
+    old = UPD_KEY["v"]
+    UPD_KEY["v"] = v
+    if v:
+        update_check()
+        if UPD["msg"]:
+            UPD_KEY["v"] = old
+            return UPD["msg"]
+    save_settings()
+    return "ok"
+
+
 def update_check():
     try:
         info = json.loads(fetch_url("VERSION.json").decode("utf-8"))
     except Exception as e:
-        UPD.update(msg="Couldn't check for updates - is this computer on the internet? (%s)" % str(e)[:80],
-                   checked=datetime.now().strftime("%H:%M"))
+        UPD.update(msg=upd_error(e), checked=datetime.now().strftime("%H:%M"))
         return UPD
     UPD.update(latest=str(info.get("app") or ""), notes=[str(n)[:200] for n in (info.get("notes") or [])][:12],
                sha=str(info.get("sha256") or ""), pico=str(info.get("pico") or ""),
@@ -454,7 +493,7 @@ def update_action(d):
                 restart_soon()
             return r
         except Exception as e:
-            return "Update failed - nothing was changed (%s)" % str(e)[:80]
+            return "Update failed - nothing was changed. " + upd_error(e)
         finally:
             UPD["busy"] = False
     if d.get("rollback"):
@@ -706,7 +745,7 @@ def diagnostics():
                 s = json.load(fh)
         except (OSError, ValueError):
             s = {}
-        for k in ("master_pin", "owner_pin"):
+        for k in ("master_pin", "owner_pin", "upd_key"):
             if s.get(k):
                 s[k] = "(set)"
         if isinstance(s.get("net"), dict) and s["net"].get("pass"):
@@ -2284,6 +2323,7 @@ def snapshot(role="master", local=True, tok=None):
                           "mins": max(0, int((OWNER["open_until"] - time.time()) // 60) + 1) if OWNER["pin"] and owner_ok() else 0}
             d["firewall"] = {"state": FIREWALL["state"], "busy": FIREWALL["busy"]}
             d["kit"] = KIT["text"]
+            d["upd_key"] = bool(UPD_KEY["v"])
         hs = [x for x in (S["heat"], S["race_heat"], (S["results"] or {}).get("heat")) + tuple(nxt) if x]
         d["checkin"] = {x["heat_id"]: checkin.get(x["heat_id"], {}) for x in hs if x.get("heat_id")}
         d["sent"] = {x["heat_id"]: sent[x["heat_id"]] for x in hs if x.get("heat_id") in sent}
@@ -2445,6 +2485,10 @@ class H(BaseHTTPRequestHandler):
                         r = fn(data)
                 self.send(200, json.dumps({"result": r}))
                 return
+        if self.path.startswith("/api/updkey"):
+            r = key_action(data) if self.role() == "master" else "Only the timing desk can do that"
+            self.send(200, json.dumps({"result": r}))
+            return
         if self.path.startswith("/api/firewall"):
             r = firewall_allow() if self.role() == "master" else "Only the timing desk can do that"
             self.send(200, json.dumps({"result": r}))
@@ -4461,6 +4505,12 @@ function ownerSheet(kind){
     :`<h2>Owner PIN</h2><p class="mute">With a PIN set, only the owner can install updates, go back a version, change the app address or second timing desk phone, edit the hire kit list or restart the timing box. Everything else works as normal.</p>
       <input type="password" id="ownpin" inputmode="numeric" autocomplete="off" placeholder="4 to 8 digits (empty = lock off)"><div class="row"><button class="btn pri" onclick="ownDo({set_pin:$('ownpin').value},$('ownpin').value?'Owner PIN saved':'Owner lock off')">Save</button><button class="btn" onclick="closeSheet()">Cancel</button></div><p class="bad" id="ownmsg"></p>`);
   setTimeout(()=>{ const i=$("ownpin"); if(i) i.focus(); },50); }
+async function keyDo(v){ try{ const j=await (await fetch("/api/updkey",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key:v})})).json();
+  if(j.result==="ok"){ toast(v?"Key saved – updates checked":"Key removed"); closeSheet(); } else { const m=$("keymsg"); if(m) m.textContent=j.result; else toast(j.result); } }
+  catch(e){ toast("No link to the timing computer"); } lastKey=""; }
+function keySheet(){ sheet(`<h2>Updates key</h2><p class="mute">A read-only GitHub key, so this computer can download updates from a private repository. Paste it once – it's saved on this computer and left out of problem reports.</p>
+    <input type="password" id="keyin" autocomplete="off" placeholder="github_pat_…"><div class="row"><button class="btn pri" onclick="keyDo($('keyin').value.trim())">Save and test</button><button class="btn" onclick="closeSheet()">Cancel</button></div><p class="bad" id="keymsg"></p>`);
+  setTimeout(()=>{ const i=$("keyin"); if(i) i.focus(); },50); }
 function kitSheet(){ sheet(`<h2>Hire kit list</h2><p class="mute">One item per line. Printed as a checklist with the role guides.</p>
     <textarea id="kittxt" rows="10" style="width:100%">${esc(st.kit||"")}</textarea>
     <div class="row"><button class="btn pri" onclick="ownDo({kit:$('kittxt').value},'Saved')">Save</button><button class="btn" onclick="closeSheet()">Cancel</button></div><p class="bad" id="ownmsg"></p>`); }
@@ -4599,6 +4649,9 @@ function renderSystem(){
         `<button class="btn" onclick="setMyName($('myname').value);toast('Saved');lastKey='';render()">Save</button>`);
       A+=row("Screen", `<span class="mute">${wakeMsg}</span>`, "");
       if(st.connected) A+=row("Timing box messages", `<div class="msgs" style="max-height:120px;overflow:auto">${st.messages.map(m=>esc(m[0]+"  "+m[1])).join("\n")||"—"}</div>`, "");
+      if(master) A+=row("Updates key", st.upd_key?`<span class="ok">Set</span><span class="mute"> · updates come from the private repository</span>`
+          :`<span class="mute">Not set – only needed once the GitHub repository is private</span>`,
+        ownLocked?"":`<button class="btn" onclick="keySheet()">${st.upd_key?"Change":"Add"}</button>${st.upd_key?`<button class="btn" onclick="askYes('Remove the updates key? Updates stop working if the repository is private.',()=>keyDo(''),'Yes, remove')">Remove</button>`:""}`);
       if(master) A+=row("Hire kit list", `<span class="mute">${esc((st.kit||"").split("\n").length)} items · printed with the role guides</span>`, ownLocked?"":`<button class="btn" onclick="kitSheet()">Edit</button>`);
       if(master&&st.connected&&!ownLocked) A+=row("Restart timing program", `<span class="mute">Only if the screen says the timing program stopped – clears any race in progress</span>`,
         `<button class="btn red" onclick="askYes('Restart the timing program in the timing box? Any race in progress is cleared.',()=>cmd('restart'),'Yes, restart')">Restart</button>`);
@@ -4625,7 +4678,7 @@ function pageKey(){
   else if(tab==="history") k.push(hist,queue,enterAsk);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
-  else k.push(sysView,dayOpen,updBusy,advOpen,ltOpen,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
+  else k.push(sysView,dayOpen,updBusy,advOpen,ltOpen,st.upd_key,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
   return JSON.stringify(k);
 }
 function brandBar(){ const b=(st&&st.brand)||{}; if(!b.club&&!b.event&&!b.logo) return "";

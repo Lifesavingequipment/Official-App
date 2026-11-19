@@ -1,17 +1,9 @@
 {
- "app": "1.6.0",
+ "app": "1.6.1",
  "pico": "2.8",
- "sha256": "e58d9918342e0d9ae29ee20d4fcf06645d77e59f408e0824580ca300b7c232fe",
+ "sha256": "c97efe138cf1b90ac2dafe5d240aafc0f7bf03d113c103526a5580189fd1d238",
  "notes": [
-  "New: Get started steps on the Race tab for a fresh install or a new event",
-  "New: club name, event and logo on the screens, join card and home page",
-  "New: owner PIN locks updates and advanced settings for hire kits",
-  "New: print role guides (Timing desk, Starter, Marshal, Referee) and a hire kit checklist",
-  "New: results zip to take home, and a problem report file",
-  "New: add or edit events and leg counts",
-  "Phones: banner when opened inside Messenger/Facebook; Allow phones button for the Windows firewall",
-  "Plainer words: Confirm and LiveHeats tabs, Timing desk and Referee, battery as OK / Charge soon",
-  "Help (?) now has fixes for common problems",
-  "Fewer warnings, and Yes/Cancel boxes everywhere instead of browser pop-ups"
+  "Updates key: lets this computer update from a private GitHub repository (System \u203a Setup \u203a Advanced)",
+  "Clearer messages when updates can't be reached"
  ]
 }
