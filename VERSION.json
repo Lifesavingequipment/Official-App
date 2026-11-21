@@ -1,8 +1,9 @@
 {
- "app": "1.6.3",
+ "app": "1.6.4",
  "pico": "2.9",
- "sha256": "83fb9d80b7ba1e239efeb0302e48d608394a067dedede47e457a42137da219ac",
+ "sha256": "9b977646ab2f1d26d7a05e41caef0a8c65e3e21f6cb2964e026773d2bf6bc7d7",
  "notes": [
-  "Help (?): fix for Android Chrome not opening the app (Nearby devices permission)"
+  "New: Troubleshooting page \u2013 every known problem and its fix, searchable (? \u203a All troubleshooting, System \u203a Today, phone home page)",
+  "Troubleshooting prints with the role guides"
  ]
 }

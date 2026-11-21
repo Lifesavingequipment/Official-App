@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.6.3"
+APP_VERSION = "1.6.4"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -3099,6 +3099,13 @@ border:2px solid var(--line);border-radius:10px;padding:.25em .7em;line-height:1
 @media (max-height:820px){.wsh{padding:6px 0}.wsh .mk{flex-basis:30px;height:30px}.wsh .tx{font-size:17px}.wsh .tx small{font-size:14px}}
 .bbar{height:16px;border:2px solid var(--line);border-radius:8px;overflow:hidden;background:#fff;max-width:320px}.bbar i{display:block;height:100%}
 .bbar.good i{background:var(--green)}.bbar.amb i{background:var(--amber)}.bbar.bad i{background:var(--red)}
+.fixp{max-width:900px;margin:0 auto;padding:4px 2px 30px}.fixp input[type=search]{width:100%;margin:4px 0 6px;font-size:18px;padding:10px 12px}
+.fxsec{margin:18px 0 4px;font-size:20px;color:var(--blue)}.fxi{background:#fff;border:2px solid var(--line);border-radius:10px;padding:2px 14px;margin:6px 0}
+.fxi summary{font-weight:800;font-size:18px;padding:10px 0;cursor:pointer}.fxi[open] summary{border-bottom:1px solid var(--soft)}
+.fxi ol{margin:8px 0 10px;padding-left:22px}.fxi li{margin:5px 0}.fxsee{margin:8px 0 0;color:var(--mute);font-style:italic}
+@media print{#printcard .fxi{border:0;padding:0;margin:0 0 3mm;break-inside:avoid}#printcard .fxi summary{font-size:13pt;padding:1mm 0;list-style:none}
+  #printcard .fxi summary::-webkit-details-marker{display:none}#printcard .fxsec{font-size:16pt;margin:5mm 0 1mm;color:#000;border-bottom:1px solid #888}
+  #printcard .fxi ol{font-size:11pt;line-height:1.35;margin:1mm 0;padding-left:7mm}#printcard .fxi li{margin:0.6mm 0}#printcard .fxsee{font-size:10.5pt;margin:0.5mm 0}}
 details.fix{border-bottom:1px solid var(--soft);padding:8px 0}details.fix summary{font-weight:700}details.fix p{margin:6px 0 2px}
 .evrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0}.evrow input{flex:1 1 180px}.evrow select{padding:8px;font-size:17px}
 #iab{position:sticky;top:0;z-index:30;background:#fff4d6;border-bottom:3px solid var(--amber);padding:10px 14px;display:grid;gap:4px}
@@ -3381,20 +3388,118 @@ const HELP={
   marshal:["Pick a heat along the top.","Tap a crew when its patients arrive. Tap again to undo. Scratch is the button on the right.",
     "Press Patients sent when that heat's patients go out on the water."],
   system:["Today: the start-of-day checks, who has access, the button test, the screens and the join card.","Setup: things you set once per carnival – Wi-Fi, LiveHeats draw, backup, practice mode."]};
-const FIXES=[
-  ["Timing box not connected","Check the USB cable at both ends. Close Thonny if it's open. Unplug the cable, wait 5 seconds, plug it back in – the app finds the box by itself."],
-  ["A phone can't open the app","The phone must be on the timing Wi-Fi, not mobile data. Scan the join card (Wi-Fi first, then the app). If it opened inside Messenger or Facebook, open it in Chrome, Samsung Internet or Safari instead. Android + Chrome showing ERR_TOO_MANY_RETRIES or \"can't be reached\": phone Settings › Apps › Chrome › Permissions › Nearby devices (or Local network) › Allow, then close and reopen Chrome – or use Samsung Internet. On the timing computer: System › Setup › Phones › Allow phones."],
-  ["A button press didn't show","Run the button test (System) and press that button. Check its cable is in the right socket. A press within a few seconds of the same crew's last press is ignored on purpose."],
-  ["The wrong heat is on the start","With a program on, the program sets the order. The timing desk or Referee changes it on the Program tab (tap the heat › Run next)."],
-  ["LiveHeats won't load","This computer needs internet just while loading. Copy the event link from the browser's address bar. The last draw loaded stays usable without internet."],
-  ["A screen keeps going to sleep","Set the screen timeout to Never (or the longest) in that device's settings."],
-  ["Still stuck","On the timing computer: System › Setup › Problem report › Download, and send the file to whoever you hired the kit from."]];
+// ---------- Troubleshooting: every known problem and its fix (page #fix, the ? sheet, and printed with the guides) ----------
+// each item: [title, what you see (or ""), [steps], quick?]  quick = also listed in the ? sheet
+const TROUBLE=[
+ ["Phones and tablets",[
+  ["A phone can't open the app","\"This site can't be reached\", ERR_TOO_MANY_RETRIES, or the page just spins.",[
+    "The phone must be on the timing Wi-Fi – not mobile data. If unsure, turn mobile data off for a moment.",
+    "Scan the join card: code 1 joins the Wi-Fi, then code 2 opens the app.",
+    "Opened inside Messenger, Facebook or the Google app (an X at the top, no address bar)? Open it in Chrome, Samsung Internet or Safari instead.",
+    "Android + Chrome: phone Settings › Apps › Chrome › Permissions › Nearby devices (or Local network) › Allow. Close Chrome fully and open it again. Do the same for the Google app if you scan with Google Lens.",
+    "Still not in Chrome? Chrome › Settings › Privacy and security › turn off Always use secure connections. Or use Samsung Internet.",
+    "No phone at all can connect? On the timing computer: System › Setup › Phones › Allow phones, and answer Yes on the Windows prompt.",
+    "Check the address on the join card matches the one under System. If the computer's address has changed, print a new join card."],true],
+  ["\"No link to the timing computer\"","A red banner on a phone or tablet.",[
+    "The device has dropped off the timing Wi-Fi, gone out of range, or its screen slept.",
+    "Move closer to the Wi-Fi router, check Wi-Fi is on, then reload the page.",
+    "Timing carries on and nothing is lost – the timing computer keeps everything."]],
+  ["An official is waiting for access","Their phone shows a 3-digit code.",[
+    "On the timing computer: System › Today. Their name and code are at the top.",
+    "Check the code matches their phone, then tap their job (Starter, Marshal or Referee).",
+    "Declined or timed out? They tap Officials and ask again. Access ends when the event is closed."]],
+  ["A screen keeps going to sleep","",[
+    "Set the screen timeout to Never (or the longest) in that device's settings.",
+    "Keep the app page open in front – it asks the device to stay awake while it's showing."],true]]],
+ ["Timing box and buttons",[
+  ["Timing box not connected","\"Timing box not connected\" at the top of the Race tab.",[
+    "Check the USB cable at both ends.",
+    "Close Thonny if it's open – only one program can use the timing box at a time.",
+    "Unplug the USB cable, wait 5 seconds, plug it back in. The app finds the box by itself.",
+    "Try another USB port. Still not? Close the app window and start the app again."],true],
+  ["Two buttons \"went off together\"","A red fault in the button test, e.g. Lane 1 and Lane 2 under 1 ms apart.",[
+    "Check System › Setup › Advanced › Versions says timing box program v2.9 or later – it ignores electrical spikes between wires.",
+    "Each button needs its own ground wire straight to the ground block. A ground that runs through another button makes both go off together.",
+    "Check the two signal wires aren't touching – at the Pico, Lane 1 (pin 4) and Lane 2 (pin 5) sit side by side: look for a solder bridge or a stray strand.",
+    "Fix it, then end the test and start a new one."]],
+  ["A button press didn't show","",[
+    "Run the button test (System) and press that button – its box should tick.",
+    "Check its cable is in the right socket.",
+    "Lane, SET and GO buttons are wired COM and NC (normally closed) – nothing on the NO terminal.",
+    "During a race, a press within 15 seconds of the same crew's last press is ignored on purpose.",
+    "Timing box messages say \"Ignored electrical spikes\"? Those weren't presses – there's noise on that cable. Twisted-pair cable helps."],true],
+  ["Wiring fault on a lane, SET or GO","\"Check wiring: Lane 2\" or a lane open during a race.",[
+    "At rest every lane, SET and GO button is closed. A fault means the cable is unplugged or broken, or the button is wired to NO instead of NC.",
+    "Plug it in or fix the wire – the warning clears by itself.",
+    "If it happened during a race, check that crew's presses on the Confirm tab."]],
+  ["FINISH acts up","The race finishes by itself, or FINISH shows as pressed.",[
+    "FINISH is a normally-open button straight to ground – nothing else on that terminal (GP6, Pico pin 9).",
+    "The FINISH button must be held for 1 second. FINISH on the screen asks you to confirm."]],
+  ["Battery: Charge soon / Charge now","",[
+    "Charge soon: charge at the next break.",
+    "Charge now or Swap the battery now: swap or charge before the next race."]]]],
+ ["Racing",[
+  ["The wrong heat is on the start","",[
+    "With a program on, the program sets the order – nobody picks heats by hand.",
+    "The timing desk or Referee changes it on the Program tab: tap the heat you want, then Run it next."],true],
+  ["Started by mistake","",[
+    "Press GO again within 5 seconds: that's a recall – the race is cancelled and not counted.",
+    "SET without GO cancels itself after 60 seconds."]],
+  ["SET or GO does nothing","",[
+    "A button test is running – end it on the System tab.",
+    "The last race hasn't been finished – hold FINISH first.",
+    "SET ran out after 60 seconds – press SET again."]],
+  ["A time or place is wrong","",[
+    "Confirm tab › Edit on that crew: accept a press, move a place, DQ or DNF.",
+    "Edit also shows each finish on the computer's clock, to match against video.",
+    "Undo ALL changes (whole race) puts it back exactly as the timing box recorded it."]]]],
+ ["Laptop and app",[
+  ["The app isn't running","The page won't load on the timing computer.",[
+    "Double-click IRB_start.bat in the IRB_timing folder (or your IRB timing shortcut).",
+    "Results and settings are saved on the computer – it carries on where it left off."]],
+  ["\"Open File – Security Warning\" when starting","",[
+    "Untick \"Always ask before opening this file\", then Run. It won't ask again."]],
+  ["The app seems frozen, or an update says \"Already updating\"","",[
+    "Click the black app window and press Enter (older versions paused when that window was clicked).",
+    "Still stuck? Close the black window and start the app again. Nothing is lost."]],
+  ["Updates won't install","\"Couldn't check for updates\" or \"Locked by the owner\".",[
+    "The computer needs internet just while updating.",
+    "Locked by the owner: only the kit owner installs updates.",
+    "\"The updates key was refused\": the owner adds a new key under Setup › Advanced.",
+    "After an update, Go back (System › Setup) puts the previous version back."]],
+  ["LiveHeats won't load","",[
+    "This computer needs internet just while loading.",
+    "Copy the event link from the browser's address bar on liveheats.com.",
+    "The last draw loaded stays usable without internet."],true],
+  ["Backup failed","",[
+    "The USB stick needs a folder called IRB_backup at the top level.",
+    "Plug it in, then System › Setup › Back up now."]],
+  ["Still stuck","",[
+    "On the timing computer: System › Setup › Problem report › Download.",
+    "Send the file to whoever you hired the kit from – it has no passwords in it."],true]]]];
+const FIXES=TROUBLE.flatMap(s=>s[1]).filter(x=>x[3]).map(x=>[x[0],x[2].join(" ")]);
+let fixQ="";
+function troubleHtml(q,print){ q=(q||"").trim().toLowerCase(); let h="", n=0;
+  for(const [sec,items] of TROUBLE){
+    const its=items.filter(x=>!q||(x[0]+" "+x[1]+" "+x[2].join(" ")).toLowerCase().includes(q)); if(!its.length) continue; n+=its.length;
+    h+=`<h2 class="fxsec">${esc(sec)}</h2>`+its.map(([title,see,steps])=>`<details class="fxi" ${q||print?"open":""}><summary>${esc(title)}</summary>
+      ${see?`<p class="fxsee">You see: ${esc(see)}</p>`:""}<ol>${steps.map(s=>`<li>${esc(s)}</li>`).join("")}</ol></details>`).join(""); }
+  return n?h:`<p class="mute">Nothing matches "${esc(q)}". Try another word, or see Still stuck.</p>`; }
+function renderFix(){
+  $("race").innerHTML=`<div class="fixp">${brandBar()}<div class="row" style="margin:0 0 6px;align-items:center;justify-content:space-between"><h1 style="margin:0">Troubleshooting</h1>
+    <span class="row" style="margin:0"><button class="btn" onclick="printTrouble()">Print</button><button class="btn" onclick="history.length>1?history.back():(location.hash='')">‹ Back</button></span></div>
+    <input type="search" id="fixq" value="${esc(fixQ)}" placeholder="Search, e.g. phone, button, battery" oninput="fixQ=this.value;$('fixl').innerHTML=troubleHtml(fixQ)">
+    <div id="fixl">${troubleHtml(fixQ)}</div></div>`; }
+function troublePages(top){ return `<div class="guide">${top||""}<h1>Troubleshooting</h1><p class="gsub">Find the problem, then work through the steps in order.</p>${troubleHtml("",true)}</div>`; }
+function printTrouble(){ let p=$("printcard"); if(!p){ p=document.createElement("div"); p.id="printcard"; document.body.appendChild(p); }
+  const b=(st&&st.brand)||{}; p.innerHTML=troublePages(`<div class="gtop">${b.logo?`<img src="/logo?v=${b.logo}" alt="">`:""}<span>${esc(b.club||"IRB Racing")}${b.event?" · "+esc(b.event):""}</span></div>`);
+  try{ window.print(); }catch(e){ toast("Printing isn't available here"); } }
 function openHelp(){
   const names={race:"Race",results:"Confirm",program:"Program",history:"LiveHeats",marshal:"Marshal",system:"System"};
   $("sheetin").innerHTML=`<h2>${names[tab]||"Help"} – what this screen is for</h2><ul class="helpl">${(HELP[tab]||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
     <p class="mute">The blue <b>Next</b> bar at the top always shows the next thing to do.</p>
     <h2 style="margin-top:14px">Something not working?</h2>${FIXES.map(([q,a])=>`<details class="fix"><summary>${esc(q)}</summary><p>${esc(a)}</p></details>`).join("")}
-    <div class="row"><button class="btn pri" onclick="closeSheet()">OK</button></div>`;
+    <div class="row"><button class="btn pri" onclick="closeSheet()">OK</button><button class="btn" onclick="closeSheet();location.hash='#fix'">All troubleshooting ›</button></div>`;
   $("sheet").classList.add("on");
 }
 // ---------- one status for every race: Raced → Confirmed → Entered ----------
@@ -3432,7 +3537,7 @@ function dayCard(){
 function nextStep(){
   if(!st||linkDown) return null;
   const role=st.role, pg=st.program||{}, s=st.state;
-  if(role==="viewer"||location.hash==="#board"||location.hash==="#team"||location.hash==="#marshalling") return null;
+  if(role==="viewer"||location.hash==="#board"||location.hash==="#team"||location.hash==="#marshalling"||location.hash==="#fix") return null;
   if(role==="marshal"){
     if(!mUp||!mUp.heats.length) return {text:"No heats to marshal yet",calm:true};
     const sentOf=id=>(mUp.sent||{})[id], hs=mUp.heats;     // includes the heat on the start
@@ -4383,7 +4488,8 @@ function renderHome(){
   $("race").innerHTML=`<div class="home">${homeTitle()}
     <a class="hbtn pri" href="#team" onclick="tmView='club'">Team Manager<small>Your club's heats, lanes and results · the program · all results</small></a>
     <a class="hbtn" href="#board">Results<small>Live results and the next heat – for a screen or your phone</small></a>
-    <button class="hbtn" onclick="openRequest()">Officials<small>Starter, Marshal, Referee – ask the timing desk for access</small></button></div>`;
+    <button class="hbtn" onclick="openRequest()">Officials<small>Starter, Marshal, Referee – ask the timing desk for access</small></button>
+    <p style="text-align:center;margin-top:14px"><a href="#fix">Something not working? Troubleshooting</a></p></div>`;
 }
 function openRequest(){
   $("sheetin").innerHTML=`<h2>Officials</h2><p class="mute">Type your name and tap Request access. A code shows on your phone – show it at the timing desk.</p>
@@ -4564,7 +4670,7 @@ function printGuides(){ let p=$("printcard"); if(!p){ p=document.createElement("
     +`<div class="guide">${top}<h1>Hire kit checklist</h1><p class="gsub">Tick each item out, and back in when you pack up.</p>
       <table class="gkit"><tr><th>Item</th><th>Out</th><th>Back</th></tr>${(st.kit||"").split("\n").map(x=>x.trim()).filter(Boolean).map(x=>`<tr><td>${esc(x)}</td><td>☐</td><td>☐</td></tr>`).join("")}</table>
       <h2>Packing up</h2><ol><li>Every race ticked on the LiveHeats tab.</li><li>System › Setup › Results to take home › Today – save the zip.</li>
-      <li>System › Setup › Start new event.</li><li>Battery on charge. Everything back in the box.</li></ol></div>`;
+      <li>System › Setup › Start new event.</li><li>Battery on charge. Everything back in the box.</li></ol></div>`+troublePages(top);
   try{ window.print(); }catch(e){ toast("Printing isn't available here"); } }
 function renderSystem(){
   if(!st){ $("system").innerHTML=""; return; }
@@ -4581,7 +4687,7 @@ function renderSystem(){
     <a class="btn" href="/#marshalling" target="_blank" style="text-decoration:none">Marshalling screen</a>
     <a class="btn" href="/#team" target="_blank" style="text-decoration:none">Team Manager</a>
     ${st.role==="admin"?`<button class="btn" onclick="goTab('marshal')">Marshal screen</button>`:""}
-    ${master?`<button class="btn" onclick="printGuides()">Print role guides</button>`:""}</div></div>`;
+    ${master?`<button class="btn" onclick="printGuides()">Print role guides</button>`:""}<a class="btn" href="#fix">Troubleshooting</a></div></div>`;
   const batt=st.batt!=null?battCard():"";
   let h=setupOk?`<div class="sysnav"><button class="btn ${sysView==="today"?"pri":""}" onclick="sysView='today';lastKey='';render()">Today</button>
     <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&st.update&&st.update.newer?' <span class="badge">1</span>':""}</button></div>`:"";
@@ -4730,6 +4836,8 @@ function renderBoard(){
   $("race").innerHTML=h+`</div>`+boardQr()+homeBtn();
 }
 function render(){
+  if(location.hash==="#fix"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
+    const k=JSON.stringify(["fix",st&&st.brand]); if(k!==lastKey){ lastKey=k; renderFix(); } return; }
   if(location.hash==="#team"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
     const k=JSON.stringify([tmView,tmView==="club"?tmData:tmView==="program"?prog:hist,tmClubs.length,linkDown,st&&st.role,st&&st.brand,tmClub()]); if(k!==lastKey){ lastKey=k; renderTeam(); } return; }
   if(location.hash==="#marshalling"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
