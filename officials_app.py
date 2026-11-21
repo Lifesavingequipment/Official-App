@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.6.2"
+APP_VERSION = "1.6.3"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -3383,7 +3383,7 @@ const HELP={
   system:["Today: the start-of-day checks, who has access, the button test, the screens and the join card.","Setup: things you set once per carnival – Wi-Fi, LiveHeats draw, backup, practice mode."]};
 const FIXES=[
   ["Timing box not connected","Check the USB cable at both ends. Close Thonny if it's open. Unplug the cable, wait 5 seconds, plug it back in – the app finds the box by itself."],
-  ["A phone can't open the app","The phone must be on the timing Wi-Fi, not mobile data. Scan the join card (Wi-Fi first, then the app). If it opened inside Messenger or Facebook, open it in Chrome, Samsung Internet or Safari instead. On the timing computer: System › Setup › Phones › Allow phones."],
+  ["A phone can't open the app","The phone must be on the timing Wi-Fi, not mobile data. Scan the join card (Wi-Fi first, then the app). If it opened inside Messenger or Facebook, open it in Chrome, Samsung Internet or Safari instead. Android + Chrome showing ERR_TOO_MANY_RETRIES or \"can't be reached\": phone Settings › Apps › Chrome › Permissions › Nearby devices (or Local network) › Allow, then close and reopen Chrome – or use Samsung Internet. On the timing computer: System › Setup › Phones › Allow phones."],
   ["A button press didn't show","Run the button test (System) and press that button. Check its cable is in the right socket. A press within a few seconds of the same crew's last press is ignored on purpose."],
   ["The wrong heat is on the start","With a program on, the program sets the order. The timing desk or Referee changes it on the Program tab (tap the heat › Run next)."],
   ["LiveHeats won't load","This computer needs internet just while loading. Copy the event link from the browser's address bar. The last draw loaded stays usable without internet."],

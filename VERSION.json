@@ -1,8 +1,8 @@
 {
- "app": "1.6.2",
+ "app": "1.6.3",
  "pico": "2.9",
- "sha256": "08ac77d63491ee462fc991622c19d6bf00b7ebba9bba15c2709fc151722f0fd8",
+ "sha256": "83fb9d80b7ba1e239efeb0302e48d608394a067dedede47e457a42137da219ac",
  "notes": [
-  "Pico program v2.9: ignores electrical spikes - a press must still be open 2 ms after it starts"
+  "Help (?): fix for Android Chrome not opening the app (Nearby devices permission)"
  ]
 }
