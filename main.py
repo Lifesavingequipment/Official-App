@@ -1,4 +1,6 @@
-# IRB Finish Timing - bench test v2.8
+# IRB Finish Timing - bench test v2.9
+# v2.9: a press only counts if its pin is still open 2 ms after the edge - short electrical
+#       spikes (one lane's wire kicking another's) are ignored. Timing still uses the first edge.
 # v2.8: the app sets the Pico's clock on connect
 #       (clock Y M D h m s), so history dates are right without Thonny. A heartbeat
 #       line every 3 s lets the app spot a dead link. Optional 24 V battery reading
@@ -59,6 +61,8 @@ BOARD_NPN = True              # True: DST-1R4P (NPN) or jumper test. False: PNP 
 MIN_LEG_US = 15_000_000       # a hit only counts if 15 s after that crew's last hit / GO
 DEAD_HEAT_US = 10_000         # finishes closer than 10 ms flagged for review
 BUTTON_DEBOUNCE_US = 300_000  # SET/GO ignore repeat edges within 0.3 s
+CONFIRM_US = 2_000            # a press must still be open this long after its edge to count
+CONFIRM_MAX_US = 30_000       # ...checked for up to this long (contact bounce), then it's ignored as a spike
 RECALL_WINDOW_US = 5_000_000  # GO again within 5 s = recall
 SET_TIMEOUT_MS = 60_000       # SET expires after 60 s without GO
 REARM_MS = 200                # SET/GO must be steadily released before another press counts
@@ -256,7 +260,7 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "2.8", "lanes": sorted(LANE_PINS), "race": race_no,
+    emit({"ev": "hello", "fw": "2.9", "lanes": sorted(LANE_PINS), "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "app_start": True, "ties": True, "test": True,
           "clock": True, "beat": True, "batt": BATT_ENABLED})
     emit({"ev": "test", "on": test_mode})
@@ -867,13 +871,16 @@ def finish_race(reason="Race finished by official."):
 poller = uselect.poll()
 poller.register(sys.stdin, uselect.POLLIN)
 
-print("IRB finish timing - bench test v2.8 (legs, adjustments, history, app link, test, ties, clock)")
+print("IRB finish timing - bench test v2.9 (legs, adjustments, history, app link, test, ties, clock)")
 print("History: last saved race %d. Type log to see files." % race_no)
 emit_all()
 print("Board:", "NPN (hit = pin goes HIGH)" if BOARD_NPN else "PNP (hit = pin goes LOW)")
 show_help()
 status()
 
+pending = []        # edges being checked (press or spike?)
+spikes = {}         # input code -> spikes ignored since the last report
+last_spike_report = time.ticks_ms()
 last_check = time.ticks_ms()
 last_blink = time.ticks_ms()
 last_beat = time.ticks_ms()
@@ -883,11 +890,28 @@ line = ""
 while True:
     # 1. process interrupt events in order (stamps converted to extended clock)
     clock_now()
+    # every edge is checked on its own: it counts if its pin is seen open 2 ms or more after the edge,
+    # and is dropped as a spike if that hasn't happened within 30 ms. Then they're handled in order.
     while tail != head:
         i = tail % BUF
-        code = ev_code[i]
-        t = to_ext(ev_time[i])
+        pending.append([ev_code[i], ev_time[i], 0])     # code, edge time, 0 = checking / 1 = press / 2 = spike
         tail += 1
+    if pending:
+        now_us = time.ticks_us()
+        for e in pending:
+            if e[2] == 0:
+                p = set_in if e[0] == CODE_SET else go_in if e[0] == CODE_GO else lane_in.get(e[0])
+                age = time.ticks_diff(now_us, e[1])
+                if p is None or (age >= CONFIRM_US and p.value() == HIT):
+                    e[2] = 1
+                elif age >= CONFIRM_MAX_US:
+                    e[2] = 2
+    while pending and pending[0][2]:
+        code, raw, ok = pending.pop(0)
+        if ok == 2:
+            spikes[code] = spikes.get(code, 0) + 1
+            continue
+        t = to_ext(raw)
         if test_mode:
             if code == CODE_SET:
                 test_input("SET", None, t)
@@ -988,6 +1012,14 @@ while True:
     if batt_adc and state != "RACING" and time.ticks_diff(now, last_batt) >= BATT_MS:
         last_batt = now
         emit({"ev": "batt", "v": read_batt()})
+
+    # 6c. say (at most every 10 s) when spikes were ignored - a sign of noisy wiring
+    if spikes and time.ticks_diff(now, last_spike_report) >= 10_000:
+        last_spike_report = now
+        names = {CODE_SET: "SET", CODE_GO: "GO"}
+        print("Ignored electrical spikes (not presses): " +
+              ", ".join("%s x%d" % (names.get(c, "Lane %d" % c), n) for c, n in sorted(spikes.items())))
+        spikes.clear()
 
     # 7. heartbeat LED while idle (slow blink = running)
     if state in ("IDLE", "DONE") and time.ticks_diff(now, last_blink) > 500:
