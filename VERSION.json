@@ -1,9 +1,9 @@
 {
- "app": "1.6.1",
+ "app": "1.6.2",
  "pico": "2.8",
- "sha256": "c97efe138cf1b90ac2dafe5d240aafc0f7bf03d113c103526a5580189fd1d238",
+ "sha256": "08ac77d63491ee462fc991622c19d6bf00b7ebba9bba15c2709fc151722f0fd8",
  "notes": [
-  "Updates key: lets this computer update from a private GitHub repository (System \u203a Setup \u203a Advanced)",
-  "Clearer messages when updates can't be reached"
+  "Fix: clicking in the black app window could freeze the app until a key was pressed (this is what stuck the last update)",
+  "Tidier app window: no error text when a browser hangs up early"
  ]
 }

@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.2"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -4778,7 +4778,34 @@ poll();
 """
 
 
+def no_quickedit():
+    # Windows: clicking in the black window ("QuickEdit") freezes the app the next time it prints, until a key is
+    # pressed - that stuck an update, and could freeze timing. Turn it off for this window.
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-10)                       # the window's input
+        mode = ctypes.c_uint32()
+        if k.GetConsoleMode(h, ctypes.byref(mode)):
+            k.SetConsoleMode(h, (mode.value & ~0x0040) | 0x0080)   # QuickEdit off (extended flags on)
+    except Exception:
+        pass
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # a browser that hangs up early (page reloaded, phone locked) is normal - don't fill the window with errors
+        if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main():
+    no_quickedit()
     load_history()
     load_settings()
     load_program()
@@ -4787,7 +4814,7 @@ def main():
     srv = None
     for _ in range(20):                    # after an update the old copy may need a moment to let go
         try:
-            srv = ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), H)
+            srv = Server(("0.0.0.0", HTTP_PORT), H)
             break
         except OSError:
             time.sleep(0.5)
