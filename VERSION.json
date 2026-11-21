@@ -1,9 +1,9 @@
 {
- "app": "1.6.4",
+ "app": "1.6.5",
  "pico": "2.9",
- "sha256": "9b977646ab2f1d26d7a05e41caef0a8c65e3e21f6cb2964e026773d2bf6bc7d7",
+ "sha256": "38b607df01bee7e11956d357d973b0f5aa060442ca41c6d471f9955501abd60e",
  "notes": [
-  "New: Troubleshooting page \u2013 every known problem and its fix, searchable (? \u203a All troubleshooting, System \u203a Today, phone home page)",
-  "Troubleshooting prints with the role guides"
+  "Earlier races can be confirmed later: Confirm tab lists them, LiveHeats tab has a Confirm button, Next bar reminds until done",
+  "Practice mode: the program moves to the next heat after each race, like a real carnival - and goes back when practice is turned off"
  ]
 }

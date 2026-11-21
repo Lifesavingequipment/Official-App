@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.6.4"
+APP_VERSION = "1.6.5"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -102,6 +102,7 @@ access_day = [""]         # the day the approvals belong to
 REQUEST_MINS = 10
 flags = {}                # "race" -> {"confirmed": time, "entered": time}
 raced = {}                # LiveHeats heat id -> race number it was run as
+practice_raced = set()    # heats run in practice mode (kept in raced only until practice is turned off)
 clash_skip = [None, 0.0]  # button whose next press belongs to a together-press
 draw = None               # LiveHeats draw (compact), kept on disk for use without internet
 last_go_sent = 0.0        # guards against a double-tap on GO turning into a recall
@@ -813,7 +814,17 @@ def confirm_results(race, undo, who="?"):
     with lock:
         res = S["results"]
         if not res or res.get("race") != race:
-            return "Those results aren't on screen any more"
+            # an earlier race, confirmed later from the Confirm or LiveHeats tab
+            if not any(r.get("race") == race for r in history_summary()):
+                return "That race isn't in today's results"
+            f = flags.setdefault(str(race), {})
+            if undo:
+                f.pop("confirmed", None)
+            else:
+                f["confirmed"] = datetime.now().strftime("%H:%M:%S")
+            f.setdefault("log", []).append([datetime.now().strftime("%H:%M:%S"), who, "reopened" if undo else "results final (later)"])
+            save_flags()
+            return "ok"
         f = flags.setdefault(str(race), {})
         if undo:
             f.pop("confirmed", None)
@@ -2108,6 +2119,10 @@ def handle_line(line):
         if S["practice"]:
             d["practice"] = True               # practice: shown, never saved or queued
             S["results"] = d
+            h = d.get("heat") or {}
+            if h.get("heat_id") and h["heat_id"] not in raced:
+                raced[h["heat_id"]] = "P%s" % d.get("race")     # the program moves on, as on the day
+                practice_raced.add(h["heat_id"])
             return
         S["results"] = d
         save_result(d)
@@ -2298,6 +2313,10 @@ def snapshot(role="master", local=True, tok=None):
         d["raced"] = raced
         d["confirmed"] = bool(S["results"] and is_confirmed(S["results"].get("race")))
         d["queue_n"] = len([1 for r in history_summary() if not flags.get(str(r.get("race")), {}).get("entered")])
+        cur_race = (S["results"] or {}).get("race") if S["state"] == "DONE" else None
+        d["unconfirmed"] = [r.get("race") for r in history_summary()
+                            if r.get("race") != cur_race and not flags.get(str(r.get("race")), {}).get("confirmed")
+                            and not flags.get(str(r.get("race")), {}).get("entered")][-30:]
         d["today"] = datetime.now().strftime("%Y-%m-%d")
         for k in ("test_count", "test_last", "test_clash", "beat", "batt", "practice", "backup"):
             d[k] = S[k]
@@ -2571,6 +2590,14 @@ class H(BaseHTTPRequestHandler):
         elif self.path.startswith("/api/practice"):
             with lock:
                 S["practice"] = bool(data.get("on"))
+                if not S["practice"]:               # practice over: its heats are ready to race for real
+                    for hid in practice_raced:
+                        if str(raced.get(hid, "")).startswith("P"):
+                            raced.pop(hid, None)
+                            sent.pop(hid, None)
+                            checkin.pop(hid, None)
+                    practice_raced.clear()
+                    save_program()
             self.send(200, json.dumps({"result": "ok"}))
         elif self.path.startswith("/api/backup"):
             backup()
@@ -3553,6 +3580,8 @@ function nextStep(){
   if(s==="ARMED") return st.can_start?{text:"Armed – press GO to start",tab:"race",btn:"Race"}:{text:"Race about to start",calm:true};
   if(st.test) return (role==="master"||role==="starter")?{text:"Button test running – press every button, then end the test",tab:"system",btn:"Test",act:"sysView='today'"}:null;
   if(st.official&&s==="DONE"&&st.results&&!st.confirmed&&!st.results.practice) return {text:`Race ${st.results.race} finished – check the result, then Confirm results`,tab:"results",btn:"Confirm"};
+  if((role==="master"||role==="admin")&&(st.unconfirmed||[]).length&&s!=="ARMED"&&s!=="RACING"){ const u=st.unconfirmed;
+    return {text:`Race ${u[0]} results not confirmed${u.length>1?` (+${u.length-1} more)`:""} – check and confirm`,tab:"history",btn:"Confirm",act:`entGo(${u[0]})`}; }
   if(role==="master"&&!racedToday()&&!dayReady()){ const n=dayChecks().filter(x=>!x.opt&&!x.ok).length; return {text:`Start of day – ${n} check${n===1?"":"s"} to do`,tab:"system",btn:"Checklist",act:"sysView='today'"}; }
   if(st.official&&pg.mode==null) return {text:"Choose how heats are run today",tab:"program",btn:"Program"};
   if(role==="admin"){
@@ -3771,9 +3800,16 @@ function resultsTable(res, tappable){
   }
   return h+`</table></div>`;
 }
+function earlierCard(){ const u=(st&&st.unconfirmed)||[]; if(!u.length||!(st.role==="master"||st.role==="admin")) return "";
+  return `<div class="card earlier"><h2>Earlier races not confirmed <span class="badge">${u.length}</span></h2>
+    <p class="mute" style="margin:0 0 6px">The next race went ahead before these were confirmed. Check each one, then confirm.</p>
+    ${u.map(r=>`<div class="ofrow"><span class="nm">Race ${r}</span><button class="btn sm pri" onclick="entGo(${r})">Check & confirm ›</button></div>`).join("")}</div>`; }
+async function entGo(race){ histAt=0; await loadHist(); const i=queue.findIndex(x=>x.race===race); if(i>=0) entIdx=i; lastKey=""; goTab("history"); }
+async function confirmEarlier(race){ const r=await post("/api/confirm",{race:race,who:myName()||"?"}); if(r&&r!=="ok"){ toast(r); return; }
+  toast(`Race ${race} confirmed`); histAt=0; await loadHist(); lastKey=""; render(); }
 function renderResults(){
   const res=st&&st.results&&Object.assign({},st.results,{flags:st.res_flags||{}});
-  if(!res){ $("results").innerHTML=`<div class="card"><h2>No results yet</h2><p class="mute">Results show here after FINISH.</p></div>`; return; }
+  if(!res){ $("results").innerHTML=`<div class="card"><h2>No results yet</h2><p class="mute">Results show here after FINISH.</p></div>`+earlierCard(); return; }
   const live=st.state==="DONE"&&st.race===res.race&&st.connected&&st.official;
   const can=live&&!st.confirmed;
   const adj=Object.keys(res.changes).length||res.legs_set;
@@ -3803,7 +3839,7 @@ function renderResults(){
       <p class="mute">Locked. Next heat is ready. Reopen only if a change is still needed.</p>
       <div class="row"><button class="btn" onclick="post('/api/confirm',{race:${res.race},undo:true})">Reopen results</button></div></div>`
     :`<div class="card"><button class="btn pri" style="width:100%;font-size:20px;min-height:64px" onclick="post('/api/confirm',{race:${res.race}})">Confirm results ✓</button>
-      <p class="mute" style="margin:8px 0 0">When the judges agree. Locks results and moves to the next heat.</p>
+      <p class="mute" style="margin:8px 0 0">When the judges agree. Locks the results and shows them as Final.</p>
       ${myName()?"":`<div class="log">Tip: add your name on the System tab so changes show who made them.</div>`}</div>`;
   if(w) right+=`<div class="wideonly" style="display:flex;flex-direction:column;gap:12px">${w}</div>`;
   const fl=res.flags||{};
@@ -3817,6 +3853,7 @@ function renderResults(){
     for(let n=1;n<=4;n++) right+=`<button class="btn ${n===res.legs?"pri":""}" onclick="cmd('legs ${n}')">${n}</button>`;
     right+=`</div><div class="row"><button class="btn" onclick="askYes('Undo every change made to this race, including the number of legs?',()=>cmd('clear'),'Yes, undo all')">Undo ALL changes (whole race)</button></div></div>`;
   }
+  right=earlierCard()+right;
   $("results").innerHTML=`<div class="cols"><div>${h}</div><div>${right}</div></div>`;
   if(can) document.querySelectorAll("#results tr.tap").forEach(tr=>tr.onclick=()=>openSheet(+tr.dataset.lane));
 }
@@ -3941,7 +3978,7 @@ function renderProgram(){
       const tt=x.est?(x.est.exp&&x.est.exp!==x.est.plan&&x.raced==null?`<span class="tm2">${x.est.exp}</span> <span class="mute" style="text-decoration:line-through">${x.est.plan}</span> · `
         :x.est.plan?`<span class="tm2">${x.est.plan}</span> · `:""):"";
       const ck=x.checkin||{}, nin=Object.values(ck).filter(v=>v==="present").length, nout=Object.values(ck).filter(v=>v==="scratched").length;
-      const chip=x.missing?`<span class="chip gone">not in draw</span>`:x.raced!=null?`<span class="chip done">✓ race ${x.raced}</span>`
+      const chip=x.missing?`<span class="chip gone">not in draw</span>`:x.raced!=null?`<span class="chip done">✓ ${String(x.raced).startsWith("P")?"practice":"race "+x.raced}</span>`
         :x.now?`<span class="chip now">ON NOW</span>`:x.next===1?`<span class="chip next">NEXT</span>`:x.next===2?`<span class="chip next">THEN</span>`:"";
       left+=`<div class="prow ${x.raced!=null?"done":""} ${x.now?"now":""}" data-i="${i}"><span class="pn">${i+1}</span>
         <div><div class="pl">${x.missing?"Heat no longer in LiveHeats":esc(hl(x))}</div>
@@ -4367,7 +4404,10 @@ function entryCard(){
     <span>Race ${r.race} · ${entIdx+1} of ${queue.length}</span><button class="btn sm" ${entIdx<queue.length-1?"":"disabled"} onclick="entIdx++;lastKey='';render()">›</button></div>`;
   h+=`<div class="enthd">${r.heat?`<div class="entdiv">${esc(r.heat.div)}</div><div class="entrnd">${esc(r.heat.round)} · Heat ${r.heat.no}</div>`:`<div class="entdiv">Race ${r.race}</div><div class="mute">No heat was chosen for this race</div>`}</div>`;
   h+=`<div style="margin:6px 0">${raceStatus(r.confirmed,false)}</div>`;
-  if(!r.confirmed) h+=`<div class="warn" style="margin:8px 0">Not confirmed yet – check the result on the Confirm tab first. <a href="#" onclick="goTab('results');return false">Confirm ›</a></div>`;
+  if(!r.confirmed) h+=(st.results&&st.results.race===r.race&&st.state==="DONE")
+      ?`<div class="warn" style="margin:8px 0">Not confirmed yet – check the result on the Confirm tab first. <a href="#" onclick="goTab('results');return false">Confirm ›</a></div>`
+      :`<div class="warn" style="margin:8px 0;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap"><span>Not confirmed yet – check the places and times below.</span>
+        ${st.role==="master"||st.role==="admin"?`<button class="btn pri" onclick="confirmEarlier(${r.race})">Confirm results ✓</button>`:""}</div>`;
   h+=`<div class="row" style="margin:8px 0 4px;align-items:center"><span class="mute">Order:</span>${[["place","By place"],["lane","By lane"]].map(([k,n])=>
     `<button class="btn sm ${entBy===k?"pri":""}" onclick="entBy='${k}';try{localStorage.setItem('irb_entby','${k}')}catch(e){};lastKey='';render()">${n}</button>`).join("")}</div>`;
   const rows=r.rows.slice().sort(entBy==="lane"?(a,b)=>a.lane-b.lane:(a,b)=>(a.place||99)-(b.place||99)||a.lane-b.lane);
@@ -4777,7 +4817,7 @@ function pageKey(){
   // redraw only when something shown has changed, so taps and open sections aren't lost
   if(!st) return JSON.stringify([tab,linkDown,tab==="history"?hist:0]);
   const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes];
-  k.push(st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags);
+  k.push(st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags,st.unconfirmed);
   if(tab==="race") k.push(st.setup_done,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,evOpen,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
     st.state==="RACING"&&(st.elapsed||0)<5);
   else if(tab==="results") k.push(st.results);
