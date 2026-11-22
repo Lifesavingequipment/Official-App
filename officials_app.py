@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.8.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -3439,7 +3439,7 @@ body.board header,body.board #nextbar{display:none}
 .qrs .mute{font-weight:500;font-size:14px;word-break:break-all;max-width:200px}
 .bqr{position:fixed;right:10px;bottom:10px;display:flex;gap:10px;background:#fff;border:2px solid var(--line);border-radius:12px;padding:8px;z-index:5}
 .bqr>div{text-align:center;font-weight:800;font-size:1.6vh;line-height:1.2}.bqr svg{width:13vh;height:13vh;display:block;margin:0 auto 4px}
-.homebtn{position:fixed;left:10px;bottom:10px;z-index:5}
+.homebtn{position:fixed;left:10px;bottom:10px;z-index:5}body.board .home,body.board .tmv{padding-bottom:70px}
 .mwrap{max-width:720px;margin:0 auto}
 .mb{--u:min(1vh,.62vw);display:grid;gap:calc(1.4*var(--u))}
 .mb .mbtop{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;font-weight:800;font-size:clamp(16px,calc(2.4*var(--u)),26px)}
@@ -3837,7 +3837,7 @@ function applyTabs(){
   const role=st&&st.role||"viewer", ok=TABS[role]||TABS.viewer;
   if(role===tabRole) return; tabRole=role;
   document.querySelectorAll(".tab").forEach(b=>b.hidden=!ok.includes(b.dataset.t));
-  document.querySelector("header").classList.toggle("six",ok.length>5);
+  document.querySelector("header").classList.toggle("six",ok.length>4);
   if(justLogged){ justLogged=false; goTab(ok[0]); return; }
   if(!ok.includes(tab)&&!(tab==="marshal"&&(role==="master"||role==="admin"))) goTab(ok[0]);
 }
@@ -4193,9 +4193,11 @@ function nextStep(){
   if(s==="RACING") return st.can_start?{text:"Racing – press FINISH when every crew is in",tab:"race",btn:"Race"}:{text:"Race in progress",calm:true};
   if(s==="ARMED") return st.can_start?{text:"Armed – press GO to start",tab:"race",btn:"Race"}:{text:"Race about to start",calm:true};
   if(st.test) return (role==="master"||role==="starter")?{text:"Button test running – press every button, then end the test",tab:"system",btn:"Test",act:"sysView='today'"}:null;
-  if(st.official&&s==="DONE"&&st.results&&!st.confirmed&&!st.results.practice) return {text:`Race ${st.results.race} finished – check the result, then Confirm results`,tab:"results",btn:"Confirm"};
+  if(st.official&&s==="DONE"&&st.results&&!st.confirmed&&!st.results.practice) return tab==="history"
+    ?{text:`Race ${st.results.race} finished – confirm it in this list`,tab:"history",btn:"Show",act:`entShow(${st.results.race})`,same:false}
+    :{text:`Race ${st.results.race} finished – check the result, then Confirm results`,tab:"results",btn:"Confirm"};
   if((role==="master"||role==="admin")&&(st.unconfirmed||[]).length&&s!=="ARMED"&&s!=="RACING"){ const u=st.unconfirmed;
-    return {text:`Race ${u[0]} results not confirmed${u.length>1?` (+${u.length-1} more)`:""} – check and confirm`,tab:"history",btn:"Confirm",act:`entGo(${u[0]})`}; }
+    return {text:`Race ${u[0]} results not confirmed${u.length>1?` (+${u.length-1} more)`:""} – check and confirm`,tab:"history",btn:tab==="history"?"Show":"Catch up",act:`entGo(${u[0]})`,same:false}; }
   if(role==="master"&&!racedToday()&&!dayReady()){ const n=dayChecks().filter(x=>!x.opt&&!x.ok).length; return {text:`Start of day – ${n} check${n===1?"":"s"} to do`,tab:"system",btn:"Checklist",act:"sysView='today'"}; }
   if(st.official&&pg.mode==null) return {text:"Choose how heats are run today",tab:"program",btn:"Program"};
   if(role==="admin"){
@@ -4414,11 +4416,13 @@ function resultsTable(res, tappable){
   }
   return h+`</table></div>`;
 }
-function earlierCard(){ const u=(st&&st.unconfirmed)||[]; if(!u.length||!(st.role==="master"||st.role==="admin")) return "";
+function earlierCard(){ const u=((st&&st.unconfirmed)||[]).slice().sort((a,b)=>a-b); if(!u.length||!(st.role==="master"||st.role==="admin")) return "";
   return `<div class="card earlier"><h2>Earlier races not confirmed <span class="badge">${u.length}</span></h2>
-    <p class="mute" style="margin:0 0 6px">The next race went ahead before these were confirmed. Check each one, then confirm.</p>
-    ${u.map(r=>`<div class="ofrow"><span class="nm">Race ${r}</span><button class="btn sm pri" onclick="entGo(${r})">Check & confirm ›</button></div>`).join("")}</div>`; }
+    <p class="mute" style="margin:0 0 6px">The next race went ahead before ${u.length>1?"these were":"this was"} confirmed: Race ${u.join(", ")}.
+      On the LiveHeats tab you can check, confirm and tick off each one in LiveHeats in one go.</p>
+    <button class="btn pri" style="width:100%" onclick="entGo(${u[0]})">Catch up – Race ${u[0]}${u.length>1?" first":""} ›</button></div>`; }
 async function entGo(race){ histAt=0; await loadHist(); const i=queue.findIndex(x=>x.race===race); if(i>=0) entIdx=i; lastKey=""; goTab("history"); }
+function entShow(race){ const i=queue.findIndex(x=>x.race===race); if(i>=0) entIdx=i; lastKey=""; render(); }
 async function confirmEarlier(race){ const r=await post("/api/confirm",{race:race,who:myName()||"?"}); if(r&&r!=="ok"){ toast(r); return; }
   toast(`Race ${race} confirmed`); histAt=0; await loadHist(); lastKey=""; render(); }
 function renderResults(){
@@ -5028,17 +5032,21 @@ function renderTeam(){
 let queue=[];
 async function loadHist(){ try{ hist=await (await fetch("/api/history")).json(); queue=await (await fetch("/api/queue")).json(); histAt=Date.now(); }catch(e){} }
 let enterAsk=null;
-function askEntered(race){
-  const r=queue.find(x=>x.race===race); if(!r) return;
-  $("sheetin").innerHTML=`<h2>Confirm entered?</h2><p>Race ${race}${r.heat?" · "+esc(heatLabel(r.heat)):""} has been entered in LiveHeats.</p>
-    ${r.confirmed?"":`<p class="warn" style="margin:8px 0">These results were never confirmed on the Confirm tab.</p>`}
-    <div class="row"><button class="btn pri" id="entyes">Yes, entered</button><button class="btn" onclick="closeSheet()">Cancel</button></div>`;
-  $("sheet").classList.add("on");
-  $("entyes").onclick=()=>{ closeSheet(); entered(race); };
-}
+let entBusy=false;
 async function entered(race,undo){
-  await post("/api/entered",{race:race,undo:!!undo}); histAt=0; await loadHist(); lastKey=""; render();
-  if(!undo) showUndo(`Race ${race} marked as entered in LiveHeats`, null, ()=>entered(race,true));
+  if(entBusy) return; entBusy=true;
+  try{ await post("/api/entered",{race:race,undo:!!undo}); histAt=0; await loadHist(); } finally{ entBusy=false; }
+  lastKey=""; render();
+  if(!undo) showUndo(`Race ${race} ticked off as entered in LiveHeats`+(queue.length?` – next: Race ${(queue[Math.min(entIdx,queue.length-1)]||{}).race}`:" – all done ✓"), null, ()=>entered(race,true));
+}
+// catching up: confirm and tick off in one tap (the referee/timing desk has just checked the places)
+async function confirmEntered(race){
+  if(entBusy) return; entBusy=true;
+  try{ const r=await post("/api/confirm",{race:race,who:myName()||"?"}); if(r!=="ok"){ return; }
+    await post("/api/entered",{race:race}); histAt=0; await loadHist(); } finally{ entBusy=false; }
+  lastKey=""; render();
+  showUndo(`Race ${race} confirmed and ticked off`+(queue.length?` – next: Race ${(queue[Math.min(entIdx,queue.length-1)]||{}).race}`:" – all done ✓"), null,
+    async()=>{ await post("/api/entered",{race:race,undo:true}); await post("/api/confirm",{race:race,undo:true}); histAt=0; await loadHist(); lastKey=""; render(); });
 }
 let entIdx=0, entBy=(()=>{ try{ return localStorage.getItem("irb_entby")||"place"; }catch(e){ return "place"; } })();
 const ORD=n=>n+(n%100>=11&&n%100<=13?"th":["th","st","nd","rd"][n%10]||"th");
@@ -5051,10 +5059,8 @@ function entryCard(){
     <span>Race ${r.race} · ${entIdx+1} of ${queue.length}</span><button class="btn sm" ${entIdx<queue.length-1?"":"disabled"} onclick="entIdx++;lastKey='';render()">›</button></div>`;
   h+=`<div class="enthd">${r.heat?`<div class="entdiv">${esc(r.heat.div)}</div><div class="entrnd">${esc(r.heat.round)} · Heat ${r.heat.no}</div>`:`<div class="entdiv">Race ${r.race}</div><div class="mute">No heat was chosen for this race</div>`}</div>`;
   h+=`<div style="margin:6px 0">${raceStatus(r.confirmed,false)}</div>`;
-  if(!r.confirmed) h+=(st.results&&st.results.race===r.race&&st.state==="DONE")
-      ?`<div class="warn" style="margin:8px 0">Not confirmed yet – check the result on the Confirm tab first. <a href="#" onclick="goTab('results');return false">Confirm ›</a></div>`
-      :`<div class="warn" style="margin:8px 0;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap"><span>Not confirmed yet – check the places and times below.</span>
-        ${st.role==="master"||st.role==="admin"?`<button class="btn pri" onclick="confirmEarlier(${r.race})">Confirm results ✓</button>`:""}</div>`;
+  const canConf=st.role==="master"||st.role==="admin", cur=st.results&&st.results.race===r.race&&st.state==="DONE";
+  if(!r.confirmed) h+=`<div class="warn" style="margin:8px 0">Not confirmed yet – check the places${cur?` (to change a lane, use <a href="#" onclick="goTab('results');return false">Edit on the Confirm tab</a>)`:""}.</div>`;
   h+=`<div class="row" style="margin:8px 0 4px;align-items:center"><span class="mute">Order:</span>${[["place","By place"],["lane","By lane"]].map(([k,n])=>
     `<button class="btn sm ${entBy===k?"pri":""}" onclick="entBy='${k}';try{localStorage.setItem('irb_entby','${k}')}catch(e){};lastKey='';render()">${n}</button>`).join("")}</div>`;
   const rows=r.rows.slice().sort(entBy==="lane"?(a,b)=>a.lane-b.lane:(a,b)=>(a.place||99)-(b.place||99)||a.lane-b.lane);
@@ -5062,8 +5068,12 @@ function entryCard(){
       const pl=`<span class="ep">${x.place?(ties.includes(x.lane)?"=":"")+ORD(x.place):esc(st2)}</span>`, ln=`<span class="el">Lane ${x.lane}</span>`;
       return `<div class="er ${x.place?"":"out"}">${entBy==="lane"?ln+pl:pl+ln}<span class="ec">${esc(crewOf(r.heat,x.lane)||"–")}${x.place&&x.t_us!=null?`<small>${ft(x.t_us)}</small>`:""}</span></div>`; }).join("")}</div>`;
   if(r.rows.some(x=>!x.place&&x.status==="INCOMPLETE")) h+=`<p class="mute" style="margin:6px 0 0">"Didn't finish" = not all legs were recorded. Check with the finish judges before entering.</p>`;
-  h+=`<div class="row"><button class="btn pri entbtn" onclick="askEntered(${r.race})">Entered in LiveHeats ✓</button>
-    ${st.draw?`<a class="btn" href="https://liveheats.com/events/${esc(st.draw.id)}" target="_blank" rel="noopener" style="text-decoration:none">Open LiveHeats</a>`:""}</div>`;
+  const lh=st.draw?`<a class="btn" href="https://liveheats.com/events/${esc(st.draw.id)}" target="_blank" rel="noopener" style="text-decoration:none">Open LiveHeats</a>`:"";
+  h+=!r.confirmed&&canConf
+    ?`<div class="row"><button class="btn pri entbtn" onclick="confirmEntered(${r.race})">Confirm + entered in LiveHeats ✓</button>${lh}</div>
+      <div class="row" style="margin-top:4px"><button class="btn sm" onclick="confirmEarlier(${r.race})">Confirm only – enter in LiveHeats later</button></div>`
+    :`<div class="row"><button class="btn pri entbtn" onclick="entered(${r.race})">Entered in LiveHeats ✓</button>${lh}</div>`;
+  if(queue.length>1) h+=`<p class="mute" style="margin:8px 0 0;font-size:14px">Oldest first. After each tap the next race shows here.</p>`;
   return h+`</div>`;
 }
 function renderHistory(){
