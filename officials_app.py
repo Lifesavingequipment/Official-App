@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.8.2"
+APP_VERSION = "1.8.3"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -3825,8 +3825,8 @@ function ft(us){ if(us==null) return "—"; const ms=Math.floor(us/1000), m=Math
   s=Math.floor(ms/1000)%60, r=ms%1000; return (m?m+":"+String(s).padStart(2,"0"):s)+"."+String(r).padStart(3,"0"); }
 function clock(sec){ const m=Math.floor(sec/60), s=Math.floor(sec%60), t=Math.floor(sec*10)%10;
   return m+":"+String(s).padStart(2,"0")+"."+t; }
-function toast(t){ const e=$("toast"); e.textContent=t; e.style.display="block"; clearTimeout(e._t);
-  e._t=setTimeout(()=>e.style.display="none",2500); }
+function toast(t,ms){ const e=$("toast"); e.textContent=t; e.style.display="block"; clearTimeout(e._t);
+  e._t=setTimeout(()=>e.style.display="none",ms||2500); }
 function myName(){ try{ return localStorage.getItem("irb_name")||""; }catch(e){ return ""; } }
 function setMyName(v){ try{ localStorage.setItem("irb_name",v.trim()); }catch(e){} }
 async function post(url,data){ try{ const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
@@ -3847,6 +3847,7 @@ function applyTabs(){
   if(role===tabRole) return; tabRole=role;
   document.querySelectorAll(".tab").forEach(b=>b.hidden=!ok.includes(b.dataset.t));
   document.querySelector("header").classList.toggle("six",ok.length>4);
+  if(backAfterRestart(ok)) return;
   if(justLogged){ justLogged=false; goTab(ok[0]); return; }
   if(!ok.includes(tab)&&!(tab==="marshal"&&(role==="master"||role==="admin"))) goTab(ok[0]);
 }
@@ -5308,8 +5309,16 @@ function askUpdate(){ $("sheetin").innerHTML=`<h2>Update to v${esc(st.update.lat
   <div class="row"><button class="btn pri" onclick="closeSheet();updDo({install:true},'Updating – restarting…')">Yes, update now</button><button class="btn" onclick="closeSheet()">Cancel</button></div>`; $("sheet").classList.add("on"); }
 function askRollback(){ $("sheetin").innerHTML=`<h2>Go back to the previous version?</h2><p>Only if the new version has a problem. The app restarts in a few seconds.</p>
   <div class="row"><button class="btn red" onclick="closeSheet();updDo({rollback:true},'Going back – restarting…')">Yes, go back</button><button class="btn" onclick="closeSheet()">Cancel</button></div>`; $("sheet").classList.add("on"); }
-function restartWait(){ const was=st.app; let n=0; const iv=setInterval(async()=>{ n++;
+function restartWait(){ const was=st.app; let n=0;
+  try{ sessionStorage.setItem("irb_back",JSON.stringify({tab:tab,sys:sysView,was:was})); }catch(e){}   // come back here after the restart
+  const iv=setInterval(async()=>{ n++;
     try{ const s=await (await fetch("/api/state",{cache:"no-store"})).json(); if(s.app!==was||n>40){ clearInterval(iv); location.reload(); } }catch(e){} },1000); }
+function backAfterRestart(ok){
+  let b=null; try{ b=JSON.parse(sessionStorage.getItem("irb_back")||"null"); sessionStorage.removeItem("irb_back"); }catch(e){}
+  if(!b||!ok.includes(b.tab)) return false;
+  sysView=b.sys||"setup"; goTab(b.tab);
+  setTimeout(()=>toast(st.app!==b.was?`Done – now running v${st.app} ✓`:`Still on v${st.app} – the update didn't finish. Try again, or see Troubleshooting.`,8000),300);
+  return true; }
 const a_ssid=()=>(($("wssid")||{}).value??((st.access||{}).net||{}).ssid)||"", a_pass=()=>(($("wpass")||{}).value??((st.access||{}).net||{}).pass)||"",
   a_addr=()=>(($("waddr")||{}).value??((st.access||{}).net||{}).addr)||"";
 function battWord(v){ return v<23?["Swap the battery now","bad"]:v<24?["Charge now","bad"]:v<24.6?["Charge soon","amb"]:["OK","good"]; }

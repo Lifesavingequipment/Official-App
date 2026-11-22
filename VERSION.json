@@ -1,9 +1,9 @@
 {
- "app": "1.8.2",
+ "app": "1.8.3",
  "pico": "3.4",
- "sha256": "603693626ba5e3ad1613df620d8848da12522ec006b260a56dfb800033c272da",
+ "sha256": "9be77e90ce92ee516090a42bcaca1c7344e2a5e4c2c7085673f29f95b224b03d",
  "pico_sha256": "fce09671a32d57107f5c2e47e2f0cb2f117d7ef8e89bcd6448a067aa525f8dab",
  "notes": [
-  "The timing box update waits until the app is up to date - app first, then the timing box"
+  "After an app update or going back, the screen returns to System \u203a Setup and says which version is now running"
  ]
 }
