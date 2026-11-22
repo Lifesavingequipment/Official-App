@@ -1,4 +1,7 @@
-# IRB Finish Timing - bench test v3.0
+# IRB Finish Timing - bench test v3.1
+# v3.1: lane lights: off between races; a press before the race flashes that light twice (button check);
+#       in the race a counted press turns it on for 10 s, a press while it's on flashes it off then on
+#       for another 10 s. GO: siren and all lights on together for 1 s. FINISH: lights off, 2 beeps.
 # v3.0: "minleg N" command - the app shortens the gap between a crew's presses for practice (1 s),
 #       and puts it back to 15 s for racing. Always starts at 15 s.
 # v2.9: a press only counts if its pin is still open 2 ms after the edge - short electrical
@@ -72,6 +75,8 @@ REARM_MS = 200                # SET/GO must be steadily released before another 
 FINISH_HOLD_MS = 1000         # FINISH must be held this long
 MAX_RACE_MS = 1_200_000       # auto-finish after 20 min if FINISH is forgotten
 HIT_BLINK_MS = 400            # lane light blinks off this long on each hit
+LIGHT_HOLD_MS = 10_000        # in a race, a lane light stays on this long after a press
+CHECK_FLASH_MS = 250          # before a race, a press flashes the light twice (on/off this long)
 FAULT_CHECK_MS = 500
 RACE_FAULT_MS = 2000          # lane input held open this long during a race = cable fault
 TEST_TIMEOUT_MS = 300_000     # button test switches itself off after 5 min
@@ -143,8 +148,46 @@ def fmt(us):
 
 
 def set_lights(v):
+    light_seq.clear()                 # anything switched on purpose cancels the lane timers
     for l in lights.values():
         l.value(v)
+
+
+light_seq = {}      # lane -> [(at_ms, 0/1), ...] steps still to do (non-blocking light timers)
+
+
+def light_plan(lane, steps):
+    # steps: [(ms from now, 0/1), ...] - the first one usually at 0
+    now = time.ticks_ms()
+    light_seq[lane] = [(time.ticks_add(now, ms), v) for ms, v in steps]
+    run_lights(now)
+
+
+def run_lights(now):
+    for lane in list(light_seq):
+        seq = light_seq[lane]
+        while seq and time.ticks_diff(now, seq[0][0]) >= 0:
+            lights[lane].value(seq.pop(0)[1])
+        if not seq:
+            del light_seq[lane]
+
+
+def lane_light_hit(lane):
+    # in a race: on for 10 s; if it's already on, flash off then on for another 10 s
+    if lane not in lights:
+        return
+    if lights[lane].value():
+        light_plan(lane, [(0, 0), (HIT_BLINK_MS, 1), (HIT_BLINK_MS + LIGHT_HOLD_MS, 0)])
+    else:
+        light_plan(lane, [(0, 1), (LIGHT_HOLD_MS, 0)])
+
+
+def lane_light_check(lane):
+    # before or after a race: two quick flashes to show the button and light work
+    if lane not in lights or lane in light_seq:
+        return
+    f = CHECK_FLASH_MS
+    light_plan(lane, [(0, 1), (f, 0), (2 * f, 1), (3 * f, 0)])
 
 
 def beep(on_ms, off_ms, count, flash=False):
@@ -160,12 +203,11 @@ def beep(on_ms, off_ms, count, flash=False):
 
 
 def go_signal():
-    # long blast + all lights flash once (camera sync)
+    # siren and every lane light on together for 1 s (also the camera sync), then off
     siren.on()
     set_lights(1)
-    time.sleep_ms(200)
+    time.sleep_ms(1000)
     set_lights(0)
-    time.sleep_ms(800)
     siren.off()
 
 
@@ -263,7 +305,7 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "3.0", "lanes": sorted(LANE_PINS), "race": race_no,
+    emit({"ev": "hello", "fw": "3.1", "lanes": sorted(LANE_PINS), "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
           "clock": True, "beat": True, "batt": BATT_ENABLED})
     emit({"ev": "test", "on": test_mode})
@@ -407,7 +449,6 @@ armed_at_ms = 0
 go_at_ms = 0
 t0 = 0
 hits = {lane: [] for lane in LANE_PINS}
-blink_until = {}
 legs_set = 0        # officials' leg count (0 = automatic)
 race_no = hist_last_race()   # carries on from the saved history
 version = 0         # officials' change count for the current race
@@ -431,9 +472,8 @@ finish_fired = False
 
 
 def reset_race():
-    global hits, blink_until, adj, legs_set, ties, race_faults, held_since
+    global hits, adj, legs_set, ties, race_faults, held_since
     hits = {lane: [] for lane in LANE_PINS}
-    blink_until = {}
     adj = {}
     ties = set()
     legs_set = 0
@@ -609,9 +649,8 @@ def test_input(name, lane=None, t=None):
     test_last[name] = now
     print("TEST: %s OK" % name)
     emit({"ev": "input", "name": name})
-    if lane in lights:
-        lights[lane].off()
-        blink_until[lane] = time.ticks_add(now, HIT_BLINK_MS)
+    if lane in lights:                     # test: lights stay on; a press blinks it off
+        light_plan(lane, [(0, 0), (HIT_BLINK_MS, 1)])
 
 
 def set_clock(w):
@@ -829,14 +868,14 @@ def handle_go(t, app=False):
 
 def handle_lane(lane, t):
     if state != "RACING":
+        lane_light_check(lane)            # before / after a race: flash to show it works
         return
     prev = hits[lane][-1] if hits[lane] else t0
     if t - prev < MIN_LEG_US:
         # under 15 s since last hit / GO: not counted.
-        # If this crew already has a counted hit, blink again as confirmation.
+        # If this crew already has a counted hit, flash again as confirmation.
         if hits[lane]:
-            lights[lane].off()
-            blink_until[lane] = time.ticks_add(time.ticks_ms(), HIT_BLINK_MS)
+            lane_light_hit(lane)
         return
     hits[lane].append(t)
     n = len(hits[lane])
@@ -847,9 +886,8 @@ def handle_lane(lane, t):
     else:
         leg = t - prev
         print("Lane %d hit %d   %s s   (leg %d: %s s)" % (lane, n, fmt(el), n, fmt(leg)))
-    # light: blink off briefly, then stay on, so the crew sees each hit register
-    lights[lane].off()
-    blink_until[lane] = time.ticks_add(time.ticks_ms(), HIT_BLINK_MS)
+    # light: on for 10 s (or flash off/on if it's still on), so the crew sees each hit register
+    lane_light_hit(lane)
 
 
 def finish_race(reason="Race finished by official."):
@@ -858,9 +896,8 @@ def finish_race(reason="Race finished by official."):
         last_fault_report = None      # report the wiring state again after every race
         state = "DONE"
         led.off()
-        for lane in list(blink_until):
-            lights[lane].on()
-        blink_until.clear()
+        set_lights(0)                     # race over: lights off, two beeps
+        beep(200, 200, 2)
         race_no += 1
         version = 0
         end_reason = "auto-finished 20 min" if "auto" in reason else "finished by official"
@@ -884,7 +921,7 @@ def finish_race(reason="Race finished by official."):
 poller = uselect.poll()
 poller.register(sys.stdin, uselect.POLLIN)
 
-print("IRB finish timing - bench test v3.0 (legs, adjustments, history, app link, test, ties, clock)")
+print("IRB finish timing - bench test v3.1 (legs, adjustments, history, app link, test, ties, clock)")
 print("History: last saved race %d. Type log to see files." % race_no)
 emit_all()
 print("Board:", "NPN (hit = pin goes HIGH)" if BOARD_NPN else "PNP (hit = pin goes LOW)")
@@ -973,11 +1010,9 @@ while True:
         finish_down_since = None
         finish_fired = False
 
-    # 4. lane light blinks back on after a hit
-    for lane in list(blink_until):
-        if time.ticks_diff(now, blink_until[lane]) >= 0:
-            lights[lane].on()
-            del blink_until[lane]
+    # 4. lane light timers (10 s holds, flashes)
+    if light_seq:
+        run_lights(now)
 
     # 5. timeouts
     if state == "ARMED" and time.ticks_diff(now, armed_at_ms) > SET_TIMEOUT_MS:

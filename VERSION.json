@@ -1,9 +1,8 @@
 {
  "app": "1.6.6",
- "pico": "3.0",
+ "pico": "3.1",
  "sha256": "78814b39d0492ca1fbc112b9002d972dfd87c72a9114fee43176a10267083d75",
  "notes": [
-  "Practice mode: crews can press again after 1 second (needs timing box program v3.0)",
-  "Timing box program v3.0: the app can shorten the gap between a crew's presses for practice"
+  "Timing box program v3.1: lights off between races (a press flashes twice to check it), on for 10 s after a press in a race, GO = siren and lights together 1 s, FINISH = lights off and 2 beeps"
  ]
 }
