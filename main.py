@@ -1,4 +1,5 @@
-# IRB Finish Timing - bench test v3.1
+# IRB Finish Timing - bench test v3.2
+# v3.2: lane lights ignore button bounce (one light action per press, 1 s apart) and flash slower.
 # v3.1: lane lights: off between races; a press before the race flashes that light twice (button check);
 #       in the race a counted press turns it on for 10 s, a press while it's on flashes it off then on
 #       for another 10 s. GO: siren and all lights on together for 1 s. FINISH: lights off, 2 beeps.
@@ -76,7 +77,9 @@ FINISH_HOLD_MS = 1000         # FINISH must be held this long
 MAX_RACE_MS = 1_200_000       # auto-finish after 20 min if FINISH is forgotten
 HIT_BLINK_MS = 400            # lane light blinks off this long on each hit
 LIGHT_HOLD_MS = 10_000        # in a race, a lane light stays on this long after a press
-CHECK_FLASH_MS = 250          # before a race, a press flashes the light twice (on/off this long)
+CHECK_FLASH_MS = 500          # before a race, a press flashes the light twice (on/off this long)
+FLASH_OFF_MS = 700            # in a race, a press while the light is on: off this long, then on again
+LIGHT_GAP_MS = 1000           # light ignores further edges from the same lane for this long (button bounce)
 FAULT_CHECK_MS = 500
 RACE_FAULT_MS = 2000          # lane input held open this long during a race = cable fault
 TEST_TIMEOUT_MS = 300_000     # button test switches itself off after 5 min
@@ -154,6 +157,16 @@ def set_lights(v):
 
 
 light_seq = {}      # lane -> [(at_ms, 0/1), ...] steps still to do (non-blocking light timers)
+light_last = {}     # lane -> when its light last reacted to a press
+
+
+def light_bounce(lane):
+    # True if this edge is the same press bouncing (or a press too soon after the last one)
+    now = time.ticks_ms()
+    if lane in light_last and time.ticks_diff(now, light_last[lane]) < LIGHT_GAP_MS:
+        return True
+    light_last[lane] = now
+    return False
 
 
 def light_plan(lane, steps):
@@ -174,17 +187,17 @@ def run_lights(now):
 
 def lane_light_hit(lane):
     # in a race: on for 10 s; if it's already on, flash off then on for another 10 s
-    if lane not in lights:
+    if lane not in lights or light_bounce(lane):
         return
     if lights[lane].value():
-        light_plan(lane, [(0, 0), (HIT_BLINK_MS, 1), (HIT_BLINK_MS + LIGHT_HOLD_MS, 0)])
+        light_plan(lane, [(0, 0), (FLASH_OFF_MS, 1), (FLASH_OFF_MS + LIGHT_HOLD_MS, 0)])
     else:
         light_plan(lane, [(0, 1), (LIGHT_HOLD_MS, 0)])
 
 
 def lane_light_check(lane):
     # before or after a race: two quick flashes to show the button and light work
-    if lane not in lights or lane in light_seq:
+    if lane not in lights or lane in light_seq or light_bounce(lane):
         return
     f = CHECK_FLASH_MS
     light_plan(lane, [(0, 1), (f, 0), (2 * f, 1), (3 * f, 0)])
@@ -305,7 +318,7 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "3.1", "lanes": sorted(LANE_PINS), "race": race_no,
+    emit({"ev": "hello", "fw": "3.2", "lanes": sorted(LANE_PINS), "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
           "clock": True, "beat": True, "batt": BATT_ENABLED})
     emit({"ev": "test", "on": test_mode})
@@ -921,7 +934,7 @@ def finish_race(reason="Race finished by official."):
 poller = uselect.poll()
 poller.register(sys.stdin, uselect.POLLIN)
 
-print("IRB finish timing - bench test v3.1 (legs, adjustments, history, app link, test, ties, clock)")
+print("IRB finish timing - bench test v3.2 (legs, adjustments, history, app link, test, ties, clock)")
 print("History: last saved race %d. Type log to see files." % race_no)
 emit_all()
 print("Board:", "NPN (hit = pin goes HIGH)" if BOARD_NPN else "PNP (hit = pin goes LOW)")
