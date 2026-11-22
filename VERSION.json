@@ -1,11 +1,12 @@
 {
- "app": "1.7.0",
+ "app": "1.7.1",
  "pico": "3.2",
- "sha256": "2f7fe6b0e1135f4bb730fcccdb18de3bc5ea91dabcc6bfef339ac27c304a6076",
+ "sha256": "0a2ed050b313744cf1f7926a935c74be12234de5aff1b59c6527c0f2fe6e6457",
  "pico_sha256": "137f4de896e49cb3b2be07af39bb77dd355126ceddce813c8c1183488bab66eb",
  "notes": [
-  "Update the timing box program from the app: System \u203a Setup \u203a Timing box program (no Thonny or laptop needed)",
-  "If a new timing box program doesn't start, the old one is put back by itself; Go back button too",
-  "Officials list fits on phones (names no longer squashed)"
+  "Timing desk PIN phones and tablets stay logged in overnight - only Close event, New event or a new PIN logs them out",
+  "The phone that presses Close event, New event or changes the PIN stays logged in",
+  "6 wrong timing desk PINs in 10 minutes blocks more tries for a while",
+  "On the Pi, Setup warns if no timing desk PIN is set"
  ]
 }

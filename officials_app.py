@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -97,6 +97,7 @@ PINS = {"master": ""}     # optional PIN for a backup Master phone ("" = off)
 officials = {}            # device token -> {"name", "role", "since", "seen"}
 requests_ = {}            # device token -> {"name", "code", "at"} waiting for the Master
 regulars = {}             # lower-case name -> {"name", "role"}: officials the Master remembers
+PIN_TRIES = []                               # times of recent wrong timing desk PINs
 NET = {"ssid": "", "pass": "", "addr": ""}   # Wi-Fi for the join card; addr overrides the app address
 access_day = [""]         # the day the approvals belong to
 REQUEST_MINS = 10
@@ -191,12 +192,24 @@ def today():
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def clear_officials(keep=None, pin_phones=False):
+    # end approvals; keep the timing desk phone doing it (and, overnight, every phone that used the PIN)
+    for k in list(officials):
+        o = officials[k]
+        if k == keep and o.get("role") == "master":
+            continue
+        if pin_phones and o.get("role") == "master" and PINS["master"]:
+            continue
+        del officials[k]
+    requests_.clear()
+
+
 def access_check():
-    # overnight, every approval ends (in case nobody pressed Close event)
+    # overnight, approvals end (in case nobody pressed Close event) - but timing desk phones that used the
+    # PIN stay, so a sealed-up Pi never needs opening just because the date changed
     if access_day[0] != today():
         if officials or requests_:
-            officials.clear()
-            requests_.clear()
+            clear_officials(pin_phones=True)
             save_settings()
         access_day[0] = today()
     for k in [k for k, v in requests_.items() if time.time() - v["at"] > REQUEST_MINS * 60]:
@@ -274,8 +287,7 @@ def officials_action(d):
     elif "forget" in d:
         regulars.pop(str(d["forget"]).lower(), None)
     elif d.get("close"):
-        officials.clear()
-        requests_.clear()
+        clear_officials(keep=d.get("_tok"))
     elif "net" in d:
         n = d["net"] or {}
         ssid, pw, addr = (str(n.get(k, "")).strip()[:64] for k in ("ssid", "pass", "addr"))
@@ -293,8 +305,8 @@ def officials_action(d):
         if v and not re.match(r"^\d{4,8}$", v):
             return "Use 4 to 8 digits, or leave empty to turn it off"
         PINS["master"] = v
-        for k in [k for k, o in officials.items() if o["role"] == "master"]:
-            del officials[k]
+        for k in [k for k, o in officials.items() if o["role"] == "master" and k != d.get("_tok")]:
+            del officials[k]                       # other phones need the new PIN; the one changing it stays
     else:
         return "not allowed"
     save_settings()
@@ -535,7 +547,7 @@ def new_event(d):
         history.clear(); flags.clear(); raced.clear(); checkin.clear(); sent.clear(); role_fix.clear()
         program.update({"mode": None, "items": [], "lh_sig": "", "ver": program.get("ver", 0) + 1, "manual": [], "seq": 0,
                         "last_block": [], "breaks": {}, "timing": {}})
-        officials.clear(); requests_.clear()
+        clear_officials(keep=d.get("_tok"))
         SETUP["done"] = False                       # the Get started steps show again for the next event
         BRAND["event"] = ""
         S.update(heat=None, race_heat=None, results=None, race_event=None, event="")
@@ -2854,6 +2866,7 @@ class H(BaseHTTPRequestHandler):
             data = {}
         cookie = lambda tok: {"Set-Cookie": "irb_token=%s; Max-Age=31536000; Path=/; SameSite=Strict" % tok}
         if self.path.startswith("/api/new_event"):        # Master: put today's event away and start clean
+            data["_tok"] = None if self.is_local() else self.token()
             r = new_event(data) if self.role() == "master" else "Only the timing desk can start a new event"
             self.send(200, json.dumps({"result": r}))
             return
@@ -2914,14 +2927,26 @@ class H(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/api/unlock"):         # backup Master phone, only if a Master PIN is set
             pin = str(data.get("pin", ""))
-            if not PINS["master"] or pin != PINS["master"]:
+            now = time.time()
+            with lock:
+                PIN_TRIES[:] = [t for t in PIN_TRIES if now - t < 600]
+                blocked = len(PIN_TRIES) >= 6
+            if blocked:                                     # 6 wrong in 10 min: stop guessing for a while
                 time.sleep(1)
-                self.send(200, json.dumps({"result": "Wrong PIN" if PINS["master"] else "The second timing desk phone PIN is turned off"}))
+                self.send(200, json.dumps({"result": "Too many wrong PINs - wait %d min and try again" % max(1, int((600 - (now - PIN_TRIES[0])) // 60) + 1)}))
+                return
+            if not PINS["master"] or pin != PINS["master"]:
+                if PINS["master"]:
+                    with lock:
+                        PIN_TRIES.append(now)
+                time.sleep(1)
+                self.send(200, json.dumps({"result": "Wrong PIN" if PINS["master"] else "The timing desk PIN is turned off"}))
                 return
             tok = self.token() or secrets.token_hex(12)
             with lock:
                 requests_.pop(tok, None)
-                officials[tok] = {"name": str(data.get("name") or "Timing desk phone")[:30], "role": "master", "since": time.time(), "seen": time.time()}
+                officials[tok] = {"name": str(data.get("name") or "Timing desk phone")[:30], "role": "master", "since": time.time(),
+                                  "seen": time.time(), "pin": True}
                 access_day[0] = today()
                 save_settings()
             self.send(200, json.dumps({"result": "ok", "role": "master"}), extra=cookie(tok))
@@ -2947,6 +2972,7 @@ class H(BaseHTTPRequestHandler):
             if self.role() != "master":
                 r = "Only the timing desk can do that"
             else:
+                data["_tok"] = None if self.is_local() else self.token()
                 with lock:
                     r = officials_action(data)
             self.send(200, json.dumps({"result": r}))
@@ -4924,14 +4950,14 @@ function openRequest(){
   $("sheetin").innerHTML=`<h2>Officials</h2><p class="mute">Type your name and tap Request access. A code shows on your phone – show it at the timing desk.</p>
     <input type="text" id="rqname" value="${esc(myName())}" placeholder="Your name" autocomplete="name">
     <div class="row"><button class="btn pri" id="rqgo">Request access</button><button class="btn" onclick="closeSheet()">Cancel</button></div><p class="mute" id="rqmsg"></p>
-    <p class="mute" style="font-size:14px;margin-bottom:0">Second timing desk phone with a PIN? <a href="#" onclick="openUnlock();return false">Use the PIN</a></p>`;
+    <p class="mute" style="font-size:14px;margin-bottom:0">Running the timing desk? <a href="#" onclick="openUnlock();return false">Use the timing desk PIN</a></p>`;
   $("sheet").classList.add("on"); $("rqname").focus();
   $("rqgo").onclick=async()=>{ const n=$("rqname").value.trim(); try{ const j=await (await fetch("/api/request",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:n})})).json();
     if(j.result!=="ok"){ $("rqmsg").textContent=j.result; return; } setMyName(n); closeSheet(); location.hash=""; if(st){ st.me={name:n,code:j.code}; } wasWaiting=true; lastKey=""; render(); }
     catch(e){ $("rqmsg").textContent="No link to the timing computer"; } };
 }
 function openUnlock(){
-  $("sheetin").innerHTML=`<h2>Second timing desk phone</h2><p class="mute">Only if the timing desk has turned on a second timing desk phone PIN. Everyone else: use Officials and ask the timing desk.</p>
+  $("sheetin").innerHTML=`<h2>Timing desk PIN</h2><p class="mute">For the person running the timing desk. Everyone else: use Officials and ask the timing desk.</p>
     <input type="text" id="pinin" inputmode="numeric" autocomplete="off" placeholder="PIN">
     <div class="row"><button class="btn pri" id="pingo">Log in</button><button class="btn" onclick="closeSheet()">Close</button></div><p class="mute" id="pinmsg"></p>
 `;
@@ -5037,7 +5063,7 @@ async function ownDo(d,ok){ try{ const j=await (await fetch("/api/owner",{method
 function ownerSheet(kind){
   sheet(kind==="open"?`<h2>Owner unlock</h2><p class="mute">For the kit owner. Unlocks updates and advanced settings for 20 minutes.</p>
       <input type="password" id="ownpin" inputmode="numeric" autocomplete="off" placeholder="Owner PIN"><div class="row"><button class="btn pri" onclick="ownDo({pin:$('ownpin').value},'Unlocked for 20 minutes')">Unlock</button><button class="btn" onclick="closeSheet()">Cancel</button></div><p class="bad" id="ownmsg"></p>`
-    :`<h2>Owner PIN</h2><p class="mute">With a PIN set, only the owner can install updates, go back a version, change the app address or second timing desk phone, edit the hire kit list or restart the timing box. Everything else works as normal.</p>
+    :`<h2>Owner PIN</h2><p class="mute">With a PIN set, only the owner can install updates, go back a version, change the app address or timing desk PIN, edit the hire kit list or restart the timing box. Everything else works as normal.</p>
       <input type="password" id="ownpin" inputmode="numeric" autocomplete="off" placeholder="4 to 8 digits (empty = lock off)"><div class="row"><button class="btn pri" onclick="ownDo({set_pin:$('ownpin').value},$('ownpin').value?'Owner PIN saved':'Owner lock off')">Save</button><button class="btn" onclick="closeSheet()">Cancel</button></div><p class="bad" id="ownmsg"></p>`);
   setTimeout(()=>{ const i=$("ownpin"); if(i) i.focus(); },50); }
 async function keyDo(v){ try{ const j=await (await fetch("/api/updkey",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key:v})})).json();
@@ -5146,6 +5172,8 @@ function renderSystem(){
         +(u.prev?`<button class="btn" ${racing||updBusy?"disabled":""} onclick="askRollback()">Go back${u.prev!=="earlier"?" to v"+esc(u.prev):""}</button>`:""), u.newer?"hi":""); }
     L+=row("LiveHeats draw", st.draw?`<b>${esc(st.draw.name)}</b><span class="mute"> · ${st.draw.divisions} divisions · ${st.draw.heats} heats</span>`:`<span class="mute">None loaded – timing works without one</span>`,
       `<button class="btn" onclick="openLoad()">${st.draw?"Reload":"Load"}</button>`);
+    if(master&&st.power&&st.power.pi&&st.access&&!st.access.master_pin) L+=row("Timing desk PIN", `<b class="bad">Not set</b><span class="mute"> – without it, nobody can run the timing desk from a phone or tablet while the Pi is in its box</span>`,
+      ownLocked?`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`:`<button class="btn pri" onclick="advOpen=true;lastKey='';render();setTimeout(()=>{const e=$('mpin');if(e){e.scrollIntoView({block:'center'});e.focus();}},50)">Set PIN</button>`,"hi");
     if(master&&st.wifi&&st.wifi.on) L+=wifiRow(row,racing);
     if(master&&st.access&&st.wifi&&st.wifi.on&&st.wifi.mode==="hotspot") L+=row("Wi-Fi for join card", `<span class="mute">Filled in by itself – the <b>${esc(st.wifi.hs_ssid)}</b> hotspot name and password</span>`, "");
     else if(master&&st.access) L+=row("Wi-Fi for join card", `<div class="sin"><input type="text" id="wssid" value="${esc(a.net.ssid)}" placeholder="Wi-Fi name">
@@ -5173,16 +5201,16 @@ function renderSystem(){
       `<button class="btn red" ${racing?"disabled":""} onclick="askNewEvent()">Start new event</button>`);
     if(master&&st.power&&st.power.on) L+=row("Power", `<span class="mute">Turn the timing ${st.power.pi?"Pi":"computer"} off safely – no need to open the case</span>`,
       `<button class="btn" ${racing?"disabled":""} onclick="powerAsk('restart')">Restart</button><button class="btn red" ${racing?"disabled":""} onclick="powerAsk('off')">Power off</button>`);
-    L+=row("Advanced", `<span class="mute">App address, second timing desk phone, your name, hire kit list, timing box messages, restart</span>`,
+    L+=row("Advanced", `<span class="mute">App address, timing desk PIN, your name, hire kit list, timing box messages, restart</span>`,
       `<button class="btn" onclick="advOpen=!advOpen;lastKey='';render()">${advOpen?"Hide ▴":"Show ▾"}</button>`);
     if(advOpen){
       let A="";
-      if(master&&st.access&&ownLocked) A+=row("App address, second timing desk phone, restart", `<span class="mute">Locked by the owner</span>`, `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
+      if(master&&st.access&&ownLocked) A+=row("App address, timing desk PIN, restart", `<span class="mute">Locked by the owner</span>`, `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
       if(master&&st.access&&!ownLocked) A+=row("App address", `<div class="sin"><input type="text" id="waddr" value="${esc(a.net.addr)}" placeholder="${esc(a.auto_url)}"></div>
           <div class="mute" style="font-size:13px">Empty = ${esc(a.auto_url)} · set it once the router gives this computer a fixed address</div>`,
           `<button class="btn" onclick="offDo({net:{ssid:a_ssid(),pass:a_pass(),addr:$('waddr').value}},'Saved')">Save</button>`)
-        +row("Second timing desk phone", `<div class="sin"><input type="text" id="mpin" inputmode="numeric" value="${esc(a.master_pin)}" placeholder="off" style="max-width:140px"></div>
-          <div class="mute" style="font-size:13px">A PIN that lets a phone do everything this computer can · empty = off</div>`, `<button class="btn" onclick="offDo({master_pin:$('mpin').value},'Saved')">Save</button>`)
+        +row("Timing desk PIN", `<div class="sin"><input type="text" id="mpin" inputmode="numeric" value="${esc(a.master_pin)}" placeholder="off" style="max-width:140px"></div>
+          <div class="mute" style="font-size:13px">Lets a phone or tablet do everything the ${st.power&&st.power.pi?"Pi's own screen":"timing computer"} can · stays unlocked until Close event, New event or a new PIN · empty = off</div>`, `<button class="btn" onclick="offDo({master_pin:$('mpin').value},'Saved')">Save</button>`)
         +(a.regulars&&a.regulars.length?row("Remembered officials", a.regulars.map(r=>`<span class="rchip">${esc(r.name)} · ${ROLE_NAME[r.role]}
           <button class="btn sm" onclick="offDo({forget:'${esc(r.name).replace(/'/g,"")}'},'Forgotten')">✕</button></span>`).join(" "),""):"");
       if(st.local||!st.me) A+=row("Your name", `<div class="sin"><input type="text" id="myname" value="${esc(myName())}" placeholder="Name or initials" style="max-width:200px"></div>`,
