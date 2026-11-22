@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.6.9"
+APP_VERSION = "1.7.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -159,6 +159,7 @@ def load_settings():
         regulars.update({k: v for k, v in (s.get("regulars") or {}).items() if isinstance(v, dict) and v.get("role") in ROLES})
         for k in NET:
             NET[k] = str((s.get("net") or {}).get(k, ""))[:64]
+        PICO_UPD["prev"] = str(s.get("pico_prev") or "")[:12]
         if isinstance(s.get("last_test"), dict):
             S["last_test"] = s["last_test"]
     except (OSError, ValueError, AttributeError):
@@ -181,7 +182,7 @@ def save_settings():
             json.dump({"event": S["event"], "heat": S["heat"], "master_pin": PINS["master"], "officials": officials,
                        "access_day": access_day[0], "regulars": regulars, "net": NET, "last_test": S["last_test"],
                        "setup_done": SETUP["done"], "brand": BRAND, "owner_pin": OWNER["pin"], "events": EVENTS[1:],
-                       "kit": KIT["text"], "upd_key": UPD_KEY["v"]}, fh)
+                       "kit": KIT["text"], "upd_key": UPD_KEY["v"], "pico_prev": PICO_UPD["prev"]}, fh)
     except OSError:
         pass                    # still used for this session
 
@@ -360,7 +361,7 @@ def set_role(d):
 
 
 # ---------------- updates (from GitHub, Master only) ----------------
-UPD = {"latest": None, "notes": [], "checked": None, "msg": "", "busy": False}
+UPD = {"latest": None, "notes": [], "checked": None, "msg": "", "busy": False, "pico": "", "pico_sha": ""}
 
 
 def vtuple(v):
@@ -416,7 +417,7 @@ def update_check():
         UPD.update(msg=upd_error(e), checked=datetime.now().strftime("%H:%M"))
         return UPD
     UPD.update(latest=str(info.get("app") or ""), notes=[str(n)[:200] for n in (info.get("notes") or [])][:12],
-               sha=str(info.get("sha256") or ""), pico=str(info.get("pico") or ""),
+               sha=str(info.get("sha256") or ""), pico=str(info.get("pico") or ""), pico_sha=str(info.get("pico_sha256") or ""),
                checked=datetime.now().strftime("%H:%M"), msg="")
     return UPD
 
@@ -848,6 +849,205 @@ def power_action(d):
             note("Couldn't power off: %s" % str(e)[:80])
     threading.Thread(target=go, daemon=True).start()
     return "ok"
+
+
+# ---------------- timing box (Pico) updates over its USB cable ----------------
+# The new program is sent through MicroPython's raw REPL as main_new.py, checked (size + SHA-256),
+# then swapped in with the old one kept as main_old.py. If the new one doesn't say hello within
+# 25 s, the old one is put back by itself.
+PICO_UPD = {"busy": "", "msg": "", "prev": "", "job": None, "wait": None}
+PICO_FILE_RE = re.compile(rb'"fw": "([^"]+)"')
+
+
+def pico_update_view():
+    latest, cur = UPD.get("pico") or "", S["fw"] or ""
+    return {"latest": latest, "current": cur, "busy": PICO_UPD["busy"], "msg": PICO_UPD["msg"], "prev": PICO_UPD["prev"],
+            "newer": bool(latest) and (not cur or vtuple(latest) > vtuple(cur))}
+
+
+def pico_update_action(d):
+    if (d.get("install") or d.get("rollback")) and not owner_ok():
+        return OWNER_MSG
+    if racing_now():
+        return "Not during a race - update between races or after racing"
+    if PICO_UPD["busy"] or PICO_UPD["job"] or PICO_UPD["wait"]:
+        return "Already updating the timing box"
+    with lock:
+        connected = bool(ser)
+    if not connected:
+        return "Timing box not connected"
+    if d.get("rollback"):
+        if not PICO_UPD["prev"]:
+            return "No earlier timing box program to go back to"
+        PICO_UPD.update(msg="", busy="Starting", job=("rollback", None, PICO_UPD["prev"]))
+        return "ok"
+    if not d.get("install"):
+        return "not allowed"
+    def get():
+        PICO_UPD.update(busy="Downloading", msg="")
+        try:
+            update_check()
+            if UPD["msg"]:
+                raise RuntimeError(UPD["msg"])
+            code = fetch_url("main.py", timeout=30)
+            m = PICO_FILE_RE.search(code)
+            if not m or m.group(1).decode() != UPD["pico"]:
+                raise RuntimeError("The download doesn't match v%s - try again in a minute" % UPD["pico"])
+            if UPD["pico_sha"] and hashlib.sha256(code).hexdigest() != UPD["pico_sha"]:
+                raise RuntimeError("The download was damaged - try again")
+            compile(code, "main.py", "exec")
+            PICO_UPD.update(busy="Starting", job=("install", code, UPD["pico"]))
+        except Exception as e:
+            PICO_UPD.update(busy="", msg="Timing box not updated: %s" % str(e)[:160])
+    threading.Thread(target=get, daemon=True).start()
+    return "ok"
+
+
+def rx_until(s, done, timeout):
+    data, end = b"", time.time() + timeout
+    while time.time() < end:
+        c = s.read(256)
+        if c:
+            data += c
+            if done(data):
+                return data
+    raise RuntimeError("the timing box stopped answering")
+
+
+def raw_enter(s):
+    s.write(b"\r\x03")              # stop main.py
+    time.sleep(0.1)
+    s.write(b"\x03")
+    time.sleep(0.4)
+    s.reset_input_buffer()
+    s.write(b"\r\x01")              # raw REPL: no echo, Ctrl-D runs what was sent
+    rx_until(s, lambda d: d.endswith(b"raw REPL; CTRL-B to exit\r\n>"), 5)
+
+
+def raw_exec(s, code, timeout=15):
+    b = code.encode()
+    for i in range(0, len(b), 256):     # small pieces with a breath between, like mpremote
+        s.write(b[i:i + 256])
+        time.sleep(0.01)
+    s.write(b"\x04")
+    r = rx_until(s, lambda d: d.count(b"\x04") >= 2 and d.endswith(b">"), timeout)
+    if not r.startswith(b"OK"):
+        raise RuntimeError("the timing box didn't take the program")
+    out, err = r[2:].split(b"\x04")[:2]
+    if err.strip():
+        raise RuntimeError(err.decode("utf-8", "ignore").strip().splitlines()[-1][:120])
+    return out.decode("utf-8", "ignore").strip()
+
+
+def raw_reboot(s):
+    s.write(b"\x02")                # back to the normal prompt...
+    time.sleep(0.3)
+    s.write(b"\x04")                # ...and a soft reboot, which runs main.py
+
+
+PICO_HASH = """import hashlib
+h=hashlib.sha256()
+f=open('main_new.py','rb')
+while 1:
+ d=f.read(512)
+ if not d:
+  break
+ h.update(d)
+f.close()
+print(binascii.hexlify(h.digest()).decode())"""
+PICO_SWAP = """try:
+ os.remove('main_old.py')
+except OSError:
+ pass
+try:
+ os.rename('main.py','main_old.py')
+except OSError:
+ pass
+os.rename('main_new.py','main.py')"""
+PICO_BACK = """import os
+os.stat('main_old.py')
+try:
+ os.remove('main_bad.py')
+except OSError:
+ pass
+os.rename('main.py','main_bad.py')
+os.rename('main_old.py','main.py')"""
+
+
+def pico_flash(s, job):
+    kind, code, ver = job
+    old = S["fw"] or ""
+    entered = False
+    try:
+        PICO_UPD["busy"] = "Stopping the timing program"
+        raw_enter(s)
+        entered = True
+        if kind == "install":
+            raw_exec(s, "import os, binascii\nf=open('main_new.py','wb')\nw=f.write\nb=binascii.a2b_base64")
+            step = 768
+            for i in range(0, len(code), step):
+                PICO_UPD["busy"] = "Sending %d%%" % (100 * i // len(code))
+                raw_exec(s, "w(b('%s'))" % base64.b64encode(code[i:i + step]).decode())
+            raw_exec(s, "f.close()")
+            PICO_UPD["busy"] = "Checking"
+            if raw_exec(s, "print(os.stat('main_new.py')[6])") != str(len(code)):
+                raise RuntimeError("the program arrived incomplete")
+            try:
+                h = raw_exec(s, PICO_HASH)
+            except RuntimeError:
+                h = ""                   # no hashlib on this firmware: the size check stands
+            if h and h != hashlib.sha256(code).hexdigest():
+                raise RuntimeError("the program arrived damaged")
+            raw_exec(s, PICO_SWAP)
+            note("Timing box: v%s copied in - restarting" % ver)
+        else:
+            raw_exec(s, PICO_BACK)
+            note("Timing box: going back to v%s - restarting" % ver)
+        with lock:
+            S["fw"] = None
+        PICO_UPD.update(busy="Restarting", wait=(kind, ver, old, time.time() + 25))
+        raw_reboot(s)
+    except Exception as e:
+        PICO_UPD.update(busy="", msg="Timing box not %s: %s. It's still on v%s." % (
+            "updated" if kind == "install" else "changed", str(e)[:120], old or "?"))
+        note(PICO_UPD["msg"])
+        if entered:
+            try:
+                raw_exec(s, "import os\ntry:\n os.remove('main_new.py')\nexcept OSError:\n pass", timeout=5)
+            except Exception:
+                pass
+        try:
+            raw_reboot(s)                # back to the program it already had
+        except Exception:
+            pass
+        if isinstance(e, (serial.SerialException, OSError)):
+            raise
+
+
+def pico_wait_check():
+    # after the restart: did the timing program come back on the expected version?
+    w = PICO_UPD["wait"]
+    if not w:
+        return
+    kind, ver, old, deadline = w
+    if S["fw"] and S["fw"] == ver:
+        PICO_UPD.update(wait=None, busy="", msg="")
+        PICO_UPD["prev"] = old if kind == "install" and old and old != ver else ""
+        save_settings()
+        note("Timing box now on v%s" % ver)
+        failed = PICO_UPD.pop("failed", "")
+        PICO_UPD["msg"] = ("Timing box updated to v%s" % ver if kind == "install" else
+                           "v%s didn't start, so the timing box is back on v%s" % (failed, ver) if failed else
+                           "Timing box back on v%s" % ver)
+    elif time.time() > deadline:
+        PICO_UPD["wait"] = None
+        if kind == "install" and old:
+            PICO_UPD.update(busy="Going back", msg="v%s didn't start - putting v%s back" % (ver, old),
+                            job=("rollback", None, old), failed=ver)
+            note(PICO_UPD["msg"])
+        else:
+            PICO_UPD.update(busy="", msg="The timing box didn't restart - unplug its USB cable, wait 3 seconds and plug it back in")
+            note(PICO_UPD["msg"])
 
 
 def zip_bytes(files, extra=None):
@@ -2334,6 +2534,17 @@ def serial_loop_once():
             s.write(b"j\r\n")           # ask for full status
             buf = b""
             while not STOPPING.is_set():
+                if PICO_UPD["job"]:             # timing box update: this thread owns the port meanwhile
+                    job, PICO_UPD["job"] = PICO_UPD["job"], None
+                    with lock:
+                        ser = None
+                    try:
+                        pico_flash(s, job)
+                    finally:
+                        buf = b""
+                        with lock:
+                            ser = s
+                pico_wait_check()
                 chunk = s.read(512)
                 if chunk:
                     buf += chunk
@@ -2484,6 +2695,7 @@ def snapshot(role="master", local=True, tok=None):
         d["brand"] = dict(BRAND, logo=int(os.path.getmtime(LOGO_FILE)) if os.path.exists(LOGO_FILE) else 0)
         if role == "master":
             d["update"] = update_view()
+            d["pico_upd"] = pico_update_view()
             d["past_events"] = past_events()
             d["setup_done"] = SETUP["done"]
             d["owner"] = {"set": bool(OWNER["pin"]), "open": bool(OWNER["pin"]) and owner_ok(),
@@ -2680,6 +2892,10 @@ class H(BaseHTTPRequestHandler):
                 with open(os.path.join(dst, "IRB_problem_report_%s.zip" % datetime.now().strftime("%Y-%m-%d_%H%M")), "wb") as fh:
                     fh.write(body)
             self.send(200, json.dumps({"result": "ok"}))
+            return
+        if self.path.startswith("/api/pico_update"):      # Master: send a new program to the timing box
+            r = pico_update_action(data) if self.role() == "master" else "Only the timing desk can update the timing box"
+            self.send(200, json.dumps({"result": r}))
             return
         if self.path.startswith("/api/update"):           # Master: check / install / roll back
             r = update_action(data) if self.role() == "master" else "Only the timing desk can update the program"
@@ -3220,7 +3436,7 @@ border:2px solid var(--line);border-radius:10px;padding:.25em .7em;line-height:1
  header.six .tab{padding:11px 2px}.tab{padding:12px 1px}
  .qbtn{width:38px;height:38px;font-size:18px}
  .mpick button small{font-size:13px}.rst i{font-size:13px;padding:2px 8px}
- .ofrow{flex-wrap:nowrap}.ofrow .nm{flex:1 1 0;min-width:0;overflow-wrap:anywhere}.ofrow .ofc{display:none}
+ .ofrow{flex-wrap:wrap;row-gap:4px}.ofrow .nm{flex:1 1 100%;min-width:0;overflow-wrap:anywhere}.ofrow .btn.sm{margin-left:auto}.ofrow .ofc{display:none}
  .mb .mbl>i,.mb .mbbig .mbl>i{font-size:13px}
 }
 /* tablets held upright: use the width – two columns where a phone has one */
@@ -3235,7 +3451,7 @@ border:2px solid var(--line);border-radius:10px;padding:.25em .7em;line-height:1
  .lane{padding:8px 10px}.lane .n{font-size:17px}.lane .t{font-size:17px}
  .mlanes{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:repeat(var(--mr,5),auto);grid-auto-flow:column;gap:0 10px}
  .mwrap{max-width:none}
- .ofrow{flex-wrap:nowrap}.ofrow .nm{flex:1 1 0;min-width:0;overflow-wrap:anywhere}.ofrow .ofc{display:none}
+ .ofrow{flex-wrap:wrap}.ofrow .nm{flex:1 1 8em;min-width:8em;overflow-wrap:anywhere}.ofrow .ofc{display:none}
 }
 /* laptops, tablets on their side, TVs */
 @media (min-width:900px){
@@ -3244,7 +3460,7 @@ border:2px solid var(--line);border-radius:10px;padding:.25em .7em;line-height:1
  .mlane{margin-top:5px}.mtap{min-height:46px;padding:4px 8px}.mscr{height:44px}
  .msend{margin-top:8px;padding:10px;min-height:48px}.mcard{padding:10px 12px}.mpick{padding-bottom:6px}
  .entt{columns:2;column-gap:28px}.entt .er{break-inside:avoid;padding:6px 2px}
- .ofrow{flex-wrap:nowrap;padding:5px 0}.ofrow .nm{flex:1 1 0;min-width:0;overflow-wrap:anywhere}
+ .ofrow{flex-wrap:wrap;padding:5px 0}.ofrow .nm{flex:1 1 8em;min-width:8em;overflow-wrap:anywhere}
  .ofrow .btn.sm{min-height:34px;padding:4px 10px;font-size:14px}
  .chk1{padding:6px 0}.chk1 .mk{flex-basis:26px;height:26px;font-size:14px}.chk1 .tx small{font-size:14px}
  .qrs{gap:12px}.syscols .card p{margin:6px 0}
@@ -4903,7 +5119,7 @@ function renderSystem(){
     ${master?`<button class="btn" onclick="printGuides()">Print role guides</button>`:""}<a class="btn" href="#fix">Troubleshooting</a></div></div>`;
   const batt=st.batt!=null?battCard():"";
   let h=setupOk?`<div class="sysnav"><button class="btn ${sysView==="today"?"pri":""}" onclick="sysView='today';lastKey='';render()">Today</button>
-    <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&st.update&&st.update.newer?' <span class="badge">1</span>':""}</button></div>`:"";
+    <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected))?' <span class="badge">1</span>':""}</button></div>`:"";
   let c="";
   if(sysView==="today"){
     if(master&&st.access) c=sysCols(dayCard(), officialsCard()+test+screens, joinCard()+batt);
@@ -4941,6 +5157,7 @@ function renderSystem(){
       `<button class="btn ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Turn off":"Turn on"}</button>`);
     L+=row("Timing box", st.connected?(st.faults.length?`<span class="bad">Wiring fault: ${esc(st.faults.join(", "))}</span>`
         :`<span class="ok">Connected · wiring OK</span>`):`<span class="bad">Not connected – plug its USB cable into this computer</span>`, "");
+    if(master&&st.pico_upd) L+=picoRow(row,racing,ownLocked);
     if(master&&st.firewall&&st.firewall.state!=null) L+=row("Phones", st.firewall.state?`<span class="ok">Windows lets phones connect</span>`:`<span class="bad">Windows is blocking phones${st.firewall.busy?" – answer Yes on the Windows prompt":""}</span>`,
       st.firewall.state||st.firewall.busy?"":`<button class="btn pri" onclick="post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))">Allow phones</button>`);
     L+=row("Events", `<span class="mute">${st.events.filter(e=>e.id).map(e=>esc(e.name)+" "+e.legs).join(" · ")}</span>`, master?`<button class="btn" onclick="eventsSheet()">Edit</button>`:"");
@@ -4989,6 +5206,23 @@ function renderSystem(){
     if((cnt[n]||0)>(prevCounts[n]||0)){ d.classList.remove("flash"); void d.offsetWidth; d.classList.add("flash"); } });
   prevCounts=Object.assign({},cnt);
 }
+// ---------- timing box program updates over USB ----------
+function picoRow(row,racing,ownLocked){ const p=st.pico_upd, busy=!!p.busy, dis=racing||busy||!st.connected?"disabled":"";
+  const stt=busy?`<b class="okb">Updating the timing box – ${esc(p.busy)}…</b><div class="mute" style="font-size:13px">Don't unplug it. Takes about a minute.</div>`
+    :!st.connected?`<span class="mute">Connect the timing box to check its program</span>`
+    :p.newer?`<b class="okb">New timing box program v${esc(p.latest)}</b><span class="mute"> · now v${esc(p.current||"?")}</span>`
+    :`v${esc(p.current||"?")}${p.latest?` · <span class="ok">up to date</span>`:""}`;
+  const msg=p.msg?`<div class="${/^Timing box (updated to|back on)/.test(p.msg)?"ok":"warn"}" style="margin-top:4px">${esc(p.msg)}</div>`:"";
+  let b="";
+  if(ownLocked&&(p.newer||p.prev)) b=`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`;
+  else { if(p.newer&&st.connected) b+=`<button class="btn pri" ${dis} onclick="picoAsk()">Update</button>`;
+    if(p.prev&&st.connected) b+=`<button class="btn" ${dis} onclick="picoBack()">Go back to v${esc(p.prev)}</button>`; }
+  return row("Timing box program", stt+msg+(racing&&p.newer?`<div class="mute" style="font-size:13px">Update after the race</div>`:""), b, p.newer&&!busy?"hi":""); }
+function picoAsk(){ const p=st.pico_upd;
+  askYes(`Update the timing box to v${p.latest}? It takes about a minute and the buttons don't work meanwhile. Don't unplug it. If the new program doesn't start, the old one goes back by itself.`,
+    ()=>post("/api/pico_update",{install:true}),"Yes, update",false); }
+function picoBack(){ const p=st.pico_upd;
+  askYes(`Put timing box program v${p.prev} back? Takes about a minute.`,()=>post("/api/pico_update",{rollback:true}),"Yes, go back"); }
 // ---------- Raspberry Pi: home Wi-Fi / timing hotspot switch, power off ----------
 function wifiRow(row,racing){ const w=st.wifi, dis=racing||w.busy?"disabled":"";
   const stt=w.busy?`<b class="okb">Switching to ${esc(w.busy)}…</b><span class="mute"> · phones will drop off</span>`
@@ -5027,7 +5261,7 @@ function pageKey(){
   else if(tab==="history") k.push(hist,queue,enterAsk);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
-  else k.push(sysView,dayOpen,updBusy,advOpen,ltOpen,st.upd_key,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
+  else k.push(sysView,dayOpen,updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
   return JSON.stringify(k);
 }
 function brandBar(){ const b=(st&&st.brand)||{}; if(!b.club&&!b.event&&!b.logo) return "";

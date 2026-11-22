@@ -1,10 +1,11 @@
 {
- "app": "1.6.9",
+ "app": "1.7.0",
  "pico": "3.2",
- "sha256": "a026bb13ab58696f3ac12cf264da7226bc03056832fa546c192b43cb7046d09e",
+ "sha256": "2f7fe6b0e1135f4bb730fcccdb18de3bc5ea91dabcc6bfef339ac27c304a6076",
+ "pico_sha256": "137f4de896e49cb3b2be07af39bb77dd355126ceddce813c8c1183488bab66eb",
  "notes": [
-  "Raspberry Pi: switch between the timing hotspot and home Wi-Fi from System \u203a Setup \u203a Wi-Fi",
-  "Raspberry Pi: power off or restart safely from System \u203a Setup \u203a Power (two steps)",
-  "On the Pi's hotspot the join card fills in the Wi-Fi name, password and address by itself"
+  "Update the timing box program from the app: System \u203a Setup \u203a Timing box program (no Thonny or laptop needed)",
+  "If a new timing box program doesn't start, the old one is put back by itself; Go back button too",
+  "Officials list fits on phones (names no longer squashed)"
  ]
 }
