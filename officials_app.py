@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.7.3"
+APP_VERSION = "1.8.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -98,6 +98,10 @@ officials = {}            # device token -> {"name", "role", "since", "seen"}
 requests_ = {}            # device token -> {"name", "code", "at"} waiting for the Master
 regulars = {}             # lower-case name -> {"name", "role"}: officials the Master remembers
 PIN_TRIES = []                               # times of recent wrong timing desk PINs
+CLUB_CODES = {}                              # club name -> 4-digit code a team manager unlocks changes with (this event)
+COACHES = {}                                 # device token -> {"club", "since", "seen"}: team managers who used the code
+CODE_TRIES = {}                              # device address -> times of recent wrong club codes
+ROLE_LOG = []                                # crew role changes: who changed what, when
 NET = {"ssid": "", "pass": "", "addr": ""}   # Wi-Fi for the join card; addr overrides the app address
 access_day = [""]         # the day the approvals belong to
 REQUEST_MINS = 10
@@ -157,6 +161,12 @@ def load_settings():
             access_day[0] = s["access_day"]
             officials.update({k: v for k, v in (s.get("officials") or {}).items()
                               if isinstance(v, dict) and v.get("role") in ROLES})
+            COACHES.update({k: v for k, v in (s.get("coaches") or {}).items() if isinstance(v, dict) and v.get("club")})
+        elif PINS["master"] or re.match(r"^\d{4,8}$", str(s.get("owner_pin", ""))):
+            # a new day (the Pi was off overnight): timing desk phones that used the PIN stay logged in
+            officials.update({k: v for k, v in (s.get("officials") or {}).items()
+                              if isinstance(v, dict) and v.get("role") == "master"})
+        CLUB_CODES.update({str(k)[:80]: str(v) for k, v in (s.get("club_codes") or {}).items() if re.match(r"^\d{4}$", str(v))})
         regulars.update({k: v for k, v in (s.get("regulars") or {}).items() if isinstance(v, dict) and v.get("role") in ROLES})
         for k in NET:
             NET[k] = str((s.get("net") or {}).get(k, ""))[:64]
@@ -183,7 +193,8 @@ def save_settings():
             json.dump({"event": S["event"], "heat": S["heat"], "master_pin": PINS["master"], "officials": officials,
                        "access_day": access_day[0], "regulars": regulars, "net": NET, "last_test": S["last_test"],
                        "setup_done": SETUP["done"], "brand": BRAND, "owner_pin": OWNER["pin"], "events": EVENTS[1:],
-                       "kit": KIT["text"], "upd_key": UPD_KEY["v"], "pico_prev": PICO_UPD["prev"]}, fh)
+                       "kit": KIT["text"], "upd_key": UPD_KEY["v"], "pico_prev": PICO_UPD["prev"],
+                       "club_codes": CLUB_CODES, "coaches": COACHES}, fh)
     except OSError:
         pass                    # still used for this session
 
@@ -218,6 +229,7 @@ def clear_officials(keep=None, pin_phones=False):
             continue
         del officials[k]
     requests_.clear()
+    COACHES.clear()                          # team managers unlock again with the club code
 
 
 def access_check():
@@ -366,18 +378,52 @@ def load_roles():
         pass
 
 
-def set_role(d):
+ROLE_LOG_FILE = os.path.join(DATA, "role_changes.json")
+try:
+    with open(ROLE_LOG_FILE, encoding="utf-8") as _fh:
+        ROLE_LOG.extend(x for x in json.load(_fh) if isinstance(x, dict))
+except (OSError, ValueError):
+    pass
+
+
+def crew_places(crew, person):
+    # every heat/lane where this crew races with this person in it
+    out = []
+    for dv in all_divisions():
+        for h in dv["heats"]:
+            hi = heat_info(dv, h)
+            for lane, name in (hi.get("crews") or {}).items():
+                if name == crew and any(m and m[0] == person for m in (hi["members"].get(str(lane)) or [])):
+                    lh = next((m[1] for m in hi["members"][str(lane)] if m[0] == person), "") or ""
+                    out.append((h["id"], hi, str(lane), lh))
+    return out
+
+
+def set_role(d, official=False, club="", who=""):
     crew = re.sub(r"\s+", " ", str(d.get("crew") or "")).strip()[:80]
     person = re.sub(r"\s+", " ", str(d.get("person") or "")).strip()[:60]
     role = str(d.get("role") or "")
     if not crew or not person or role not in ("Driver", "Crew", "Patient", ""):
         return "not allowed"
+    if not official and not club:
+        return "Unlock your club first: tap Unlock changes and enter your club code from the timing desk"
     with lock:
+        places = crew_places(crew, person)
+        if not places:
+            return "%s isn't in %s" % (person, crew)
+        if not official and not any(club_match(club, hi, lane) for _, hi, lane, _ in places):
+            return "Only %s's team manager can change %s" % (crew, crew)
+        on_water = [hid for hid, _, _, _ in places if hid in sent and hid not in raced]
+        if on_water and not official:
+            return "Patients for %s are already on the water - ask the marshal or timing desk" % heat_name(on_water[0])
         k = (crew + "|" + person).lower()
-        if role:
+        lh = places[0][3]
+        old = role_fix.get(k) or lh
+        if role and role != lh:
             role_fix[k] = role
         else:
-            role_fix.pop(k, None)
+            role_fix.pop(k, None)                    # same as LiveHeats (or reset): nothing to keep
+        new_role = role_fix.get(k) or lh
         if len(role_fix) > 3000:
             return "Too many roles saved"
         try:
@@ -385,6 +431,68 @@ def set_role(d):
                 json.dump(role_fix, fh)
         except OSError:
             pass
+        if old != new_role:
+            ROLE_LOG.append({"t": datetime.now().strftime("%H:%M"), "who": who[:40], "crew": crew, "person": person,
+                             "old": old or "not set", "new": new_role or "not set", "lh": lh or "not set"})
+            del ROLE_LOG[:-300]
+            try:
+                with open(ROLE_LOG_FILE, "w", encoding="utf-8") as fh:
+                    json.dump(ROLE_LOG, fh)
+            except OSError:
+                pass
+    if old != new_role:
+        note("Role change: %s (%s) %s -> %s, by %s" % (person, crew, old or "not set", new_role or "not set", who))
+    return "ok"
+
+
+def club_code(club):
+    if club not in CLUB_CODES:
+        used = set(CLUB_CODES.values())
+        c = "%04d" % secrets.randbelow(10000)
+        while c in used or c == PINS["master"]:
+            c = "%04d" % secrets.randbelow(10000)
+        CLUB_CODES[club] = c
+    return CLUB_CODES[club]
+
+
+def clubs_view():
+    out, added = [], False
+    for c in club_list():
+        added = added or c not in CLUB_CODES
+        out.append({"club": c, "code": club_code(c), "coaches": sum(1 for v in COACHES.values() if v["club"] == c)})
+    if added:
+        save_settings()
+    return out
+
+
+def club_unlock(d, tok, ip):
+    now = time.time()
+    tries = [t for t in CODE_TRIES.get(ip, []) if now - t < 600]
+    if len(tries) >= 6:                          # 6 wrong in 10 min: stop guessing for a while
+        return "Too many wrong codes - wait %d min and try again" % max(1, int((600 - (now - tries[0])) // 60) + 1)
+    want = str(d.get("club") or "").strip().lower()
+    code = str(d.get("code") or "").strip()
+    club = next((c for c in club_list() if c.lower() == want), None)
+    if not club:
+        return "Pick your club first"
+    if not code or code != club_code(club):
+        CODE_TRIES[ip] = tries + [now]
+        return "Wrong code for %s - check with the timing desk" % club
+    COACHES[tok] = {"club": club, "since": now, "seen": now}
+    access_day[0] = access_day[0] or today()
+    save_settings()
+    return "ok"
+
+
+def club_action(d):
+    c = str(d.get("new_code") or "")
+    if c not in CLUB_CODES:
+        return "not allowed"
+    del CLUB_CODES[c]
+    for k in [k for k, v in COACHES.items() if v["club"] == c]:
+        del COACHES[k]                           # anyone with the old code has to unlock again
+    club_code(c)
+    save_settings()
     return "ok"
 
 
@@ -554,20 +662,21 @@ def new_event(d):
         if history:
             with open(os.path.join(folder, "results.csv"), "w", encoding="utf-8", newline="") as fh:
                 fh.write(history_csv())
-        for f in (HIST_FILE, FLAGS_FILE, PROGRAM_FILE, DRAW_FILE, ROLES_FILE):
+        for f in (HIST_FILE, FLAGS_FILE, PROGRAM_FILE, DRAW_FILE, ROLES_FILE, ROLE_LOG_FILE):
             if os.path.exists(f):
                 shutil.copy2(f, folder)
         for f in glob.glob(os.path.join(DATA, "pico_log_*.txt")):
             shutil.copy2(f, folder)
         # start clean (settings, Wi-Fi, templates and remembered officials stay)
         history.clear(); flags.clear(); raced.clear(); checkin.clear(); sent.clear(); role_fix.clear()
+        CLUB_CODES.clear(); ROLE_LOG.clear()        # new event: new club codes
         program.update({"mode": None, "items": [], "lh_sig": "", "ver": program.get("ver", 0) + 1, "manual": [], "seq": 0,
                         "last_block": [], "breaks": {}, "timing": {}})
         clear_officials(keep=d.get("_tok"))
         SETUP["done"] = False                       # the Get started steps show again for the next event
         BRAND["event"] = ""
         S.update(heat=None, race_heat=None, results=None, race_event=None, event="")
-        for f in (HIST_FILE, FLAGS_FILE, ROLES_FILE):
+        for f in (HIST_FILE, FLAGS_FILE, ROLES_FILE, ROLE_LOG_FILE):
             try:
                 os.remove(f)
             except OSError:
@@ -2722,6 +2831,10 @@ def snapshot(role="master", local=True, tok=None):
         d["can_start"] = role in ("master", "starter")
         d["local"] = local
         d["claimable"] = can_claim() and not local
+        d["coach"] = (COACHES.get(tok or "") or {}).get("club", "")
+        if official:
+            d["clubs"] = clubs_view()
+            d["role_log"] = ROLE_LOG[-40:]
         d.update(access_view(role, tok))
         d["role_fix"] = role_fix
         d["brand"] = dict(BRAND, logo=int(os.path.getmtime(LOGO_FILE)) if os.path.exists(LOGO_FILE) else 0)
@@ -2934,8 +3047,39 @@ class H(BaseHTTPRequestHandler):
             r = update_action(data) if self.role() == "master" else "Only the timing desk can update the program"
             self.send(200, json.dumps({"result": r}))
             return
-        if self.path.startswith("/api/role"):            # a team manager fills in a role LiveHeats didn't have
-            self.send(200, json.dumps({"result": set_role(data)}))
+        if self.path.startswith("/api/role"):            # crew roles: team managers (their club, with its code) and officials
+            rl, tok = self.role(), self.token()
+            with lock:
+                me = officials.get(tok or "", {})
+                co = COACHES.get(tok or "")
+                if co:
+                    co["seen"] = time.time()
+            official = rl in ("master", "admin")
+            who = ((me.get("name") or "Timing desk") + (" (Referee)" if rl == "admin" else " (timing desk)")) if official else \
+                  ("Team manager, " + co["club"] if co else "")
+            self.send(200, json.dumps({"result": set_role(data, official, co["club"] if co else "", who)}))
+            return
+        if self.path.startswith("/api/club_unlock"):     # a team manager enters their club code
+            tok = self.token() or secrets.token_hex(12)
+            with lock:
+                r = club_unlock(data, tok, self.client_address[0])
+            if r == "ok":
+                note("Team manager unlocked changes for %s" % COACHES[tok]["club"])
+            self.send(200, json.dumps({"result": r}), extra=cookie(tok) if r == "ok" else None)
+            return
+        if self.path.startswith("/api/club_lock"):       # a team manager logs out of their club
+            with lock:
+                COACHES.pop(self.token() or "", None)
+                save_settings()
+            self.send(200, json.dumps({"result": "ok"}))
+            return
+        if self.path.startswith("/api/club_codes"):      # officials: a new code for a club
+            if self.role() not in ("master", "admin"):
+                r = "Only the timing desk or referee can do that"
+            else:
+                with lock:
+                    r = club_action(data)
+            self.send(200, json.dumps({"result": r}))
             return
         if self.path.startswith("/api/request"):        # an official asks for access (no login needed)
             tok = self.token() or secrets.token_hex(12)
@@ -3363,7 +3507,12 @@ body.board header,body.board #nextbar{display:none}
 .mscr{flex:0 0 auto;align-self:center;width:50px;height:48px;border:1.5px solid var(--line);border-radius:10px;background:#fff;color:var(--mute);font:800 17px/1 system-ui;cursor:pointer;padding:4px 0}
 .mscr small{display:block;font:600 10px system-ui;margin-top:3px}
 .rolefix{margin-top:6px;padding:8px 10px;border:2px solid var(--red);border-radius:10px;background:#fde8e8;font-size:14px}
-.rolefix>b{color:var(--red)}.rfrow{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}.rfrow span{flex:1 1 120px;font-weight:700}
+.rolefix>b{color:var(--red)}.chgd{font-size:11px;font-weight:800;color:#7a4a00;background:#fff1d6;border:1px solid #e0b060;border-radius:6px;padding:0 5px;margin-left:3px}
+.tmlock{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:-4px 0 8px;padding:8px 10px;background:var(--soft,#eef2f7);border-radius:10px}
+.ccrow{display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid #dde3ea}.ccrow .cn{flex:1 1 8em;font-weight:700;min-width:0;overflow-wrap:anywhere}
+.ccrow .cc{font:800 22px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:3px}
+.cslips{display:grid;grid-template-columns:1fr 1fr;gap:0}.cslip{border:1px dashed #999;padding:14px 16px;break-inside:avoid}
+.cslip h3{margin:0 0 2px;font-size:20px}.cslip .big{font:800 40px/1.1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:6px;margin:6px 0}.cslip p{margin:2px 0;font-size:13px}.rfrow{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}.rfrow span{flex:1 1 120px;font-weight:700}
 .mlane.present .mtap{border-color:var(--green);background:#e3f6ea}.mlane.present .mno{background:var(--green)}
 .mlane.present .mnm small{color:var(--green)}
 .mlane.scratched .mtap{border-color:var(--red);background:#fde8e8}.mlane.scratched .mno{background:var(--red)}
@@ -4681,12 +4830,15 @@ function sendPatients(hid,on){
   $("sheet").classList.add("on"); $("sendgo").onclick=()=>{ closeSheet(); doSend(hid,true); }; }
 // people in a crew (from LiveHeats): patients for marshalling, everyone for team managers
 function crewMembers(ht,l){ const crew=((ht&&ht.crews)||{})[String(l)]||"", fx=(st&&st.role_fix)||{};
-  return (((ht&&ht.members)||{})[String(l)]||[]).map(x=>[x[0],x[1]||fx[(crew+"|"+x[0]).toLowerCase()]||""]); }
+  return (((ht&&ht.members)||{})[String(l)]||[]).map(x=>{ const f=fx[(crew+"|"+x[0]).toLowerCase()]; return [x[0],f||x[1]||"",!!f&&f!==x[1],x[1]||""]; }); }
+// can this device change roles for this club? (its club code, or the timing desk / referee)
+function canRoles(club){ return !!st&&(st.role==="master"||st.role==="admin"||(!!st.coach&&!!club&&st.coach.toLowerCase()===club.toLowerCase())); }
 function pats(ht,l){ const m=crewMembers(ht,l); const p=m.filter(x=>x[1]==="Patient"), u=m.filter(x=>!x[1]);
   return p.map(x=>x[0]).concat(u.map(x=>x[0]+" (role not set)")); }
 // a crew member with no role in LiveHeats: the team manager picks one (suggested from what's missing)
-function roleFixer(ht,l){
+function roleFixer(ht,l,club){
   const m=crewMembers(ht,l), crew=(ht.crews||{})[String(l)]||"", miss=m.filter(x=>!x[1]); if(!miss.length) return "";
+  if(!canRoles(club)) return `<div class="rolefix"><b>Role not set in LiveHeats</b> for ${miss.map(x=>esc(x[0])).join(", ")} – <a href="#" onclick="clubUnlock();return false">unlock with your club code</a> to set it.</div>`;
   const have=r=>m.filter(x=>x[1]===r).length, need=have("Driver")<1?"Driver":have("Crew")<1?"Crew":"Patient";
   const q=s=>esc(s).replace(/'/g,"&#39;").replace(/\\/g,"");
   return `<div class="rolefix"><b>Role not set in LiveHeats</b> – choose for the marshal:${miss.map(x=>`<div class="rfrow"><span>${esc(x[0])}</span>
@@ -4695,10 +4847,35 @@ function roleFixer(ht,l){
 }
 async function setRole(btn,crew,person,role){
   const tx=s=>{ const d=document.createElement("textarea"); d.innerHTML=s; return d.value; };
-  await post("/api/role",{crew:tx(crew),person:tx(person),role:role}); if(st){ st.role_fix=st.role_fix||{}; st.role_fix[(tx(crew)+"|"+tx(person)).toLowerCase()]=role; }
-  toast(tx(person)+" set as "+role); lastKey=""; render(); }
+  const r=await post("/api/role",{crew:tx(crew),person:tx(person),role:role}); if(r!=="ok") return r;
+  if(st){ st.role_fix=st.role_fix||{}; const k=(tx(crew)+"|"+tx(person)).toLowerCase(); if(role) st.role_fix[k]=role; else delete st.role_fix[k]; }
+  toast(role?tx(person)+" set as "+role:tx(person)+" back to the LiveHeats role"); lastKey=""; render(); return r; }
+// team manager: unlock their club with the code from the timing desk
+function clubUnlock(){ const c=tmClub();
+  $("sheetin").innerHTML=`<h2>Unlock changes for ${esc(c)}</h2><p class="mute">Enter your club code from the timing desk. Then you can set Driver, Crew and Patient for ${esc(c)}'s crews – until their patients are sent out.</p>
+    <input type="text" id="ccode" inputmode="numeric" autocomplete="off" maxlength="4" placeholder="4-digit club code" style="max-width:220px;font-size:24px;letter-spacing:4px">
+    <div class="row"><button class="btn pri" id="ccgo">Unlock</button><button class="btn" onclick="closeSheet()">Cancel</button></div><p class="mute" id="ccmsg"></p>`;
+  $("sheet").classList.add("on"); $("ccode").focus();
+  const go=async()=>{ try{ const j=await (await fetch("/api/club_unlock",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({club:c,code:$("ccode").value.trim()})})).json();
+      if(j.result==="ok"){ closeSheet(); toast(c+" unlocked"); if(st) st.coach=c; lastKey=""; render(); } else $("ccmsg").textContent=j.result; }catch(e){ $("ccmsg").textContent="No link to the timing computer"; } };
+  $("ccgo").onclick=go; $("ccode").onkeydown=e=>{ if(e.key==="Enter") go(); }; }
+async function clubLock(){ await post("/api/club_lock",{}); if(st) st.coach=""; toast("Changes locked on this phone"); lastKey=""; render(); }
+// change a crew's roles (team manager with the club code, or officials)
+let roleAt=null;
+function roleSheet(i){ roleAt=i; const u=tmData&&tmData.upcoming[i]; if(!u) return; const m=crewMembers(u.heat,u.lane), off=st.role==="master"||st.role==="admin";
+  const shut=u.patients==="sent"&&!off;
+  $("sheetin").innerHTML=`<h2>${esc(u.crew)} – roles</h2><p class="mute">${esc(heatLabel(u.heat))} · Lane ${u.lane}</p>
+    ${shut?`<div class="warn">Patients for this heat are already on the water – ask the marshal or timing desk to change roles.</div>`:""}
+    ${m.map((x,j)=>`<div class="rfrow" style="flex-wrap:wrap"><span style="flex:1 1 100%;font-weight:700">${esc(x[0])}</span>
+      ${["Driver","Crew","Patient"].map(r=>`<button class="btn sm ${x[1]===r?"pri":""}" ${shut?"disabled":""} onclick="roleSet(${j},'${r}')">${r}</button>`).join("")}
+      ${x[2]?`<span class="mute" style="font-size:13px;flex-basis:100%">Changed – LiveHeats says ${esc(x[3]||"not set")} · <a href="#" onclick="roleSet(${j},'');return false">put back</a></span>`:""}</div>`).join("")}
+    <p class="mute" style="font-size:13px">Every change is logged with your club's name, and the marshal sees it. Please fix LiveHeats too.</p><p class="warn" id="rsmsg" style="display:none"></p>
+    <div class="row"><button class="btn" onclick="closeSheet()">Done</button></div>`;
+  $("sheet").classList.add("on"); }
+async function roleSet(j,role){ const u=tmData&&tmData.upcoming[roleAt]; if(!u) return; const x=crewMembers(u.heat,u.lane)[j]; if(!x) return;
+  const r=await setRole(null,esc(u.crew),esc(x[0]),role); if(r==="ok") roleSheet(roleAt); }
 function crewPeople(ht,l){ const m=crewMembers(ht,l); if(!m.length) return "";
-  const by=r=>m.filter(x=>x[1]===r).map(x=>esc(x[0])), parts=[];
+  const by=r=>m.filter(x=>x[1]===r).map(x=>esc(x[0])+(x[2]?` <span class="chgd" title="Changed by the team manager or officials – LiveHeats says ${esc(x[3]||"not set")}">changed</span>`:"")), parts=[];
   if(by("Driver").length) parts.push("<b>Driver</b> "+by("Driver").join(", "));
   if(by("Crew").length) parts.push("<b>Crew</b> "+by("Crew").join(", "));
   if(by("Patient").length) parts.push("<b>Patient"+(by("Patient").length>1?"s":"")+"</b> "+by("Patient").join(", "));
@@ -4829,13 +5006,18 @@ function renderTeam(){
       `<button class="btn" onclick="${pick(x)}">${esc(x)}</button>`).join("")}</div></div>`; }
   if(!c){ $("race").innerHTML=h+`<p class="mute">Choose your club to see your crews' heats, lanes and results.</p></div>`+homeBtn(); return; }
   if(!tmData){ $("race").innerHTML=h+`<p class="mute">Loading…</p></div>`+homeBtn(); return; }
-  h+=`<div class="card" style="margin:0"><h2>Coming up for ${esc(c)}</h2>`;
+  const edit=canRoles(c), offl=st&&(st.role==="master"||st.role==="admin");
+  h+=`<div class="card" style="margin:0"><h2>Coming up for ${esc(c)}</h2>
+    <div class="tmlock">${offl?`<span class="mute">You can change any crew's roles (${st.role==="admin"?"Referee":"timing desk"})</span>`
+      :edit?`<span class="ok">✓ Changes unlocked for ${esc(c)}</span><button class="btn sm" onclick="clubLock()">Lock</button>`
+      :`<span class="mute">Team manager? Unlock to set Driver, Crew and Patient</span><button class="btn sm pri" onclick="clubUnlock()">Unlock changes</button>`}</div>`;
   if(!tmData.upcoming.length) h+=`<p class="mute">No heats coming up.</p>`;
-  for(const u of tmData.upcoming) h+=`<div class="prow ${u.now?"now":""}" style="cursor:default"><span class="tm2">${u.time||""}</span>
+  tmData.upcoming.forEach((u,i)=>h+=`<div class="prow ${u.now?"now":""}" style="cursor:default"><span class="tm2">${u.time||""}</span>
     <div><div class="pl">${esc(u.crew)} – Lane ${u.lane}</div><div class="ps">${esc(heatLabel(u.heat))}${u.check==="present"?" · ✓ checked in":u.check==="scratched"?" · SCRATCHED":""}</div>
-    ${crewPeople(u.heat,u.lane)?`<div class="ps tmppl">${crewPeople(u.heat,u.lane)}</div>`:""}${roleFixer(u.heat,u.lane)}
+    ${crewPeople(u.heat,u.lane)?`<div class="ps tmppl">${crewPeople(u.heat,u.lane)}</div>`:""}${roleFixer(u.heat,u.lane,c)}
+    ${edit&&crewMembers(u.heat,u.lane).length?`<button class="btn sm" style="margin-top:4px" onclick="roleSheet(${i})">Change roles</button>`:""}
     ${u.patients?`<div class="ps" style="font-weight:800;color:${u.patients==="now"?"var(--red)":u.patients==="sent"?"var(--green)":"var(--ink)"}">Patients: ${u.patients==="now"?"report to marshalling now":u.patients==="sent"?"sent out":"report by "+esc(u.patients)}</div>`:""}</div>
-    ${u.now?`<span class="chip now">ON NOW</span>`:u.away===1?`<span class="chip next">NEXT</span>`:u.away>1?`<span class="chip done">in ${u.away} heats</span>`:""}</div>`;
+    ${u.now?`<span class="chip now">ON NOW</span>`:u.away===1?`<span class="chip next">NEXT</span>`:u.away>1?`<span class="chip done">in ${u.away} heats</span>`:""}</div>`);
   h+=`</div><div class="card" style="margin:0"><h2>Results for ${esc(c)}</h2>`;
   if(!tmData.results.length) h+=`<p class="mute">No results yet.</p>`;
   for(const r of tmData.results) h+=`<div class="prow" style="cursor:default"><span class="pn">${r.place?(r.tie?"=":"")+r.place:"–"}</span>
@@ -4904,6 +5086,23 @@ function renderHistory(){
   $("history").innerHTML=h?`<div class="cols"><div>${h}</div><div>${right}</div></div>`:right;
   document.querySelectorAll("#history details").forEach(d=>{ if(open.has(d.dataset.r)) d.open=true; });
 }
+// ---------- club codes: team managers unlock role changes for their own club ----------
+let ccOpen=false;
+function clubCard(){ const cl=st.clubs||[]; if(!cl.length) return "";
+  const log=(st.role_log||[]).slice(-8).reverse();
+  return `<div class="card"><h2>Club codes</h2><p class="mute">Team managers need their club's code to set Driver, Crew and Patient – only for their own club, and only until patients are sent. New codes each event.</p>
+    <div class="row" style="margin-top:0"><button class="btn pri" onclick="printCodes()">Print club codes</button><button class="btn" onclick="ccOpen=!ccOpen;lastKey='';render()">${ccOpen?"Hide":"Show"} codes</button></div>
+    ${ccOpen?cl.map(c=>`<div class="ccrow"><span class="cn">${esc(c.club)}${c.coaches?`<span class="mute" style="font-weight:500"> · ${c.coaches} unlocked</span>`:""}</span><span class="cc">${esc(c.code)}</span>
+      <button class="btn sm" onclick="newCode(this.dataset.c)" data-c="${esc(c.club)}">New code</button></div>`).join(""):""}
+    ${log.length?`<h3 style="margin:12px 0 4px">Role changes</h3>${log.map(x=>`<div class="ps" style="padding:3px 0;border-bottom:1px solid #eee"><b>${esc(x.t)}</b> ${esc(x.person)} (${esc(x.crew)}): ${esc(x.old)} → <b>${esc(x.new)}</b> <span class="mute">· ${esc(x.who)}</span></div>`).join("")}`:""}</div>`; }
+function newCode(c){ askYes(`New code for ${c}? Their team managers will need to unlock again with the new code.`,async()=>{ await post("/api/club_codes",{new_code:c}); ccOpen=true; },"Yes, new code",false); }
+function printCodes(){ let p=$("printcard"); if(!p){ p=document.createElement("div"); p.id="printcard"; document.body.appendChild(p); }
+  const b=st.brand||{}, url=(st.join||{}).url||"";
+  p.innerHTML=`<div class="guide"><div class="cslips">${(st.clubs||[]).map(c=>`<div class="cslip"><p><b>${esc(b.club||"IRB Racing")}${b.event?" · "+esc(b.event):""}</b> – team manager code</p>
+    <h3>${esc(c.club)}</h3><div class="big">${esc(c.code)}</div>
+    <p>1. Join the ${esc((st.join||{}).ssid||"timing")} Wi-Fi and open ${esc(url)}</p><p>2. Team Manager › ${esc(c.club)} › Unlock changes › enter this code</p>
+    <p>Lets you set Driver, Crew and Patient for ${esc(c.club)}'s crews until their patients are sent. Keep it to your team managers.</p></div>`).join("")}</div></div>`;
+  try{ window.print(); }catch(e){ toast("Printing isn't available here"); } }
 // ---------- officials: request, approve, close event ----------
 const LV=["starter","marshal","admin"];
 function pinCard(){
@@ -5160,6 +5359,7 @@ const GUIDES=[
     "Turn on the Wi-Fi router. Plug the timing box into this laptop. The app opens by itself.",
     "Follow Get started on the Race tab: timing box, club name, how heats are run, Wi-Fi, button test, join card.",
     "Officials scan the join card and tap Officials. Their name and a 3-digit code show under System – check the code on their phone, then tap their job.",
+    "Team managers: System › Today › Club codes › Print club codes. Hand each club its slip at check-in – it lets their team manager set Driver, Crew and Patient for their own crews.",
     "Watch the blue Next bar at the top. It always shows the next thing to do.",
     "After each race, check the result on the Confirm tab and press Confirm results (or let the Referee do it).",
     "End of day: every race ticked on the LiveHeats tab, then System › Setup › Start new event. That saves everything.",
@@ -5190,6 +5390,7 @@ const PI_DESK=["Timing desk","Your phone or tablet. You run the day – the Pi s
     "Otherwise: tap Officials › Use the timing desk PIN. You stay logged in until Start new event.",
     "Follow Get started on the Race tab: timing box, club name, how heats are run, button test, join card.",
     "Officials scan the join card and tap Officials. Their name and a 3-digit code show under System – check the code on their phone, then tap their job.",
+    "Team managers: System › Today › Club codes › Print club codes. Hand each club its slip at check-in – it lets their team manager set Driver, Crew and Patient for their own crews.",
     "Watch the blue Next bar at the top. After each race, check the Confirm tab and press Confirm results (or let the Referee do it).",
     "End of day: every race ticked on the LiveHeats tab, System › Setup › Start new event, then System › Setup › Power off. When the green light stops, switch off at the wall."]];
 const PI_PIN=["Timing desk PIN","Getting in – and what to do if it's forgotten.",[
@@ -5230,8 +5431,8 @@ function renderSystem(){
     <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected))?' <span class="badge">1</span>':""}</button></div>`:"";
   let c="";
   if(sysView==="today"){
-    if(master&&st.access) c=sysCols(dayCard(), officialsCard()+test+screens, joinCard()+batt);
-    else c=sysCols(box+test, pinCard(), (st.official?screens:"")+batt);
+    if(master&&st.access) c=sysCols(dayCard(), officialsCard()+clubCard()+test+screens, joinCard()+batt);
+    else c=sysCols(box+test, pinCard()+(st.role==="admin"?clubCard():""), (st.official?screens:"")+batt);
   } else {
     // Setup: one tidy list – a line per item, status in the middle, button on the right
     const a=st.access||{net:{ssid:"",pass:"",addr:""},auto_url:"",master_pin:"",regulars:[]};
@@ -5371,7 +5572,7 @@ function pageKey(){
   else if(tab==="history") k.push(hist,queue,enterAsk);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
-  else k.push(sysView,dayOpen,updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
+  else k.push(sysView,dayOpen,updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
   return JSON.stringify(k);
 }
 function brandBar(){ const b=(st&&st.brand)||{}; if(!b.club&&!b.event&&!b.logo) return "";
@@ -5453,7 +5654,7 @@ function render(){
   if(location.hash==="#fix"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
     const k=JSON.stringify(["fix",st&&st.brand]); if(k!==lastKey){ lastKey=k; renderFix(); } return; }
   if(location.hash==="#team"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
-    const k=JSON.stringify([tmView,tmView==="club"?tmData:tmView==="program"?prog:hist,tmClubs.length,linkDown,st&&st.role,st&&st.brand,tmClub()]); if(k!==lastKey){ lastKey=k; renderTeam(); } return; }
+    const k=JSON.stringify([tmView,tmView==="club"?tmData:tmView==="program"?prog:hist,tmClubs.length,linkDown,st&&st.role,st&&st.brand,tmClub(),st&&st.coach,st&&st.role_fix]); if(k!==lastKey){ lastKey=k; renderTeam(); } return; }
   if(location.hash==="#marshalling"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
     const k=JSON.stringify([mUp,st&&st.brand,st&&st.next_break,st&&st.heat,st&&st.race_heat,st&&st.state,st&&st.join,linkDown,new Date().getMinutes()]); if(k!==lastKey){ lastKey=k; if(st) renderMBoard(); else $("race").innerHTML=banner(); } return; }
   if(location.hash==="#board"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;

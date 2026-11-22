@@ -1,10 +1,12 @@
 {
- "app": "1.7.3",
+ "app": "1.8.0",
  "pico": "3.4",
- "sha256": "91b47b19573ce28af6f6b755d59b72aeb2766f77de298b5bfc2ab70bc13e775d",
+ "sha256": "d1fc1399c39e567dabc390ae863711be14b2e294050ee590c451df9563367968",
  "pico_sha256": "fce09671a32d57107f5c2e47e2f0cb2f117d7ef8e89bcd6448a067aa525f8dab",
  "notes": [
-  "Timing box v3.4: clearing a forgotten timing desk PIN now needs FINISH and GO held down together for 15 s between races",
-  "Guides, troubleshooting and the PIN screen updated to match"
+  "Team managers need their club's code to change crew roles - only for their own club (System \u203a Today \u203a Club codes, printable slips)",
+  "Team managers can now change Driver/Crew/Patient (not just fill blanks) until that heat's patients are sent; officials can always change",
+  "Every role change is logged (who, what, when) and marked 'changed' for the marshal",
+  "Timing desk PIN phones stay logged in after the Pi is switched off overnight"
  ]
 }
