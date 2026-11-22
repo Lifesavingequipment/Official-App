@@ -1,9 +1,10 @@
 {
- "app": "1.6.8",
+ "app": "1.6.9",
  "pico": "3.2",
- "sha256": "eff295204f6c96f781424e8489f504c177820bbbffacdfe7e56f9382bee35bb0",
+ "sha256": "a026bb13ab58696f3ac12cf264da7226bc03056832fa546c192b43cb7046d09e",
  "notes": [
-  "Results board: bottom strip shows just heat and event with Provisional / Final - no results",
-  "Results board never scrolls: Final ones drop off, then the oldest unconfirmed fold into '+N more'"
+  "Raspberry Pi: switch between the timing hotspot and home Wi-Fi from System \u203a Setup \u203a Wi-Fi",
+  "Raspberry Pi: power off or restart safely from System \u203a Setup \u203a Power (two steps)",
+  "On the Pi's hotspot the join card fills in the Wi-Fi name, password and address by itself"
  ]
 }

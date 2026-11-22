@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.6.8"
+APP_VERSION = "1.6.9"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -202,19 +202,8 @@ def access_check():
         del requests_[k]
 
 
-def lan_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("10.255.255.255", 1))          # picks the Wi-Fi address; nothing is sent
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except OSError:
-        return "127.0.0.1"
-
-
 def app_url():
-    a = NET["addr"].strip() or lan_ip() or "127.0.0.1"
+    a = ("" if WIFI["mode"] == "hotspot" else NET["addr"].strip()) or lan_ip() or "127.0.0.1"
     if not a.startswith("http"):
         a = "http://" + a
     if not re.search(r":\d+$", a.split("//", 1)[1].split("/")[0]) and HTTP_PORT != 80:
@@ -312,7 +301,9 @@ def officials_action(d):
 
 
 def access_view(role, tok):
-    d = {"join": {"ssid": NET["ssid"], "pass": NET["pass"], "url": app_url()}}
+    on_hs = WIFI["mode"] == "hotspot" and WIFI["hs_ssid"]      # on the Pi's hotspot the join card shows that Wi-Fi
+    d = {"join": {"ssid": WIFI["hs_ssid"] if on_hs else NET["ssid"], "pass": WIFI["hs_pass"] if on_hs else NET["pass"],
+                  "url": app_url()}}
     if tok in requests_:
         d["me"] = {"name": requests_[tok]["name"], "code": requests_[tok]["code"]}
     elif tok in officials:
@@ -711,6 +702,150 @@ def firewall_allow():
         finally:
             firewall_check()
             FIREWALL["busy"] = False
+    threading.Thread(target=go, daemon=True).start()
+    return "ok"
+
+
+# ---------------- Raspberry Pi: home Wi-Fi / timing hotspot switch, safe power off ----------------
+WIFI = {"on": False, "mode": "", "name": "", "ip": "", "hotspot": "", "hs_ssid": "", "hs_pass": "",
+        "saved": [], "busy": "", "msg": ""}
+NMCLI = os.environ.get("IRB_NMCLI") or "nmcli"
+POWER = os.environ.get("IRB_POWER")          # tests: a stand-in for systemctl
+IS_LINUX = sys.platform.startswith("linux")
+try:
+    with open("/proc/device-tree/model") as _f:
+        IS_PI = "Raspberry Pi" in _f.read()
+except OSError:
+    IS_PI = False
+
+
+def as_root(args, test=False):
+    # Raspberry Pi OS lets its first user use sudo without a password; -n never waits for one
+    if test or os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0) or not shutil.which("sudo"):
+        return args
+    return ["sudo", "-n"] + args
+
+
+def nm(args, timeout=15):
+    test = bool(os.environ.get("IRB_NMCLI"))
+    r = subprocess.run(as_root([NMCLI] + args, test), capture_output=True, text=True, timeout=timeout)
+    if r.returncode and "password" in (r.stderr or "") and not test:      # no sudo: try as this user
+        r = subprocess.run([NMCLI] + args, capture_output=True, text=True, timeout=timeout)
+    return r.returncode, r.stdout or "", (r.stderr or "").strip()
+
+
+def nm_fields(line):
+    return [x.replace("\\:", ":") for x in re.split(r"(?<!\\):", line)]
+
+
+def wifi_refresh():
+    if not IS_LINUX or not (os.environ.get("IRB_NMCLI") or shutil.which("nmcli")):
+        WIFI["on"] = False
+        return
+    try:
+        rc, out, _ = nm(["-t", "-f", "NAME,TYPE", "connection", "show"])
+        if rc:
+            WIFI["on"] = False
+            return
+        wifis = [f[0] for f in map(nm_fields, out.splitlines()) if len(f) >= 2 and f[1] == "802-11-wireless"]
+        saved, aps = [], []
+        for n in wifis:
+            _, mode, _ = nm(["-g", "802-11-wireless.mode", "connection", "show", n])
+            (aps if mode.strip() == "ap" else saved).append(n)
+        _, out, _ = nm(["-t", "-f", "NAME,TYPE", "connection", "show", "--active"])
+        act = [f[0] for f in map(nm_fields, out.splitlines()) if len(f) >= 2 and f[1] == "802-11-wireless"]
+        name = act[0] if act else ""
+        hs = name if name in aps else ("IRB Timing" if "IRB Timing" in aps else (aps[0] if aps else ""))
+        ip = ""
+        if name:
+            _, out, _ = nm(["-g", "IP4.ADDRESS", "connection", "show", name])
+            ip = out.strip().split("|")[0].split("/")[0].strip()
+        ssid = pw = ""
+        if hs:
+            _, out, _ = nm(["-s", "-g", "802-11-wireless.ssid,802-11-wireless-security.psk", "connection", "show", hs])
+            lines = out.splitlines() + ["", ""]
+            ssid, pw = lines[0].strip(), lines[1].strip()
+        WIFI.update(on=True, mode="hotspot" if name and name == hs else ("wifi" if name else "none"),
+                    name=name, ip=ip, hotspot=hs, hs_ssid=ssid or hs, hs_pass=pw, saved=saved[:6])
+    except Exception:
+        WIFI["on"] = False
+
+
+def wifi_loop():
+    while True:
+        if not WIFI["busy"]:
+            wifi_refresh()
+            if not WIFI["on"] and not os.environ.get("IRB_NMCLI"):
+                return                           # not a Pi / no NetworkManager: nothing to watch
+        time.sleep(15)
+
+
+def racing_now():
+    with lock:
+        return S["state"] in ("ARMED", "RACING")
+
+
+def wifi_action(d):
+    if not WIFI["on"]:
+        return "Only on the Raspberry Pi"
+    if racing_now():
+        return "Wait until the race is finished"
+    if WIFI["busy"]:
+        return "Already switching – wait a moment"
+    to = d.get("to")
+    if to == "hotspot":
+        target = WIFI["hotspot"]
+        if not target:
+            return "No timing hotspot is set up on this Pi"
+    elif to == "wifi":
+        target = str(d.get("name", ""))
+        if target not in WIFI["saved"]:
+            return "That Wi-Fi isn't saved on this Pi"
+    else:
+        return "not allowed"
+    if target == WIFI["name"]:
+        return "Already on %s" % target
+    def go():
+        WIFI["busy"], WIFI["msg"] = target, ""
+        time.sleep(2)                            # let this answer reach the phone before its Wi-Fi drops
+        try:
+            rc, out, err = nm(["connection", "up", target], timeout=60)
+            if rc:
+                note("Couldn't join %s: %s" % (target, (err or out).strip()[:80]))
+                WIFI["msg"] = "Couldn't join %s" % target
+                if WIFI["hotspot"] and target != WIFI["hotspot"]:
+                    nm(["connection", "up", WIFI["hotspot"]], timeout=60)     # never leave the Pi on nothing
+                    WIFI["msg"] += " – back on the timing hotspot"
+            else:
+                note("Wi-Fi: now on %s" % target)
+        except Exception as e:
+            note("Wi-Fi switch failed: %s" % str(e)[:80])
+        finally:
+            WIFI["busy"] = ""
+            wifi_refresh()
+    threading.Thread(target=go, daemon=True).start()
+    return "ok"
+
+
+def power_action(d):
+    if not IS_LINUX:
+        return "Only on the Raspberry Pi"
+    a = d.get("action")
+    if a not in ("off", "restart"):
+        return "not allowed"
+    if racing_now():
+        return "Wait until the race is finished"
+    def go():
+        time.sleep(2)                            # let this answer reach the phone first
+        note("Powering off" if a == "off" else "Restarting the Pi")
+        try:
+            subprocess.run(["sync"], timeout=20)                 # everything on the card before the power goes
+            args = [POWER, a] if POWER else as_root(["systemctl", "poweroff" if a == "off" else "reboot"])
+            r = subprocess.run(args, capture_output=True, text=True, timeout=30)
+            if r.returncode:
+                note("Couldn't %s: %s" % ("power off" if a == "off" else "restart", (r.stderr or "").strip()[:80]))
+        except Exception as e:
+            note("Couldn't power off: %s" % str(e)[:80])
     threading.Thread(target=go, daemon=True).start()
     return "ok"
 
@@ -2356,6 +2491,8 @@ def snapshot(role="master", local=True, tok=None):
             d["firewall"] = {"state": FIREWALL["state"], "busy": FIREWALL["busy"]}
             d["kit"] = KIT["text"]
             d["upd_key"] = bool(UPD_KEY["v"])
+            d["wifi"] = {k: WIFI[k] for k in ("on", "mode", "name", "ip", "hotspot", "hs_ssid", "saved", "busy", "msg")}
+            d["power"] = {"on": IS_LINUX, "pi": IS_PI}
         hs = [x for x in (S["heat"], S["race_heat"], (S["results"] or {}).get("heat")) + tuple(nxt) if x]
         d["checkin"] = {x["heat_id"]: checkin.get(x["heat_id"], {}) for x in hs if x.get("heat_id")}
         d["sent"] = {x["heat_id"]: sent[x["heat_id"]] for x in hs if x.get("heat_id") in sent}
@@ -2508,6 +2645,11 @@ class H(BaseHTTPRequestHandler):
             r = new_event(data) if self.role() == "master" else "Only the timing desk can start a new event"
             self.send(200, json.dumps({"result": r}))
             return
+        for route, fn in (("/api/wifi", wifi_action), ("/api/power", power_action)):     # Pi: no lock held while they run
+            if self.path.startswith(route):
+                r = fn(data) if self.role() == "master" else "Only the timing desk can do that"
+                self.send(200, json.dumps({"result": r}))
+                return
         for route, fn in (("/api/owner", owner_action), ("/api/brand", brand_action), ("/api/events", events_action)):
             if self.path.startswith(route):
                 if self.role() != "master":
@@ -2636,6 +2778,8 @@ class H(BaseHTTPRequestHandler):
 
 
 def lan_ip():
+    if WIFI["mode"] == "hotspot" and WIFI["ip"]:
+        return WIFI["ip"]                        # the Pi's own hotspot: 10.42.0.1
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("10.255.255.255", 1))     # no data is sent
@@ -2643,7 +2787,7 @@ def lan_ip():
         s.close()
         return ip
     except OSError:
-        return None
+        return WIFI["ip"] or None            # no route out (hotspot, no internet)
 
 
 PAGE = r"""<!doctype html>
@@ -3241,7 +3385,7 @@ function toast(t){ const e=$("toast"); e.textContent=t; e.style.display="block";
 function myName(){ try{ return localStorage.getItem("irb_name")||""; }catch(e){ return ""; } }
 function setMyName(v){ try{ localStorage.setItem("irb_name",v.trim()); }catch(e){} }
 async function post(url,data){ try{ const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
-  body:JSON.stringify(Object.assign({who:myName()||(st&&st.local?"Timing computer":"?")},data))}); const j=await r.json(); if(j.result!=="ok") toast(j.result); }catch(e){ toast("No link to the timing computer"); } }
+  body:JSON.stringify(Object.assign({who:myName()||(st&&st.local?"Timing computer":"?")},data))}); const j=await r.json(); if(j.result!=="ok") toast(j.result); return j.result; }catch(e){ toast("No link to the timing computer"); } }
 function cmd(c,expect){ return post("/api/cmd",{cmd:c,expect:expect}); }
 let evOpen=false;
 function setEvent(id){ evOpen=false; if(st){ st.event=id; lastKey=""; render(); } post("/api/event",{id:id}); }
@@ -3451,6 +3595,11 @@ const TROUBLE=[
     "Still not in Chrome? Chrome › Settings › Privacy and security › turn off Always use secure connections. Or use Samsung Internet.",
     "No phone at all can connect? On the timing computer: System › Setup › Phones › Allow phones, and answer Yes on the Windows prompt.",
     "Check the address on the join card matches the one under System. If the computer's address has changed, print a new join card."],true],
+  ["Raspberry Pi: the IRB Timing Wi-Fi isn't there","Phones can't see the timing hotspot, or it was switched to home Wi-Fi.",[
+    "Give the Pi a minute after switching on – the hotspot starts by itself.",
+    "Still missing? Switch the Pi's power off at the wall, wait 10 seconds, switch it on. It always starts on the timing hotspot.",
+    "Then join IRB Timing on the phone and open http://10.42.0.1:8080.",
+    "To switch Wi-Fi or power the Pi off without opening the case: System › Setup › Wi-Fi or Power (timing desk only)."]],
   ["\"No link to the timing computer\"","A red banner on a phone or tablet.",[
     "The device has dropped off the timing Wi-Fi, gone out of range, or its screen slept.",
     "Move closer to the Wi-Fi router, check Wi-Fi is on, then reload the page.",
@@ -4781,7 +4930,9 @@ function renderSystem(){
         +(u.prev?`<button class="btn" ${racing||updBusy?"disabled":""} onclick="askRollback()">Go back${u.prev!=="earlier"?" to v"+esc(u.prev):""}</button>`:""), u.newer?"hi":""); }
     L+=row("LiveHeats draw", st.draw?`<b>${esc(st.draw.name)}</b><span class="mute"> · ${st.draw.divisions} divisions · ${st.draw.heats} heats</span>`:`<span class="mute">None loaded – timing works without one</span>`,
       `<button class="btn" onclick="openLoad()">${st.draw?"Reload":"Load"}</button>`);
-    if(master&&st.access) L+=row("Wi-Fi for join card", `<div class="sin"><input type="text" id="wssid" value="${esc(a.net.ssid)}" placeholder="Wi-Fi name">
+    if(master&&st.wifi&&st.wifi.on) L+=wifiRow(row,racing);
+    if(master&&st.access&&st.wifi&&st.wifi.on&&st.wifi.mode==="hotspot") L+=row("Wi-Fi for join card", `<span class="mute">Filled in by itself – the <b>${esc(st.wifi.hs_ssid)}</b> hotspot name and password</span>`, "");
+    else if(master&&st.access) L+=row("Wi-Fi for join card", `<div class="sin"><input type="text" id="wssid" value="${esc(a.net.ssid)}" placeholder="Wi-Fi name">
         <input type="text" id="wpass" value="${esc(a.net.pass)}" placeholder="Password"></div>`,
       `<button class="btn" onclick="offDo({net:{ssid:$('wssid').value,pass:$('wpass').value,addr:a_addr()}},'Saved')">Save</button>`);
     L+=row("Backup", st.backup?`<span class="${st.backup.ok?"ok":"bad"}">${st.backup.ok?"Copied "+esc(st.backup.at):esc(st.backup.msg)}</span>`:`<span class="mute">USB stick with an <b>IRB_backup</b> folder</span>`,
@@ -4803,6 +4954,8 @@ function renderSystem(){
         :`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
     if(master) L+=row("New event", (st.past_events||[]).length?`<span class="mute">Last saved: ${esc(st.past_events[0])}</span>`:`<span class="mute">Saves today, then clears for a fresh start</span>`,
       `<button class="btn red" ${racing?"disabled":""} onclick="askNewEvent()">Start new event</button>`);
+    if(master&&st.power&&st.power.on) L+=row("Power", `<span class="mute">Turn the timing ${st.power.pi?"Pi":"computer"} off safely – no need to open the case</span>`,
+      `<button class="btn" ${racing?"disabled":""} onclick="powerAsk('restart')">Restart</button><button class="btn red" ${racing?"disabled":""} onclick="powerAsk('off')">Power off</button>`);
     L+=row("Advanced", `<span class="mute">App address, second timing desk phone, your name, hire kit list, timing box messages, restart</span>`,
       `<button class="btn" onclick="advOpen=!advOpen;lastKey='';render()">${advOpen?"Hide ▴":"Show ▾"}</button>`);
     if(advOpen){
@@ -4836,6 +4989,32 @@ function renderSystem(){
     if((cnt[n]||0)>(prevCounts[n]||0)){ d.classList.remove("flash"); void d.offsetWidth; d.classList.add("flash"); } });
   prevCounts=Object.assign({},cnt);
 }
+// ---------- Raspberry Pi: home Wi-Fi / timing hotspot switch, power off ----------
+function wifiRow(row,racing){ const w=st.wifi, dis=racing||w.busy?"disabled":"";
+  const stt=w.busy?`<b class="okb">Switching to ${esc(w.busy)}…</b><span class="mute"> · phones will drop off</span>`
+    :w.mode==="hotspot"?`<b>Timing hotspot</b><span class="mute"> · phones join the <b>${esc(w.hs_ssid)}</b> Wi-Fi · http://${esc(w.ip||"10.42.0.1")}:${location.port||80}</span>`
+    :w.mode==="wifi"?`<b>Home Wi-Fi</b><span class="mute"> · ${esc(w.name)} · internet for updates · phones must be on ${esc(w.name)} too</span>`
+    :`<span class="bad">Not on any Wi-Fi</span>`;
+  let b="";
+  if(w.mode!=="hotspot"&&w.hotspot) b+=`<button class="btn pri" ${dis} onclick="wifiAsk('hotspot')">Timing hotspot</button>`;
+  for(const n of w.saved) if(n!==w.name) b+=`<button class="btn" ${dis} onclick="wifiAsk('wifi',this.dataset.n)" data-n="${esc(n)}">Use ${esc(n)}</button>`;
+  return row("Wi-Fi", stt+(w.msg?`<div class="warn" style="margin-top:4px">${esc(w.msg)}</div>`:"")+(racing?`<div class="mute" style="font-size:13px">Switch after the race</div>`:""), b); }
+function wifiAsk(to,name){ const w=st.wifi;
+  const q=to==="hotspot"
+    ?`Switch the Pi to the timing hotspot? Every phone and tablet loses the app until it joins the ${w.hs_ssid} Wi-Fi and opens http://10.42.0.1:${location.port||80}`
+    :`Switch the Pi to ${name}? Every phone and tablet loses the app. To come back to the timing hotspot, restart the Pi (power off and on at the wall) – it always starts on the hotspot. If ${name} can't be joined, the Pi goes back to the hotspot by itself.`;
+  askYes(q,async()=>{ const r=await post("/api/wifi",{to,name}); if(r==="ok") wifiGone(to==="hotspot"?w.hs_ssid:name); },"Yes, switch",false); }
+function wifiGone(net){ if(st&&st.local){ toast("Switching to "+net+"…"); return; } $("sheetin").innerHTML=`<h2>Switching to ${esc(net)}…</h2><p>This screen stops updating in a few seconds. Join <b>${esc(net)}</b> on this phone or tablet, then open the app again.</p>
+  <div class="row"><button class="btn" onclick="closeSheet()">OK</button></div>`; $("sheet").classList.add("on"); }
+function powerAsk(a){ const off=a==="off", what=st.power.pi?"Pi":"timing computer", un=(st.unconfirmed||[]).length;
+  askYes(off?`Power off the ${what}?`:`Restart the ${what}?`,()=>{
+    askYes((off?`Last check – power off now?`:`Last check – restart now?`)
+      +(un?` ${un} heat${un>1?"s aren't":" isn't"} confirmed yet.`:"")
+      +(off?` Every phone loses the app. To start it again, switch the power off and on at the wall.`:` Phones lose the app for about a minute, then reconnect.`),
+      async()=>{ const r=await post("/api/power",{action:a}); if(r==="ok") powerGone(off,what); }, off?"Yes, power off":"Yes, restart"); }, "Next", false); }
+function powerGone(off,what){ $("sheetin").innerHTML=off?`<h2>Powering off…</h2><p>Wait about 20 seconds until the ${what}'s green light stops flashing, then switch the power off at the wall.</p><p class="mute">To start again: switch the power on. The timing app and hotspot start by themselves in about a minute.</p>`
+    :`<h2>Restarting…</h2><p>The app comes back in about a minute.</p>`;
+  $("sheet").classList.add("on"); }
 let lastKey="";
 function pageKey(){
   // redraw only when something shown has changed, so taps and open sections aren't lost
@@ -4848,7 +5027,7 @@ function pageKey(){
   else if(tab==="history") k.push(hist,queue,enterAsk);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
-  else k.push(sysView,dayOpen,updBusy,advOpen,ltOpen,st.upd_key,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
+  else k.push(sysView,dayOpen,updBusy,advOpen,ltOpen,st.upd_key,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
   return JSON.stringify(k);
 }
 function brandBar(){ const b=(st&&st.brand)||{}; if(!b.club&&!b.event&&!b.logo) return "";
@@ -5024,6 +5203,9 @@ def main():
         sys.exit(1)
     threading.Thread(target=update_check, daemon=True).start()       # quietly see if there's a newer version
     threading.Thread(target=firewall_check, daemon=True).start()     # Windows: can phones get in?
+    if IS_LINUX:
+        wifi_refresh()                                                 # Pi: which Wi-Fi / hotspot is it on?
+        threading.Thread(target=wifi_loop, daemon=True).start()
     ip = lan_ip()
     print("IRB officials' app v%s" % APP_VERSION)
     print("  On this computer:  http://localhost:%d" % HTTP_PORT)
