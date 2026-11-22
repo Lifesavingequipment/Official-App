@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.8.2"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -996,10 +996,15 @@ PICO_UPD = {"busy": "", "msg": "", "prev": "", "job": None, "wait": None}
 PICO_FILE_RE = re.compile(rb'"fw": "([^"]+)"')
 
 
+def app_behind():
+    # a newer app is waiting: it goes in first, so the timing box never runs ahead of the app
+    return bool(UPD["latest"]) and vtuple(UPD["latest"]) > vtuple(APP_VERSION)
+
+
 def pico_update_view():
     latest, cur = UPD.get("pico") or "", S["fw"] or ""
     return {"latest": latest, "current": cur, "busy": PICO_UPD["busy"], "msg": PICO_UPD["msg"], "prev": PICO_UPD["prev"],
-            "newer": bool(latest) and (not cur or vtuple(latest) > vtuple(cur))}
+            "newer": bool(latest) and (not cur or vtuple(latest) > vtuple(cur)), "app_first": UPD["latest"] if app_behind() else ""}
 
 
 def pico_update_action(d):
@@ -1020,12 +1025,16 @@ def pico_update_action(d):
         return "ok"
     if not d.get("install"):
         return "not allowed"
+    if app_behind():
+        return "Update the app to v%s first (Updates, above), then the timing box" % UPD["latest"]
     def get():
         PICO_UPD.update(busy="Downloading", msg="")
         try:
             update_check()
             if UPD["msg"]:
                 raise RuntimeError(UPD["msg"])
+            if app_behind():
+                raise RuntimeError("a newer app (v%s) came out - update the app first" % UPD["latest"])
             code = fetch_url("main.py", timeout=30)
             m = PICO_FILE_RE.search(code)
             if not m or m.group(1).decode() != UPD["pico"]:
@@ -5531,14 +5540,15 @@ function renderSystem(){
 function picoRow(row,racing,ownLocked){ const p=st.pico_upd, busy=!!p.busy, dis=racing||busy||!st.connected?"disabled":"";
   const stt=busy?`<b class="okb">Updating the timing box – ${esc(p.busy)}…</b><div class="mute" style="font-size:13px">Don't unplug it. Takes about a minute.</div>`
     :!st.connected?`<span class="mute">Connect the timing box to check its program</span>`
+    :p.newer&&p.app_first?`<b>New timing box program v${esc(p.latest)}</b><span class="mute"> · now v${esc(p.current||"?")} · update the app to v${esc(p.app_first)} first (Updates row), then this one</span>`
     :p.newer?`<b class="okb">New timing box program v${esc(p.latest)}</b><span class="mute"> · now v${esc(p.current||"?")}</span>`
     :`v${esc(p.current||"?")}${p.latest?` · <span class="ok">up to date</span>`:""}`;
   const msg=p.msg?`<div class="${/^Timing box (updated to|back on)/.test(p.msg)?"ok":"warn"}" style="margin-top:4px">${esc(p.msg)}</div>`:"";
   let b="";
   if(ownLocked&&(p.newer||p.prev)) b=`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`;
-  else { if(p.newer&&st.connected) b+=`<button class="btn pri" ${dis} onclick="picoAsk()">Update</button>`;
+  else { if(p.newer&&st.connected&&!p.app_first) b+=`<button class="btn pri" ${dis} onclick="picoAsk()">Update</button>`;
     if(p.prev&&st.connected) b+=`<button class="btn" ${dis} onclick="picoBack()">Go back to v${esc(p.prev)}</button>`; }
-  return row("Timing box program", stt+msg+(racing&&p.newer?`<div class="mute" style="font-size:13px">Update after the race</div>`:""), b, p.newer&&!busy?"hi":""); }
+  return row("Timing box program", stt+msg+(racing&&p.newer&&!p.app_first?`<div class="mute" style="font-size:13px">Update after the race</div>`:""), b, p.newer&&!busy&&!p.app_first?"hi":""); }
 function picoAsk(){ const p=st.pico_upd;
   askYes(`Update the timing box to v${p.latest}? It takes about a minute and the buttons don't work meanwhile. Don't unplug it. If the new program doesn't start, the old one goes back by itself.`,
     ()=>post("/api/pico_update",{install:true}),"Yes, update",false); }

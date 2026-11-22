@@ -1,12 +1,9 @@
 {
- "app": "1.8.1",
+ "app": "1.8.2",
  "pico": "3.4",
- "sha256": "f94050fc4192f7b4e7e124ca11e46aa0b8c2854d5ad8006a1eb8f61ea2557f2a",
+ "sha256": "603693626ba5e3ad1613df620d8848da12522ec006b260a56dfb800033c272da",
  "pico_sha256": "fce09671a32d57107f5c2e47e2f0cb2f117d7ef8e89bcd6448a067aa525f8dab",
  "notes": [
-  "Catching up: confirm and tick off LiveHeats in one tap per race on the LiveHeats tab, oldest first, with Undo",
-  "No more switching between Confirm and LiveHeats tabs - the Next bar and the earlier-races card keep you in one place",
-  "Referee phones: tabs on two rows (they overlapped)",
-  "Team Manager phones: Home button no longer covers the last card"
+  "The timing box update waits until the app is up to date - app first, then the timing box"
  ]
 }
