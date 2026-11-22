@@ -1,9 +1,9 @@
 {
- "app": "1.6.7",
+ "app": "1.6.8",
  "pico": "3.2",
- "sha256": "cb905c996db332ad5d6eea5832f677698472da90e35a5ea77c9a26983b6a6ae8",
+ "sha256": "eff295204f6c96f781424e8489f504c177820bbbffacdfe7e56f9382bee35bb0",
  "notes": [
-  "Results board: shows the next two heats instead of the last result",
-  "Results board: strip of finished heats along the bottom - provisional ones stay until confirmed, confirmed ones drop off as the screen fills"
+  "Results board: bottom strip shows just heat and event with Provisional / Final - no results",
+  "Results board never scrolls: Final ones drop off, then the oldest unconfirmed fold into '+N more'"
  ]
 }

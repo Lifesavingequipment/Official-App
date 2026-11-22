@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.6.7"
+APP_VERSION = "1.6.8"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -2960,15 +2960,13 @@ body.board main{max-width:none}
 .bd{display:grid;gap:12px}
 .bd .recent{border-top:3px solid var(--line);padding-top:8px}
 .bd .rhd{font-weight:900;font-size:clamp(17px,min(1.6vw,2.6vh),24px);margin-bottom:6px}.bd .rhd .mute{font-weight:600;font-size:.7em}
-.bd .rgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;align-items:start}
-.bd .rc{background:var(--card);border:2px solid var(--line);border-radius:10px;padding:6px 10px;font-size:clamp(13px,min(1.05vw,1.9vh),17px)}
-.bd .rc.prov{border-color:var(--amber);border-width:3px}
-.bd .rct{display:flex;gap:6px;justify-content:space-between;align-items:center;font-weight:800;margin-bottom:3px}
-.bd .rct small{display:block;font-weight:600;color:var(--mute);font-size:.85em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bd .rct>span:first-child{min-width:0}
+.bd .rgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(330px,100%),1fr));gap:8px}
+.bd .rc{display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--card);border:2px solid var(--line);border-radius:10px;padding:6px 10px;font-size:clamp(14px,min(1.1vw,2vh),19px)}
+.bd .rc.prov{border-color:var(--amber);border-width:3px}.bd .rc.more{border:3px dashed var(--amber)}
+.bd .rct{min-width:0;line-height:1.2}.bd .rct b{display:block}.bd .rct small{display:block;color:var(--mute);font-weight:600;font-size:.8em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bd .rc .pill{font-size:.75em;padding:3px 9px;flex:none}
 .bd .bnext h2{margin-bottom:4px}.bd .bnl>div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-@media (min-width:1100px){.bd .bnl{display:grid;grid-template-rows:repeat(5,auto);grid-auto-flow:column;column-gap:16px}}.bd .rct .pill{font-size:.75em;padding:2px 8px}
-.bd .rcr{display:grid;grid-template-columns:1.6em minmax(0,1fr) auto;gap:6px;border-top:1px solid var(--soft);padding:1px 0}
-.bd .rcr span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bd .rcr i{font:700 .95em ui-monospace,Consolas,monospace;font-style:normal}
+@media (min-width:1100px){.bd .bnl{display:grid;grid-template-rows:repeat(5,auto);grid-auto-flow:column;column-gap:16px}}
 @media (min-width:700px){body.board .bd .recent{margin-right:calc(13vh + 40px)}}
 .bd .top{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 .bd .now{font-size:clamp(20px,min(2.4vw,4vh),34px);font-weight:800;min-width:0;text-wrap:balance;flex:1 1 300px}
@@ -4887,21 +4885,26 @@ function boardNext2(a,b){ return `<div style="display:grid;gap:12px">${boardNext
 // bottom strip: results of finished heats, newest first. Provisional ones always stay; confirmed ones
 // drop off (oldest first) when the screen is full.
 function boardRecent(skipRace){
-  let list=(hist||[]).filter(r=>r.race!==skipRace&&r.rows&&r.rows.length);
+  // just the heat and event, with Provisional / Final - full results are on phones and the left side
+  let list=(hist||[]).filter(r=>r.race!==skipRace);
   const conf=r=>!!(r.flags||{}).confirmed;
   if(innerWidth<700){ let n=0; list=list.filter(r=>!conf(r)||n++<4); }
-  else list=list.slice(0,16);
+  else list=list.slice(0,30);
   if(!list.length) return "";
   return `<div class="recent" id="recent"><div class="rhd">Results <span class="mute">· provisional results stay up until confirmed</span></div><div class="rgrid">${list.map(r=>{
-    const c=conf(r), rows=ranked(r);
-    const hd=r.heat&&r.heat.div?`<span>${esc(r.heat.round)} · Heat ${esc(r.heat.no)}<small>${esc(r.heat.div)}</small></span>`:`<span>${esc(r.heat?heatLabel(r.heat):"Race "+r.race)}</span>`;
-    return `<div class="rc ${c?"conf":"prov"}"><div class="rct">${hd}<span class="pill ${c?"final":"prov"}">${c?"Final":"Provisional"}</span></div>${
-      rows.map(x=>`<div class="rcr"><b>${x.place?((r.ties||[]).includes(x.lane)?"=":"")+x.place:"–"}</b><span>${esc(crewOf(r.heat,x.lane)||"Lane "+x.lane)}</span><i>${x.place?ft(x.t_us):esc(x.status)}</i></div>`).join("")}</div>`; }).join("")}</div></div>`;
+    const c=conf(r), h=r.heat;
+    return `<div class="rc ${c?"conf":"prov"}"><span class="rct">${h&&h.div?`<b>Heat ${esc(h.no)}</b><small>${esc(h.div)}${h.round?" · "+esc(h.round):""}</small>`:`<b>${esc(h?heatLabel(h):"Race "+r.race)}</b>`}</span><span class="pill ${c?"final":"prov"}">${c?"Final":"Provisional"}</span></div>`; }).join("")}</div></div>`;
 }
 function fitRecent(){
   const box=$("recent"); if(!box||innerWidth<700) return;
   const over=()=>box.getBoundingClientRect().bottom>innerHeight-6;
+  // 1) drop the oldest Final ones
   while(over()){ const c=box.querySelectorAll(".rc.conf"); if(!c.length) break; c[c.length-1].remove(); }
+  // 2) still too many? fold the oldest provisional ones into one tag, so the screen never scrolls
+  let n=0;
+  while(over()){ const c=box.querySelectorAll(".rc.prov"); if(c.length<2) break; c[c.length-1].remove(); n++;
+    let m=box.querySelector(".rc.more"); if(!m){ m=document.createElement("div"); m.className="rc more"; box.querySelector(".rgrid").appendChild(m); }
+    m.innerHTML=`<span class="rct"><b>+${n} more</b><small>not confirmed yet</small></span><span class="pill prov">Provisional</span>`; }
   if(!box.querySelector(".rc")) box.remove();
 }
 addEventListener("resize",()=>{ if(location.hash==="#board") lastKey=""; });
