@@ -1,4 +1,6 @@
-# IRB Finish Timing - bench test v2.9
+# IRB Finish Timing - bench test v3.0
+# v3.0: "minleg N" command - the app shortens the gap between a crew's presses for practice (1 s),
+#       and puts it back to 15 s for racing. Always starts at 15 s.
 # v2.9: a press only counts if its pin is still open 2 ms after the edge - short electrical
 #       spikes (one lane's wire kicking another's) are ignored. Timing still uses the first edge.
 # v2.8: the app sets the Pico's clock on connect
@@ -59,6 +61,7 @@ micropython.alloc_emergency_exception_buf(100)
 # ---------------- Settings ----------------
 BOARD_NPN = True              # True: DST-1R4P (NPN) or jumper test. False: PNP board.
 MIN_LEG_US = 15_000_000       # a hit only counts if 15 s after that crew's last hit / GO
+MIN_LEG_RACING = MIN_LEG_US   # "minleg race" puts this back after practice
 DEAD_HEAT_US = 10_000         # finishes closer than 10 ms flagged for review
 BUTTON_DEBOUNCE_US = 300_000  # SET/GO ignore repeat edges within 0.3 s
 CONFIRM_US = 2_000            # a press must still be open this long after its edge to count
@@ -260,8 +263,8 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "2.9", "lanes": sorted(LANE_PINS), "race": race_no,
-          "min_leg_s": MIN_LEG_US // 1_000_000, "app_start": True, "ties": True, "test": True,
+    emit({"ev": "hello", "fw": "3.0", "lanes": sorted(LANE_PINS), "race": race_no,
+          "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
           "clock": True, "beat": True, "batt": BATT_ENABLED})
     emit({"ev": "test", "on": test_mode})
     announce()
@@ -632,7 +635,7 @@ def read_batt():
 
 
 def command(line):
-    global adj, legs_set, version, ties
+    global adj, legs_set, version, ties, MIN_LEG_US
     w = line.strip().lower().split()
     if not w:
         return
@@ -642,6 +645,16 @@ def command(line):
         return
     if c == "clock":
         set_clock(w)
+        return
+    if c == "minleg":                       # gap between a crew's counted presses, in seconds
+        try:
+            MIN_LEG_US = MIN_LEG_RACING if w[1] == "race" else max(1, min(60, int(w[1]))) * 1_000_000
+        except (IndexError, ValueError):
+            print("Give seconds, e.g.  minleg 1   (or  minleg race  for the racing gap)")
+            return
+        n = MIN_LEG_US // 1_000_000
+        print("Presses under %d s after a crew's last press are ignored." % n)
+        emit({"ev": "minleg", "s": n if MIN_LEG_US >= 1_000_000 else 1})
         return
     if test_mode and c in ("f", "r", "set", "go"):
         print("Button test is running - type  test off  first.")
@@ -871,7 +884,7 @@ def finish_race(reason="Race finished by official."):
 poller = uselect.poll()
 poller.register(sys.stdin, uselect.POLLIN)
 
-print("IRB finish timing - bench test v2.9 (legs, adjustments, history, app link, test, ties, clock)")
+print("IRB finish timing - bench test v3.0 (legs, adjustments, history, app link, test, ties, clock)")
 print("History: last saved race %d. Type log to see files." % race_no)
 emit_all()
 print("Board:", "NPN (hit = pin goes HIGH)" if BOARD_NPN else "PNP (hit = pin goes LOW)")

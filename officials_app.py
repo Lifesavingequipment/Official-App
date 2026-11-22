@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.6.5"
+APP_VERSION = "1.6.6"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -75,7 +75,7 @@ FW_RULE = "IRB_timing_app"
 
 lock = threading.Lock()
 S = {
-    "connected": False, "port": None, "fw": None, "lanes": [], "min_leg_s": 15,
+    "connected": False, "port": None, "fw": None, "lanes": [], "min_leg_s": 15, "minleg_cmd": False,
     "state": "UNKNOWN", "race": 0, "faults": [], "go_at": None,
     "live": {}, "results": None, "at_prompt": False,
     "event": "", "race_event": None, "app_start": False,
@@ -2028,11 +2028,15 @@ def handle_line(line):
         S["ties"] = bool(d.get("ties"))
         S["has_test"] = bool(d.get("test"))
         S["beat"] = bool(d.get("beat"))
+        S["minleg_cmd"] = bool(d.get("minleg_cmd"))
         if d.get("clock") and ser:
             try:                    # give the Pico the real date and time for its history file
                 ser.write(("clock %s\r\n" % datetime.now().strftime("%Y %m %d %H %M %S")).encode())
             except (serial.SerialException, OSError):
                 pass
+        pico_minleg()
+    elif ev == "minleg":
+        S["min_leg_s"] = d.get("s", 15)
     elif ev == "state":
         new = d.get("state")
         if new == "RACING" and S["state"] != "RACING":
@@ -2241,6 +2245,15 @@ def serial_loop_once():
 
 ADJUST = re.compile(r"^(ok|place|dq|dnf|clear|legs|tie)\b")
 CMD_OK = re.compile(r"^(f|j|p|set|go|test on|test off|tie \d+|ok \d+|place \d+ \d+|dq \d+|dnf \d+|clear|clear \d+|legs \d+)$")
+
+
+def pico_minleg():
+    # practice: crews can press again after 1 s; racing: 15 s (timing box v3.0 or later)
+    if ser and S.get("minleg_cmd"):
+        try:
+            ser.write(("minleg %s\r\n" % ("1" if S["practice"] else "race")).encode())
+        except (serial.SerialException, OSError):
+            pass
 
 
 def send_cmd(cmd, expect=None, who="", code=""):
@@ -2598,6 +2611,7 @@ class H(BaseHTTPRequestHandler):
                             checkin.pop(hid, None)
                     practice_raced.clear()
                     save_program()
+                pico_minleg()
             self.send(200, json.dumps({"result": "ok"}))
         elif self.path.startswith("/api/backup"):
             backup()
@@ -3363,7 +3377,7 @@ function renderRace(){
 function raceWarnings(){
   let h="", pre="";
   if(st.silent) h+=`<div class="bad-warn">Timing box not responding – check its USB cable. The last few seconds may not have been recorded here.</div>`;
-  if(st.practice) pre+=`<div class="practice">PRACTICE MODE – races are not saved here or sent to the LiveHeats list.</div>`;
+  if(st.practice) pre+=`<div class="practice">PRACTICE MODE – races are not saved here or sent to the LiveHeats list.${st.min_leg_s<15?` Crews can press again after ${st.min_leg_s} s.`:""}</div>`;
   if(st.batt!=null&&st.batt<24.0) h+=`<div class="${st.batt<23.0?"bad-warn":"warn"}">Battery: ${battWord(st.batt)[0].toLowerCase()} – before the next race.</div>`;
   if(st.faults.length&&st.state==="RACING"&&st.faults_racing)
     h+=`<div class="bad-warn">Cable fault during race: ${esc(st.faults.join(", "))}. That lane may have a false press – check its presses after the race.</div>`;
