@@ -1,12 +1,10 @@
 {
- "app": "1.7.2",
- "pico": "3.3",
- "sha256": "b601f65a7874fe46ec0647c1672936abc7270d27264251a333e7886dda0ca6d5",
- "pico_sha256": "755422f554301a093bcd63dea78e60b5a60bf476b539b7760aadfc703d1b4760",
+ "app": "1.7.3",
+ "pico": "3.4",
+ "sha256": "91b47b19573ce28af6f6b755d59b72aeb2766f77de298b5bfc2ab70bc13e775d",
+ "pico_sha256": "fce09671a32d57107f5c2e47e2f0cb2f117d7ef8e89bcd6448a067aa525f8dab",
  "notes": [
-  "New kit: the first phone to open the app sets the timing desk PIN (Raspberry Pi)",
-  "The owner PIN also logs in as timing desk - a master key for hired kits",
-  "Timing box v3.3: hold FINISH 15 s between races to clear a forgotten timing desk PIN",
-  "Printed guides: timing desk page for phone/tablet use and a Timing desk PIN page; new troubleshooting item"
+  "Timing box v3.4: clearing a forgotten timing desk PIN now needs FINISH and GO held down together for 15 s between races",
+  "Guides, troubleshooting and the PIN screen updated to match"
  ]
 }

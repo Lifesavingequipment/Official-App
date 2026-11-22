@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.7.2"
+APP_VERSION = "1.7.3"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -198,7 +198,7 @@ def can_claim():
 
 
 def pin_reset_from_box():
-    # FINISH held 15 s on the timing box: forget the timing desk PIN and log those phones out
+    # FINISH + GO held 15 s on the timing box: forget the timing desk PIN and log those phones out
     with lock:
         PINS["master"] = ""
         for k in [k for k, o in officials.items() if o.get("role") == "master"]:
@@ -3876,7 +3876,7 @@ const TROUBLE=[
  ["Phones and tablets",[
   ["Forgot the timing desk PIN","Nobody can get in as the timing desk, and the Pi is in its sealed box.",[
     "The kit owner's PIN also works as the timing desk PIN: Officials › Use the timing desk PIN.",
-    "No owner nearby? At the timing box, between races: hold FINISH for 15 seconds until it beeps 3 times.",
+    "No owner nearby? At the timing box, between races: hold FINISH and GO down together for 15 seconds until it beeps 3 times.",
     "That clears the PIN and logs timing desk phones out. Open the app on your phone: it asks you to set a new PIN.",
     "Too many wrong tries? Wait 10 minutes, or use one of the two ways above."]],
   ["A phone can't open the app","\"This site can't be reached\", ERR_TOO_MANY_RETRIES, or the page just spins.",[
@@ -5025,7 +5025,7 @@ function openUnlock(){
   $("sheetin").innerHTML=`<h2>Timing desk PIN</h2><p class="mute">For the person running the timing desk. Everyone else: use Officials and ask the timing desk.</p>
     <input type="text" id="pinin" inputmode="numeric" autocomplete="off" placeholder="PIN">
     <div class="row"><button class="btn pri" id="pingo">Log in</button><button class="btn" onclick="closeSheet()">Close</button></div><p class="mute" id="pinmsg"></p>
-    <p class="mute" style="font-size:14px;margin-bottom:0">Forgot it? The kit owner's PIN also works. Or between races, hold FINISH on the timing box for 15 seconds (3 beeps) – that clears the PIN so you can set a new one.</p>`;
+    <p class="mute" style="font-size:14px;margin-bottom:0">Forgot it? The kit owner's PIN also works. Or between races, hold FINISH and GO on the timing box together for 15 seconds (3 beeps) – that clears the PIN so you can set a new one.</p>`;
   $("sheet").classList.add("on"); $("pinin").focus();
   $("pingo").onclick=async()=>{ try{ const j=await (await fetch("/api/unlock",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({pin:$("pinin").value})})).json();
@@ -5197,8 +5197,8 @@ const PI_PIN=["Timing desk PIN","Getting in – and what to do if it's forgotten
     "A new kit has no PIN: the first phone to open the app is asked to set one.",
     "Change it: System › Setup › Advanced › Timing desk PIN. Other timing desk phones then need the new PIN.",
     "Forgot it? The kit owner's PIN also logs in as timing desk – ask the owner.",
-    "Or, at the timing box, between races: hold FINISH for 15 seconds until it beeps 3 times. The PIN is cleared and timing desk phones are logged out. The next phone to open the app sets a new PIN.",
-    "6 wrong PINs in 10 minutes blocks more tries for up to 10 minutes. The owner's PIN and the FINISH reset still work."]];
+    "Or, at the timing box, between races: hold FINISH and GO down together for 15 seconds until it beeps 3 times. The PIN is cleared and timing desk phones are logged out. The next phone to open the app sets a new PIN.",
+    "6 wrong PINs in 10 minutes blocks more tries for up to 10 minutes. The owner's PIN and the FINISH + GO reset still work."]];
 function guides(){ return st&&st.power&&st.power.pi?[PI_DESK].concat(GUIDES.slice(1),[PI_PIN]):GUIDES; }
 function printGuides(){ let p=$("printcard"); if(!p){ p=document.createElement("div"); p.id="printcard"; document.body.appendChild(p); }
   const b=st.brand||{}, top=`<div class="gtop">${b.logo?`<img src="/logo?v=${b.logo}" alt="">`:""}<span>${esc(b.club||"IRB Racing")}${b.event?" · "+esc(b.event):""}</span></div>`;
