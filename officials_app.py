@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.7.2"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -192,13 +192,29 @@ def today():
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def can_claim():
+    # a Pi in its box with no timing desk PIN yet: the first phone sets one (a laptop has its own screen)
+    return not PINS["master"] and IS_LINUX
+
+
+def pin_reset_from_box():
+    # FINISH held 15 s on the timing box: forget the timing desk PIN and log those phones out
+    with lock:
+        PINS["master"] = ""
+        for k in [k for k, o in officials.items() if o.get("role") == "master"]:
+            del officials[k]
+        PIN_TRIES.clear()
+        save_settings()
+    note("Timing desk PIN cleared at the timing box - the next phone to open the app sets a new one")
+
+
 def clear_officials(keep=None, pin_phones=False):
     # end approvals; keep the timing desk phone doing it (and, overnight, every phone that used the PIN)
     for k in list(officials):
         o = officials[k]
         if k == keep and o.get("role") == "master":
             continue
-        if pin_phones and o.get("role") == "master" and PINS["master"]:
+        if pin_phones and o.get("role") == "master" and (PINS["master"] or OWNER["pin"]):
             continue
         del officials[k]
     requests_.clear()
@@ -2366,6 +2382,9 @@ def handle_line(line):
         return
     ev = d.get("ev")
     S["at_prompt"] = False
+    if ev == "pin_reset":
+        threading.Thread(target=pin_reset_from_box, daemon=True).start()     # takes the lock itself
+        return
     if ev == "hello":
         S["fw"] = d.get("fw")
         S["lanes"] = d.get("lanes", [])
@@ -2702,6 +2721,7 @@ def snapshot(role="master", local=True, tok=None):
         d["role"] = role
         d["can_start"] = role in ("master", "starter")
         d["local"] = local
+        d["claimable"] = can_claim() and not local
         d.update(access_view(role, tok))
         d["role_fix"] = role_fix
         d["brand"] = dict(BRAND, logo=int(os.path.getmtime(LOGO_FILE)) if os.path.exists(LOGO_FILE) else 0)
@@ -2935,21 +2955,46 @@ class H(BaseHTTPRequestHandler):
                 time.sleep(1)
                 self.send(200, json.dumps({"result": "Too many wrong PINs - wait %d min and try again" % max(1, int((600 - (now - PIN_TRIES[0])) // 60) + 1)}))
                 return
-            if not PINS["master"] or pin != PINS["master"]:
-                if PINS["master"]:
+            desk = bool(PINS["master"]) and pin == PINS["master"]
+            owner = bool(OWNER["pin"]) and pin == OWNER["pin"]       # the owner's PIN is a master key
+            if not (desk or owner):
+                if PINS["master"] or OWNER["pin"]:
                     with lock:
                         PIN_TRIES.append(now)
                 time.sleep(1)
-                self.send(200, json.dumps({"result": "Wrong PIN" if PINS["master"] else "The timing desk PIN is turned off"}))
+                self.send(200, json.dumps({"result": "Wrong PIN" if PINS["master"] or not can_claim() else
+                                           "No timing desk PIN yet - close this and tap Set up the timing desk"}))
                 return
             tok = self.token() or secrets.token_hex(12)
             with lock:
                 requests_.pop(tok, None)
-                officials[tok] = {"name": str(data.get("name") or "Timing desk phone")[:30], "role": "master", "since": time.time(),
-                                  "seen": time.time(), "pin": True}
+                officials[tok] = {"name": str(data.get("name") or ("Owner" if owner and not desk else "Timing desk phone"))[:30],
+                                  "role": "master", "since": time.time(), "seen": time.time(), "pin": True}
+                if owner and not desk:
+                    OWNER["open_until"] = time.time() + 20 * 60    # the owner is here: unlocked for 20 min too
                 access_day[0] = today()
                 save_settings()
             self.send(200, json.dumps({"result": "ok", "role": "master"}), extra=cookie(tok))
+            return
+        if self.path.startswith("/api/claim"):          # new kit: the first phone sets the timing desk PIN
+            v = str(data.get("pin", "")).strip()
+            tok = self.token() or secrets.token_hex(12)
+            with lock:
+                if not can_claim():
+                    r = "A timing desk PIN is already set - use it to log in"
+                elif not re.match(r"^\d{4,8}$", v):
+                    r = "Use 4 to 8 digits"
+                else:
+                    PINS["master"] = v
+                    requests_.pop(tok, None)
+                    officials[tok] = {"name": str(data.get("name") or "Timing desk")[:30], "role": "master",
+                                      "since": time.time(), "seen": time.time(), "pin": True}
+                    access_day[0] = today()
+                    save_settings()
+                    r = "ok"
+            if r == "ok":
+                note("Timing desk PIN set by %s" % officials[tok]["name"])
+            self.send(200, json.dumps({"result": r, "role": "master" if r == "ok" else None}), extra=cookie(tok) if r == "ok" else None)
             return
         if self.path.startswith("/api/lock"):           # log out, or cancel a request
             with lock:
@@ -3829,6 +3874,11 @@ const HELP={
 // each item: [title, what you see (or ""), [steps], quick?]  quick = also listed in the ? sheet
 const TROUBLE=[
  ["Phones and tablets",[
+  ["Forgot the timing desk PIN","Nobody can get in as the timing desk, and the Pi is in its sealed box.",[
+    "The kit owner's PIN also works as the timing desk PIN: Officials › Use the timing desk PIN.",
+    "No owner nearby? At the timing box, between races: hold FINISH for 15 seconds until it beeps 3 times.",
+    "That clears the PIN and logs timing desk phones out. Open the app on your phone: it asks you to set a new PIN.",
+    "Too many wrong tries? Wait 10 minutes, or use one of the two ways above."]],
   ["A phone can't open the app","\"This site can't be reached\", ERR_TOO_MANY_RETRIES, or the page just spins.",[
     "The phone must be on the timing Wi-Fi – not mobile data. If unsure, turn mobile data off for a moment.",
     "Scan the join card: code 1 joins the Wi-Fi, then code 2 opens the app.",
@@ -4941,7 +4991,8 @@ function renderHome(){
       <p style="margin:0">Show this code to the timing desk</p><div class="bigcode">${esc(me.code)}</div><p class="mute" style="margin:0">${esc(me.name)} · your screen opens as soon as you're approved</p></div>
       <button class="btn" onclick="lockDevice()">Cancel request</button></div>`; return; }
   $("race").innerHTML=`<div class="home">${homeTitle()}
-    <a class="hbtn pri" href="#team" onclick="tmView='club'">Team Manager<small>Your club's heats, lanes and results · the program · all results</small></a>
+    ${st.claimable?`<button class="hbtn pri" id="claimbtn" onclick="openClaim()">Set up the timing desk<small>New kit – no timing desk PIN yet. Choose one and this device runs the day</small></button>`:""}
+    <a class="hbtn ${st.claimable?"":"pri"}" href="#team" onclick="tmView='club'">Team Manager<small>Your club's heats, lanes and results · the program · all results</small></a>
     <a class="hbtn" href="#board">Results<small>Live results and the next heat – for a screen or your phone</small></a>
     <button class="hbtn" onclick="openRequest()">Officials<small>Starter, Marshal, Referee – ask the timing desk for access</small></button>
     <p style="text-align:center;margin-top:14px"><a href="#fix">Something not working? Troubleshooting</a></p></div>`;
@@ -4956,11 +5007,25 @@ function openRequest(){
     if(j.result!=="ok"){ $("rqmsg").textContent=j.result; return; } setMyName(n); closeSheet(); location.hash=""; if(st){ st.me={name:n,code:j.code}; } wasWaiting=true; lastKey=""; render(); }
     catch(e){ $("rqmsg").textContent="No link to the timing computer"; } };
 }
+function openClaim(){
+  $("sheetin").innerHTML=`<h2>Set up the timing desk</h2><p class="mute">Choose a 4–8 digit PIN. This device becomes the timing desk. Anyone else who needs the timing desk will need this PIN – write it down.</p>
+    <input type="text" id="clname" value="${esc(myName())}" placeholder="Your name" autocomplete="name">
+    <input type="password" id="clpin" inputmode="numeric" autocomplete="new-password" placeholder="New PIN" style="margin-top:8px">
+    <input type="password" id="clpin2" inputmode="numeric" autocomplete="new-password" placeholder="Same PIN again" style="margin-top:8px">
+    <div class="row"><button class="btn pri" id="clgo">Set PIN and start</button><button class="btn" onclick="closeSheet()">Cancel</button></div><p class="mute" id="clmsg"></p>`;
+  $("sheet").classList.add("on"); $("clname").focus();
+  $("clgo").onclick=async()=>{ const a=$("clpin").value.trim(), b=$("clpin2").value.trim(), n=$("clname").value.trim();
+    if(!/^\d{4,8}$/.test(a)){ $("clmsg").textContent="Use 4 to 8 digits"; return; }
+    if(a!==b){ $("clmsg").textContent="The two PINs don't match"; return; }
+    try{ const j=await (await fetch("/api/claim",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin:a,name:n||"Timing desk"})})).json();
+      if(j.result==="ok"){ if(n) setMyName(n); closeSheet(); toast("PIN set – you're the timing desk"); tabRole=""; justLogged=true; }
+      else $("clmsg").textContent=j.result; }catch(e){ $("clmsg").textContent="No link to the timing computer"; } };
+}
 function openUnlock(){
   $("sheetin").innerHTML=`<h2>Timing desk PIN</h2><p class="mute">For the person running the timing desk. Everyone else: use Officials and ask the timing desk.</p>
     <input type="text" id="pinin" inputmode="numeric" autocomplete="off" placeholder="PIN">
     <div class="row"><button class="btn pri" id="pingo">Log in</button><button class="btn" onclick="closeSheet()">Close</button></div><p class="mute" id="pinmsg"></p>
-`;
+    <p class="mute" style="font-size:14px;margin-bottom:0">Forgot it? The kit owner's PIN also works. Or between races, hold FINISH on the timing box for 15 seconds (3 beeps) – that clears the PIN so you can set a new one.</p>`;
   $("sheet").classList.add("on"); $("pinin").focus();
   $("pingo").onclick=async()=>{ try{ const j=await (await fetch("/api/unlock",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({pin:$("pinin").value})})).json();
@@ -5118,9 +5183,26 @@ const GUIDES=[
     "When the judges agree, press Confirm results. The screens then show the result as Final.",
     "LiveHeats tab: type each confirmed race into LiveHeats, then press Entered.",
     "Program tab: change the running order or add heats when needed."]]];
+const PI_DESK=["Timing desk","Your phone or tablet. You run the day – the Pi stays closed in its box.",[
+    "Plug in the Pi box and the timing box. Wait about a minute: the timing app and the IRB Timing Wi-Fi start by themselves.",
+    "On your phone or tablet: join the IRB Timing Wi-Fi, then open http://10.42.0.1:8080 (or scan the join card).",
+    "New kit, or the PIN was cleared: tap Set up the timing desk and choose a 4–8 digit PIN. Write it down – any other timing desk phone needs it.",
+    "Otherwise: tap Officials › Use the timing desk PIN. You stay logged in until Start new event.",
+    "Follow Get started on the Race tab: timing box, club name, how heats are run, button test, join card.",
+    "Officials scan the join card and tap Officials. Their name and a 3-digit code show under System – check the code on their phone, then tap their job.",
+    "Watch the blue Next bar at the top. After each race, check the Confirm tab and press Confirm results (or let the Referee do it).",
+    "End of day: every race ticked on the LiveHeats tab, System › Setup › Start new event, then System › Setup › Power off. When the green light stops, switch off at the wall."]];
+const PI_PIN=["Timing desk PIN","Getting in – and what to do if it's forgotten.",[
+    "The timing desk PIN lets a phone or tablet do everything the Pi's own screen can, so the box never needs opening.",
+    "A new kit has no PIN: the first phone to open the app is asked to set one.",
+    "Change it: System › Setup › Advanced › Timing desk PIN. Other timing desk phones then need the new PIN.",
+    "Forgot it? The kit owner's PIN also logs in as timing desk – ask the owner.",
+    "Or, at the timing box, between races: hold FINISH for 15 seconds until it beeps 3 times. The PIN is cleared and timing desk phones are logged out. The next phone to open the app sets a new PIN.",
+    "6 wrong PINs in 10 minutes blocks more tries for up to 10 minutes. The owner's PIN and the FINISH reset still work."]];
+function guides(){ return st&&st.power&&st.power.pi?[PI_DESK].concat(GUIDES.slice(1),[PI_PIN]):GUIDES; }
 function printGuides(){ let p=$("printcard"); if(!p){ p=document.createElement("div"); p.id="printcard"; document.body.appendChild(p); }
   const b=st.brand||{}, top=`<div class="gtop">${b.logo?`<img src="/logo?v=${b.logo}" alt="">`:""}<span>${esc(b.club||"IRB Racing")}${b.event?" · "+esc(b.event):""}</span></div>`;
-  p.innerHTML=GUIDES.map(([job,sub,steps])=>`<div class="guide">${top}<h1>${esc(job)}</h1><p class="gsub">${esc(sub)}</p><ol>${steps.map(s=>`<li>${esc(s)}</li>`).join("")}</ol>
+  p.innerHTML=guides().map(([job,sub,steps])=>`<div class="guide">${top}<h1>${esc(job)}</h1><p class="gsub">${esc(sub)}</p><ol>${steps.map(s=>`<li>${esc(s)}</li>`).join("")}</ol>
       <p class="gfoot">Stuck? Ask the timing desk. App address: ${esc((st.join||{}).url||"")}</p></div>`).join("")
     +`<div class="guide">${top}<h1>Hire kit checklist</h1><p class="gsub">Tick each item out, and back in when you pack up.</p>
       <table class="gkit"><tr><th>Item</th><th>Out</th><th>Back</th></tr>${(st.kit||"").split("\n").map(x=>x.trim()).filter(Boolean).map(x=>`<tr><td>${esc(x)}</td><td>☐</td><td>☐</td></tr>`).join("")}</table>
@@ -5172,7 +5254,7 @@ function renderSystem(){
         +(u.prev?`<button class="btn" ${racing||updBusy?"disabled":""} onclick="askRollback()">Go back${u.prev!=="earlier"?" to v"+esc(u.prev):""}</button>`:""), u.newer?"hi":""); }
     L+=row("LiveHeats draw", st.draw?`<b>${esc(st.draw.name)}</b><span class="mute"> · ${st.draw.divisions} divisions · ${st.draw.heats} heats</span>`:`<span class="mute">None loaded – timing works without one</span>`,
       `<button class="btn" onclick="openLoad()">${st.draw?"Reload":"Load"}</button>`);
-    if(master&&st.power&&st.power.pi&&st.access&&!st.access.master_pin) L+=row("Timing desk PIN", `<b class="bad">Not set</b><span class="mute"> – without it, nobody can run the timing desk from a phone or tablet while the Pi is in its box</span>`,
+    if(master&&st.power&&st.power.pi&&st.access&&!st.access.master_pin) L+=row("Timing desk PIN", `<b class="bad">Not set</b><span class="mute"> – the first phone to open the app will be asked to choose one. Set it now if you're at the Pi's screen.</span>`,
       ownLocked?`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`:`<button class="btn pri" onclick="advOpen=true;lastKey='';render();setTimeout(()=>{const e=$('mpin');if(e){e.scrollIntoView({block:'center'});e.focus();}},50)">Set PIN</button>`,"hi");
     if(master&&st.wifi&&st.wifi.on) L+=wifiRow(row,racing);
     if(master&&st.access&&st.wifi&&st.wifi.on&&st.wifi.mode==="hotspot") L+=row("Wi-Fi for join card", `<span class="mute">Filled in by itself – the <b>${esc(st.wifi.hs_ssid)}</b> hotspot name and password</span>`, "");

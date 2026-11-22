@@ -1,12 +1,12 @@
 {
- "app": "1.7.1",
- "pico": "3.2",
- "sha256": "0a2ed050b313744cf1f7926a935c74be12234de5aff1b59c6527c0f2fe6e6457",
- "pico_sha256": "137f4de896e49cb3b2be07af39bb77dd355126ceddce813c8c1183488bab66eb",
+ "app": "1.7.2",
+ "pico": "3.3",
+ "sha256": "b601f65a7874fe46ec0647c1672936abc7270d27264251a333e7886dda0ca6d5",
+ "pico_sha256": "755422f554301a093bcd63dea78e60b5a60bf476b539b7760aadfc703d1b4760",
  "notes": [
-  "Timing desk PIN phones and tablets stay logged in overnight - only Close event, New event or a new PIN logs them out",
-  "The phone that presses Close event, New event or changes the PIN stays logged in",
-  "6 wrong timing desk PINs in 10 minutes blocks more tries for a while",
-  "On the Pi, Setup warns if no timing desk PIN is set"
+  "New kit: the first phone to open the app sets the timing desk PIN (Raspberry Pi)",
+  "The owner PIN also logs in as timing desk - a master key for hired kits",
+  "Timing box v3.3: hold FINISH 15 s between races to clear a forgotten timing desk PIN",
+  "Printed guides: timing desk page for phone/tablet use and a Timing desk PIN page; new troubleshooting item"
  ]
 }

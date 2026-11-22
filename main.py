@@ -1,4 +1,6 @@
-# IRB Finish Timing - bench test v3.2
+# IRB Finish Timing - bench test v3.3
+# v3.3: hold FINISH for 15 s between races (not in a race or button test) = clear the app's timing desk
+#       PIN, so a kit with a forgotten PIN never needs opening. Three long beeps confirm it.
 # v3.2: lane lights ignore button bounce (one light action per press, 1 s apart) and flash slower.
 # v3.1: lane lights: off between races; a press before the race flashes that light twice (button check);
 #       in the race a counted press turns it on for 10 s, a press while it's on flashes it off then on
@@ -74,6 +76,7 @@ RECALL_WINDOW_US = 5_000_000  # GO again within 5 s = recall
 SET_TIMEOUT_MS = 60_000       # SET expires after 60 s without GO
 REARM_MS = 200                # SET/GO must be steadily released before another press counts
 FINISH_HOLD_MS = 1000         # FINISH must be held this long
+PIN_RESET_MS = 15_000         # FINISH held this long between races = clear the app's timing desk PIN
 MAX_RACE_MS = 1_200_000       # auto-finish after 20 min if FINISH is forgotten
 HIT_BLINK_MS = 400            # lane light blinks off this long on each hit
 LIGHT_HOLD_MS = 10_000        # in a race, a lane light stays on this long after a press
@@ -318,7 +321,7 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "3.2", "lanes": sorted(LANE_PINS), "race": race_no,
+    emit({"ev": "hello", "fw": "3.3", "pin_reset": True, "lanes": sorted(LANE_PINS), "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
           "clock": True, "beat": True, "batt": BATT_ENABLED})
     emit({"ev": "test", "on": test_mode})
@@ -482,6 +485,8 @@ set_idle_since = None
 go_idle_since = None
 finish_down_since = None
 finish_fired = False
+finish_down_state = None      # race state when FINISH went down (a reset must start between races)
+reset_fired = False
 
 
 def reset_race():
@@ -934,7 +939,7 @@ def finish_race(reason="Race finished by official."):
 poller = uselect.poll()
 poller.register(sys.stdin, uselect.POLLIN)
 
-print("IRB finish timing - bench test v3.2 (legs, adjustments, history, app link, test, ties, clock)")
+print("IRB finish timing - bench test v3.3 (legs, adjustments, history, app link, test, ties, clock)")
 print("History: last saved race %d. Type log to see files." % race_no)
 emit_all()
 print("Board:", "NPN (hit = pin goes HIGH)" if BOARD_NPN else "PNP (hit = pin goes LOW)")
@@ -1013,15 +1018,24 @@ while True:
     if finish_in.value() == 0:
         if finish_down_since is None:
             finish_down_since = now
+            finish_down_state = state
         elif not finish_fired and time.ticks_diff(now, finish_down_since) >= FINISH_HOLD_MS:
             finish_fired = True
             if test_mode:
                 test_input("FINISH")
             else:
                 finish_race()
+        if (not reset_fired and not test_mode and finish_down_since is not None
+                and finish_down_state in ("IDLE", "DONE") and state in ("IDLE", "DONE")
+                and time.ticks_diff(now, finish_down_since) >= PIN_RESET_MS):
+            reset_fired = True
+            emit({"ev": "pin_reset"})
+            print("Timing desk PIN cleared from the timing box - the next phone to open the app sets a new one.")
+            beep(600, 300, 3)
     else:
         finish_down_since = None
         finish_fired = False
+        reset_fired = False
 
     # 4. lane light timers (10 s holds, flashes)
     if light_seq:
