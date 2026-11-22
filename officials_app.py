@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.6.6"
+APP_VERSION = "1.6.7"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -2958,6 +2958,18 @@ a.btn{text-decoration:none;display:inline-block}
   #printcard .qrs svg{width:70mm;height:70mm}}
 body.board main{max-width:none}
 .bd{display:grid;gap:12px}
+.bd .recent{border-top:3px solid var(--line);padding-top:8px}
+.bd .rhd{font-weight:900;font-size:clamp(17px,min(1.6vw,2.6vh),24px);margin-bottom:6px}.bd .rhd .mute{font-weight:600;font-size:.7em}
+.bd .rgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;align-items:start}
+.bd .rc{background:var(--card);border:2px solid var(--line);border-radius:10px;padding:6px 10px;font-size:clamp(13px,min(1.05vw,1.9vh),17px)}
+.bd .rc.prov{border-color:var(--amber);border-width:3px}
+.bd .rct{display:flex;gap:6px;justify-content:space-between;align-items:center;font-weight:800;margin-bottom:3px}
+.bd .rct small{display:block;font-weight:600;color:var(--mute);font-size:.85em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bd .rct>span:first-child{min-width:0}
+.bd .bnext h2{margin-bottom:4px}.bd .bnl>div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media (min-width:1100px){.bd .bnl{display:grid;grid-template-rows:repeat(5,auto);grid-auto-flow:column;column-gap:16px}}.bd .rct .pill{font-size:.75em;padding:2px 8px}
+.bd .rcr{display:grid;grid-template-columns:1.6em minmax(0,1fr) auto;gap:6px;border-top:1px solid var(--soft);padding:1px 0}
+.bd .rcr span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bd .rcr i{font:700 .95em ui-monospace,Consolas,monospace;font-style:normal}
+@media (min-width:700px){body.board .bd .recent{margin-right:calc(13vh + 40px)}}
 .bd .top{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 .bd .now{font-size:clamp(20px,min(2.4vw,4vh),34px);font-weight:800;min-width:0;text-wrap:balance;flex:1 1 300px}
 .bd .pill{border-radius:99px;padding:6px 14px;font-weight:800;color:#fff;white-space:nowrap;font-size:clamp(16px,1.8vw,24px)}
@@ -4864,30 +4876,52 @@ function boardStart(ht,label,pill){
   }
   return h+`</div>`;
 }
-function boardNext(ht){
-  if(st&&st.next_break&&st.state!=="RACING"){ const b=st.next_break;
+function boardNext(ht,label){
+  if(!label&&st&&st.next_break&&st.state!=="RACING"){ const b=st.next_break;
     return `<div class="card" style="margin:0;background:#fff4d6"><h2>Next: ${esc(b.label)}</h2><p style="margin:0;font-size:1.2em;font-weight:800">${b.until?"Racing resumes "+esc(b.until):b.mins?b.mins+" minutes":""}</p></div>`; }
   if(!ht) return "";
-  return `<div class="card" style="margin:0"><h2>Next: ${esc(heatLabel(ht))}</h2>${
-    Object.entries(ht.crews||{}).sort((a,b)=>a[0]-b[0]).map(([l,c])=>`<div><b>${l}</b> ${esc(c)}</div>`).join("")||`<p class="mute">Not drawn yet.</p>`}</div>`;
+  return `<div class="card bnext" style="margin:0"><h2>${label||"Next"}: ${esc(heatLabel(ht))}</h2><div class="bnl">${
+    Object.entries(ht.crews||{}).sort((a,b)=>a[0]-b[0]).map(([l,c])=>`<div><b>${l}</b> ${esc(c)}</div>`).join("")||`<p class="mute">Not drawn yet.</p>`}</div></div>`;
 }
+function boardNext2(a,b){ return `<div style="display:grid;gap:12px">${boardNext(a)}${b?boardNext(b,"After that"):""}</div>`; }
+// bottom strip: results of finished heats, newest first. Provisional ones always stay; confirmed ones
+// drop off (oldest first) when the screen is full.
+function boardRecent(skipRace){
+  let list=(hist||[]).filter(r=>r.race!==skipRace&&r.rows&&r.rows.length);
+  const conf=r=>!!(r.flags||{}).confirmed;
+  if(innerWidth<700){ let n=0; list=list.filter(r=>!conf(r)||n++<4); }
+  else list=list.slice(0,16);
+  if(!list.length) return "";
+  return `<div class="recent" id="recent"><div class="rhd">Results <span class="mute">· provisional results stay up until confirmed</span></div><div class="rgrid">${list.map(r=>{
+    const c=conf(r), rows=ranked(r);
+    const hd=r.heat&&r.heat.div?`<span>${esc(r.heat.round)} · Heat ${esc(r.heat.no)}<small>${esc(r.heat.div)}</small></span>`:`<span>${esc(r.heat?heatLabel(r.heat):"Race "+r.race)}</span>`;
+    return `<div class="rc ${c?"conf":"prov"}"><div class="rct">${hd}<span class="pill ${c?"final":"prov"}">${c?"Final":"Provisional"}</span></div>${
+      rows.map(x=>`<div class="rcr"><b>${x.place?((r.ties||[]).includes(x.lane)?"=":"")+x.place:"–"}</b><span>${esc(crewOf(r.heat,x.lane)||"Lane "+x.lane)}</span><i>${x.place?ft(x.t_us):esc(x.status)}</i></div>`).join("")}</div>`; }).join("")}</div></div>`;
+}
+function fitRecent(){
+  const box=$("recent"); if(!box||innerWidth<700) return;
+  const over=()=>box.getBoundingClientRect().bottom>innerHeight-6;
+  while(over()){ const c=box.querySelectorAll(".rc.conf"); if(!c.length) break; c[c.length-1].remove(); }
+  if(!box.querySelector(".rc")) box.remove();
+}
+addEventListener("resize",()=>{ if(location.hash==="#board") lastKey=""; });
 function renderBoard(){
   if(linkDown||!st.connected) { $("race").innerHTML=banner(); return; }
-  const s=st.state;
-  let h=`<div class="bd">${brandBar()}`;
+  const s=st.state, nx=st.next_heats||[];
+  let h=`<div class="bd">${brandBar()}`, skip=null;
   if(s==="DONE"&&st.results){
-    // just finished: results first; then whichever heat is up next
-    const res=st.results, nextHt=(st.heat&&(!res.heat||st.heat.heat_id!==res.heat.heat_id))?st.heat:(st.next_heats||[])[0];
-    h+=`<div class="two"><div>${boardResults(res,res.heat?heatLabel(res.heat):"Race "+res.race,st.confirmed)}</div><div>${boardNext(nextHt)}</div></div>`;
+    // just finished: results first; then the next two heats
+    const res=st.results, moved=st.heat&&(!res.heat||st.heat.heat_id!==res.heat.heat_id);
+    skip=res.race;
+    h+=`<div class="two"><div>${boardResults(res,res.heat?heatLabel(res.heat):"Race "+res.race,st.confirmed)}</div><div>${moved?boardNext2(st.heat,nx[0]):boardNext2(nx[0],nx[1])}</div></div>`;
   } else if(s==="RACING"){
-    h+=`<div class="two"><div>${boardStart(st.race_heat||st.heat,"Racing",`<span class="pill racing">RACING <span id="clock">${clock(st.elapsed||0)}</span></span>`)}</div><div>${boardNext((st.next_heats||[])[0])}</div></div>`;
+    h+=`<div class="two"><div>${boardStart(st.race_heat||st.heat,"Racing",`<span class="pill racing">RACING <span id="clock">${clock(st.elapsed||0)}</span></span>`)}</div><div>${boardNext2(nx[0],nx[1])}</div></div>`;
   } else {
-    // between races: the heat on the start, then the last result
-    const last=(hist||[])[0];
-    h+=`<div class="two"><div>${boardStart(st.heat,"On the start",s==="ARMED"?`<span class="pill armed">SET</span>`:"")}</div><div style="display:grid;gap:12px">${
-      last?`<div class="card" style="margin:0">${boardResults(last,"Last result: "+(last.heat?heatLabel(last.heat):"Race "+last.race),true).replace('class="pill final">Final','class="pill final">Final')}</div>`:""}${boardNext((st.next_heats||[])[0])}</div></div>`;
+    // between races: the heat on the start, then the next two
+    h+=`<div class="two"><div>${boardStart(st.heat,"On the start",s==="ARMED"?`<span class="pill armed">SET</span>`:"")}</div><div>${boardNext2(nx[0],nx[1])}</div></div>`;
   }
-  $("race").innerHTML=h+`</div>`+boardQr()+homeBtn();
+  $("race").innerHTML=h+boardRecent(skip)+`</div>`+boardQr()+homeBtn();
+  fitRecent();
 }
 function render(){
   if(location.hash==="#fix"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;

@@ -1,8 +1,9 @@
 {
- "app": "1.6.6",
+ "app": "1.6.7",
  "pico": "3.2",
- "sha256": "78814b39d0492ca1fbc112b9002d972dfd87c72a9114fee43176a10267083d75",
+ "sha256": "cb905c996db332ad5d6eea5832f677698472da90e35a5ea77c9a26983b6a6ae8",
  "notes": [
-  "Timing box program v3.2: lane lights no longer flicker from button bounce; slower, clearer flashes"
+  "Results board: shows the next two heats instead of the last result",
+  "Results board: strip of finished heats along the bottom - provisional ones stay until confirmed, confirmed ones drop off as the screen fills"
  ]
 }
