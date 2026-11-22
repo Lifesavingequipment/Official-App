@@ -83,13 +83,26 @@ else
 fi
 # a desktop icon, either way
 if [ -d "$HOME/Desktop" ]; then
-    cat > "$HOME/Desktop/IRB-timing.desktop" <<EOF
+    B=$(command -v chromium-browser || command -v chromium || true)
+    if [ -n "$B" ]; then        # --password-store=basic: no "Choose password for new keyring" box
+        cat > "$HOME/Desktop/IRB-timing.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=IRB timing
+Exec=$B --password-store=basic --no-first-run http://localhost:8080
+Icon=web-browser
+Terminal=false
+EOF
+        chmod +x "$HOME/Desktop/IRB-timing.desktop"
+    else
+        cat > "$HOME/Desktop/IRB-timing.desktop" <<EOF
 [Desktop Entry]
 Type=Link
 Name=IRB timing
 URL=http://localhost:8080
 Icon=web-browser
 EOF
+    fi
 fi
 
 say "5/5  Checking"
