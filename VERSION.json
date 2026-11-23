@@ -1,12 +1,11 @@
 {
- "app": "1.9.2",
+ "app": "1.9.3",
  "pico": "3.6",
- "sha256": "bb343521cad031b42d1d7cbb029771881251974963bd0676d8d85a2af10d418a",
+ "sha256": "b1cb9d655626402eeba7eb144417a8486df8c96092a03e1e5d85dcfa505e182a",
  "pico_sha256": "89ef995913e7b4952f652be5601e62a4f921fabc194281e846013d865253b62e",
  "notes": [
-  "On the Pi the join card always uses the timing hotspot (name, password, address), whatever Wi-Fi the Pi is on",
-  "System \u203a Setup \u203a Hotspot name and password: rename the hotspot or change its password from the app (owner-locked)",
-  "Help, guides and Wi-Fi rows show the hotspot's real address (e.g. 10.0.0.1)",
-  "Lanes row says 'Waiting for the timing box' instead of '0 lane in use'"
+  "System tidy: Setup is now grouped into fold-away sections (anything needing attention opens itself)",
+  "Today page reordered \u2013 button test sits with Start of day; long officials list folds",
+  "Button test opens full screen with big tiles; Minimise to get back"
  ]
 }

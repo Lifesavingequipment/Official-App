@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.9.2"
+APP_VERSION = "1.9.3"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -3620,6 +3620,15 @@ box-shadow:0 6px 24px rgba(0,0,0,.3);max-width:calc(100vw - 32px)}
 .tests div{display:flex;justify-content:space-between;gap:6px;align-items:baseline}
 .tests div small{font-weight:700;color:var(--mute)}
 .lastpress{font-size:22px;font-weight:800;margin:6px 0}
+#testfs.on{position:fixed;inset:0;z-index:8;background:var(--bg,#f3f5f8);overflow:auto;padding:12px 12px calc(16px + env(safe-area-inset-bottom,0px))}
+#testfs.on .tfs{max-width:1200px;margin:0 auto}.tfh{display:flex;justify-content:space-between;align-items:center;gap:10px}
+#testfs .tests{grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}
+#testfs .tfh h2{font-size:clamp(22px,4vw,32px);margin:0}#testfs .tests div{font-size:30px;padding:22px 16px;min-height:120px;align-items:center;border-width:3px;border-radius:14px}
+#testfs .tests div small{font-size:18px}#testfs .lastpress{font-size:clamp(26px,5vw,44px)}
+#testfs .tend{font-size:22px;padding:16px 34px}
+#testfs.mini{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:8}
+#testfs.mini .btn{box-shadow:0 6px 20px rgba(0,0,0,.25)}
+@media(max-width:520px){#testfs .tests{grid-template-columns:repeat(2,1fr)}#testfs .tests div{font-size:22px;min-height:76px;padding:14px 10px}}
 .vid{font:600 13px ui-monospace,Consolas,monospace;color:var(--mute)}
 textarea{font:500 16px system-ui;padding:10px;border-radius:10px;border:2px solid var(--line);background:var(--card);color:var(--ink);width:100%;min-height:70px}
 .practice{background:#5b3fa0;color:#fff;border-radius:10px;padding:10px 12px;font-weight:700}
@@ -3744,7 +3753,14 @@ body.board header,body.board #nextbar{display:none}
 .mscr{flex:0 0 auto;align-self:center;width:50px;height:48px;border:1.5px solid var(--line);border-radius:10px;background:#fff;color:var(--mute);font:800 17px/1 system-ui;cursor:pointer;padding:4px 0}
 .mscr small{display:block;font:600 10px system-ui;margin-top:3px}
 .rolefix{margin-top:6px;padding:8px 10px;border:2px solid var(--red);border-radius:10px;background:#fde8e8;font-size:14px}
-.rolefix>b{color:var(--red)}.lanegrid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;max-width:420px}.lanegrid .btn{min-height:48px;font-size:20px;font-weight:800;padding:0}
+.rolefix>b{color:var(--red)}.ssec{border-bottom:1px solid var(--line)}.ssec:last-child{border-bottom:0}
+.ssh{all:unset;box-sizing:border-box;display:flex;gap:12px;align-items:center;width:100%;padding:14px 4px;cursor:pointer;min-height:52px}
+.ssh:focus-visible{outline:3px solid var(--blue);outline-offset:-3px;border-radius:8px}
+.sst{font-weight:800;font-size:19px;flex:0 0 auto;display:flex;align-items:center;gap:8px}.sss{flex:1 1 auto;color:var(--mute);font-size:15px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ssa{font-size:18px;color:var(--mute)}.sdot{width:11px;height:11px;border-radius:50%;background:var(--amber);display:inline-block}
+.ssec.attn .sss{color:var(--amber);font-weight:700}.ssb{padding:0 0 10px}
+@media(max-width:640px){.ssh{flex-wrap:wrap;row-gap:2px}.sst{flex:1 1 auto}.sss{order:3;flex:1 1 100%;white-space:normal;font-size:14px}.sss:empty{display:none}}
+.lanegrid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;max-width:420px}.lanegrid .btn{min-height:48px;font-size:20px;font-weight:800;padding:0}
 .chgd{font-size:11px;font-weight:800;color:#7a4a00;background:#fff1d6;border:1px solid #e0b060;border-radius:6px;padding:0 5px;margin-left:3px}
 .tmlock{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:-4px 0 8px;padding:8px 10px;background:var(--soft,#eef2f7);border-radius:10px}
 .ccrow{display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid #dde3ea}.ccrow .cn{flex:1 1 8em;font-weight:700;min-width:0;overflow-wrap:anywhere}
@@ -5373,6 +5389,7 @@ function pinCard(){
     <div class="row"><button class="btn" onclick="lockDevice()">Log out</button></div></div>`+joinCard();
   return `<div class="card"><h2>View only</h2><div class="row"><button class="btn pri" onclick="openRequest()">Officials – ask for access</button></div></div>`;
 }
+let offOpen=false;
 function officialsCard(){
   const a=st.access, n={starter:0,marshal:0,admin:0,master:0};
   a.officials.forEach(o=>n[o.role]=(n[o.role]||0)+1);
@@ -5385,7 +5402,9 @@ function officialsCard(){
   if(!a.requests.length) h+=`<p class="mute" style="margin-top:0">Officials scan the join card and tap <b>Officials</b>. Requests show here.</p>`;
   h+=`<p style="font-weight:800;margin:10px 0 4px">${LV.map(l=>ROLE_NAME[l]+" "+n[l]).join(" · ")}${n.master?" · Timing desk phone "+n.master:""}</p>`;
   if(n.starter>2) h+=`<p class="warn">${n.starter} Starters approved – usually one plus a backup. Check this is right.</p>`;
-  for(const o of a.officials) h+=`<div class="ofrow"><span class="nm">${esc(o.name)}${o.regular?" ★":""}</span><span class="chip ${o.role==="starter"?"now":"next"}">${ROLE_NAME[o.role]}</span>
+  const fold=a.officials.length>3&&!offOpen;
+  if(a.officials.length>3) h+=`<button class="btn sm" style="margin:2px 0 6px" onclick="offOpen=!offOpen;lastKey='';render()">${offOpen?"Hide the list ▾":"Show all "+a.officials.length+" officials ▸"}</button>`;
+  if(!fold) for(const o of a.officials) h+=`<div class="ofrow"><span class="nm">${esc(o.name)}${o.regular?" ★":""}</span><span class="chip ${o.role==="starter"?"now":"next"}">${ROLE_NAME[o.role]}</span>
     <span class="mute ofs"><span class="dot ${o.mins>=2?"off":""}"></span>${o.mins<2?"<span class='ofc'>connected</span>":"not seen "+(o.mins>=60?Math.floor(o.mins/60)+" h":o.mins+" min")}</span>
     <button class="btn sm" onclick="offSheet('${o.id}')">Change</button></div>`;
   if(a.officials.length) h+=`<div class="row"><button class="btn red" onclick="askClose()">Close event</button></div>`;
@@ -5493,7 +5512,22 @@ function openUnlock(){
 async function lockDevice(){ await post("/api/lock",{}); wasWaiting=false; if(st) st.me=null; toast(st&&st.role!=="viewer"?"Logged out":"Request cancelled"); tabRole=""; location.hash=""; lastKey=""; render(); }
 function testProblems(){ const lt=st.last_test||{missing:[],clash:[]}, n=lt.missing.length+(lt.clash||[]).length; return n+" problem"+(n===1?"":"s"); }
 let ltOpen=false;
-function testCard(){
+// ---------- button test: full screen while it runs, so the tiles are big enough to see from the box ----------
+let testMin=false, fsKey="", fsCounts={};
+function drawTestFS(){
+  let el=$("testfs"); if(!el){ el=document.createElement("div"); el.id="testfs"; document.body.appendChild(el); }
+  const can=st&&st.test&&["master","admin","starter"].includes(st.role)&&!document.body.classList.contains("board");
+  if(!st||!st.test){ testMin=false; fsCounts={}; }
+  const k=JSON.stringify([can,testMin,can&&[st.test_seen,st.test_count,st.test_clash,st.test_last,st.lanes,st.connected]]);
+  if(k===fsKey) return; fsKey=k;
+  if(!can){ el.className=""; el.innerHTML=""; return; }
+  if(testMin){ el.className="mini"; el.innerHTML=`<button class="btn pri" onclick="testMin=false;fsKey='';drawTestFS()">Button test running – full screen</button>`; return; }
+  el.className="on"; el.innerHTML=testCard(true);
+  const cnt=st.test_count||{};
+  el.querySelectorAll(".tests div").forEach(d=>{ const n=d.dataset.t; if((cnt[n]||0)>(fsCounts[n]||0)) d.classList.add("flash"); });
+  fsCounts=Object.assign({},cnt);
+}
+function testCard(fs){
   const need=st.lanes.map(l=>"Lane "+l).concat(["SET","GO","FINISH"]);
   if(st.test){
     const seen=st.test_seen||[], left=need.filter(x=>!seen.includes(x));
@@ -5510,11 +5544,11 @@ function testCard(){
       clashTxt+=`<div class="warn">Check: ${esc(c.a)} and ${esc(c.b)} went off together (${ms(c)}). It may have been two people pressing at once.
         Press ${left.map(esc).join(" and ")} on ${left.length>1?"their":"its"} own – if ${left.length>1?"both work":"it works"} separately, this clears.</div>`;
     }
-    return `<div class="card confirm"><h2>Button test running</h2>${clashTxt}<p class="mute">Press each button (hold FINISH for 1 second). A box flashes every time its button is pressed, so you can check each button is wired to the right lane. Nothing will start.</p>
+    return `<div class="card confirm ${fs?"tfs":""}"><div class="tfh"><h2>Button test running</h2>${fs?`<button class="btn" onclick="testMin=true;fsKey='';drawTestFS()">Minimise</button>`:""}</div>${clashTxt}${!st.connected?`<div class="bad-warn">Timing box not connected</div>`:""}<p class="mute">Press each button (hold FINISH for 1 second). A box flashes every time its button is pressed, so you can check each button is wired to the right lane. Nothing will start.</p>
       <div class="lastpress">${st.test_last?"Last pressed: "+esc(st.test_last):"Press a button…"}</div>
       <div class="tests">${need.map(x=>`<div data-t="${esc(x)}" class="${bad.has(x)?"clash":sus.has(x)?"sus":seen.includes(x)?"ok":""}">${seen.includes(x)?"✓ ":""}${esc(x)}${cnt[x]?`<small>×${cnt[x]}</small>`:""}</div>`).join("")}</div>
       <p>${left.length?left.length+" still to press.":bad.size?"All buttons respond, but there is a wiring fault above.":sus.size?"All buttons respond – finish the check above.":"All buttons work."}</p>
-      <div class="row"><button class="btn ${left.length?"":"pri"}" onclick="cmd('test off')">End test</button></div></div>`;
+      <div class="row"><button class="btn ${left.length?"":"pri"} ${fs?"tend":""}" onclick="cmd('test off')">End test</button>${fs?"":`<button class="btn" onclick="testMin=false;fsKey='';drawTestFS()">Full screen</button>`}</div></div>`;
   }
   const lt=st.last_test, today=lt&&lt.date===st.today;
   return `<div class="card"><h2>Button test</h2><p class="mute">Every morning before racing – the only way to find a broken FINISH cable.</p>
@@ -5699,7 +5733,7 @@ function renderSystem(){
     <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected))?' <span class="badge">1</span>':""}</button></div>`:"";
   let c="";
   if(sysView==="today"){
-    if(master&&st.access) c=sysCols(dayCard(), officialsCard()+clubCard()+test+screens, joinCard()+batt);
+    if(master&&st.access) c=sysCols(dayCard()+test, officialsCard()+clubCard(), joinCard()+screens+batt);
     else c=sysCols(box+test, pinCard()+(st.role==="admin"?clubCard():""), (st.official?screens:"")+batt);
   } else {
     // Setup: one tidy list – a line per item, status in the middle, button on the right
@@ -5707,55 +5741,54 @@ function renderSystem(){
     const racing=st.state==="ARMED"||st.state==="RACING";
     const row=(name,status,btns,cls)=>`<div class="srow ${cls||""}"><div class="sn">${name}</div><div class="ss">${status}</div><div class="sb">${btns||""}</div></div>`;
     let L="";
+    const G={event:"",box:"",net:"",results:"",system:"",adv:""};
     const ownLocked=!!(st.owner&&st.owner.set&&!st.owner.open);
-    if(master) L+=row("Get started", st.setup_done?`<span class="mute">The setup steps for a new carnival</span>`:`<b class="okb">Showing on the Race tab</b>`,
+    if(master) G.event+=row("Get started", st.setup_done?`<span class="mute">The setup steps for a new carnival</span>`:`<b class="okb">Showing on the Race tab</b>`,
       st.setup_done?`<button class="btn" onclick="brandDo({setup_done:false},'Get started is on the Race tab');goTab('race')">Open</button>`:`<button class="btn" onclick="goTab('race')">Go there</button>`);
-    if(master) L+=row("Club and event", (st.brand||{}).club?`<b>${esc(st.brand.club)}</b>${st.brand.event?`<span class="mute"> · ${esc(st.brand.event)}</span>`:""}${st.brand.logo?` <span class="mute">· logo</span>`:""}`:`<span class="mute">Not set – shown on the screens and join card</span>`,
+    if(master) G.event+=row("Club and event", (st.brand||{}).club?`<b>${esc(st.brand.club)}</b>${st.brand.event?`<span class="mute"> · ${esc(st.brand.event)}</span>`:""}${st.brand.logo?` <span class="mute">· logo</span>`:""}`:`<span class="mute">Not set – shown on the screens and join card</span>`,
       `<button class="btn" onclick="brandSheet()">Change</button>`);
     if(master&&st.update&&ownLocked){ const u=st.update;
-      L+=row("Updates", `v${esc(u.current)}${u.newer?` · <b class="okb">v${esc(u.latest)} is out</b>`:""} · <span class="mute">the owner installs updates</span>`,
+      G.system+=row("Updates", `v${esc(u.current)}${u.newer?` · <b class="okb">v${esc(u.latest)} is out</b>`:""} · <span class="mute">the owner installs updates</span>`,
         `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`); }
     else if(master&&st.update){ const u=st.update;
-      L+=row("Updates", u.newer?`<b class="okb">New version v${esc(u.latest)} available</b>${u.notes.length?`<ul class="snotes">${u.notes.map(n=>`<li>${esc(n)}</li>`).join("")}</ul>`:""}`
+      G.system+=row("Updates", u.newer?`<b class="okb">New version v${esc(u.latest)} available</b>${u.notes.length?`<ul class="snotes">${u.notes.map(n=>`<li>${esc(n)}</li>`).join("")}</ul>`:""}`
           :`v${esc(u.current)}${u.latest?` · <span class="ok">up to date</span>${u.checked?" (checked "+esc(u.checked)+")":""}`:""}${u.msg?`<div class="warn" style="margin-top:4px">${esc(u.msg)}</div>`:""}`,
         (u.newer?`<button class="btn pri" ${racing||updBusy?"disabled":""} onclick="askUpdate()">Update</button>`:"")
         +`<button class="btn" ${updBusy?"disabled":""} onclick="updDo({check:true},'Checked')">Check</button>`
         +(u.prev?`<button class="btn" ${racing||updBusy?"disabled":""} onclick="askRollback()">Go back${u.prev!=="earlier"?" to v"+esc(u.prev):""}</button>`:""), u.newer?"hi":""); }
-    L+=row("LiveHeats draw", st.draw?`<b>${esc(st.draw.name)}</b><span class="mute"> · ${st.draw.divisions} divisions · ${st.draw.heats} heats</span>`:`<span class="mute">None loaded – timing works without one</span>`,
+    G.event+=row("LiveHeats draw", st.draw?`<b>${esc(st.draw.name)}</b><span class="mute"> · ${st.draw.divisions} divisions · ${st.draw.heats} heats</span>`:`<span class="mute">None loaded – timing works without one</span>`,
       `<button class="btn" onclick="openLoad()">${st.draw?"Reload":"Load"}</button>`);
-    if(master&&st.power&&st.power.pi&&st.access&&!st.access.master_pin) L+=row("Timing desk PIN", `<b class="bad">Not set</b><span class="mute"> – the first phone to open the app will be asked to choose one. Set it now if you're at the Pi's screen.</span>`,
+    if(master&&st.power&&st.power.pi&&st.access&&!st.access.master_pin) G.system+=row("Timing desk PIN", `<b class="bad">Not set</b><span class="mute"> – the first phone to open the app will be asked to choose one. Set it now if you're at the Pi's screen.</span>`,
       ownLocked?`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`:`<button class="btn pri" onclick="advOpen=true;lastKey='';render();setTimeout(()=>{const e=$('mpin');if(e){e.scrollIntoView({block:'center'});e.focus();}},50)">Set PIN</button>`,"hi");
-    if(master&&st.wifi&&st.wifi.on) L+=(st.inet&&st.inet.two)?hotspotRow(row)+inetRow(row):wifiRow(row,racing);
-    if(master&&st.access&&st.wifi&&st.wifi.on&&st.wifi.hotspot){ if(!(st.inet&&st.inet.two)) L+=hsRow(row,racing,ownLocked); }
-    else if(master&&st.access) L+=row("Wi-Fi for join card", `<div class="sin"><input type="text" id="wssid" value="${esc(a.net.ssid)}" placeholder="Wi-Fi name">
+    if(master&&st.wifi&&st.wifi.on) G.net+=(st.inet&&st.inet.two)?hotspotRow(row)+inetRow(row):wifiRow(row,racing);
+    if(master&&st.access&&st.wifi&&st.wifi.on&&st.wifi.hotspot){ if(!(st.inet&&st.inet.two)) G.net+=hsRow(row,racing,ownLocked); }
+    else if(master&&st.access) G.net+=row("Wi-Fi for join card", `<div class="sin"><input type="text" id="wssid" value="${esc(a.net.ssid)}" placeholder="Wi-Fi name">
         <input type="text" id="wpass" value="${esc(a.net.pass)}" placeholder="Password"></div>`,
       `<button class="btn" onclick="offDo({net:{ssid:$('wssid').value,pass:$('wpass').value,addr:a_addr()}},'Saved')">Save</button>`);
-    L+=row("Backup", st.backup?`<span class="${st.backup.ok?"ok":"bad"}">${st.backup.ok?"Copied "+esc(st.backup.at):esc(st.backup.msg)}</span>`:`<span class="mute">USB stick with an <b>IRB_backup</b> folder</span>`,
+    G.results+=row("Backup", st.backup?`<span class="${st.backup.ok?"ok":"bad"}">${st.backup.ok?"Copied "+esc(st.backup.at):esc(st.backup.msg)}</span>`:`<span class="mute">USB stick with an <b>IRB_backup</b> folder</span>`,
       master?`<button class="btn" onclick="post('/api/backup',{}).then(()=>toast('Backup done'))">Back up now</button>`:"");
-    if(master) L+=row("Practice mode", st.practice?`<b class="bad">ON – races aren't saved</b>`:`<span class="mute">Off · for training, races aren't saved</span>`,
+    if(master) G.event+=row("Practice mode", st.practice?`<b class="bad">ON – races aren't saved</b>`:`<span class="mute">Off · for training, races aren't saved</span>`,
       `<button class="btn ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Turn off":"Turn on"}</button>`);
-    L+=row("Timing box", st.connected?(st.faults.length?`<span class="bad">Wiring fault: ${esc(st.faults.join(", "))}</span>`
+    G.box+=row("Timing box", st.connected?(st.faults.length?`<span class="bad">Wiring fault: ${esc(st.faults.join(", "))}</span>`
         :`<span class="ok">Connected · wiring OK</span>`):`<span class="bad">Not connected – plug its USB cable into this computer</span>`, "");
-    if(master) L+=row("Lanes", lanesWord(), `<button class="btn" ${racing||st.test?"disabled":""} onclick="lanesSheet()">Change</button>`);
-    if(master&&st.pico_upd) L+=picoRow(row,racing,ownLocked);
-    if(master&&st.firewall&&st.firewall.state!=null) L+=row("Phones", st.firewall.state?`<span class="ok">Windows lets phones connect</span>`:`<span class="bad">Windows is blocking phones${st.firewall.busy?" – answer Yes on the Windows prompt":""}</span>`,
+    if(master) G.event+=row("Lanes", lanesWord(), `<button class="btn" ${racing||st.test?"disabled":""} onclick="lanesSheet()">Change</button>`);
+    if(master&&st.pico_upd) G.box+=picoRow(row,racing,ownLocked);
+    if(master&&st.firewall&&st.firewall.state!=null) G.net+=row("Phones", st.firewall.state?`<span class="ok">Windows lets phones connect</span>`:`<span class="bad">Windows is blocking phones${st.firewall.busy?" – answer Yes on the Windows prompt":""}</span>`,
       st.firewall.state||st.firewall.busy?"":`<button class="btn pri" onclick="post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))">Allow phones</button>`);
-    L+=row("Events", `<span class="mute">${st.events.filter(e=>e.id).map(e=>esc(e.name)+" "+e.legs).join(" · ")}</span>`, master?`<button class="btn" onclick="eventsSheet()">Edit</button>`:"");
-    if(master) L+=row("Results to take home", `<span class="mute">Results spreadsheet, program and race log as a zip file</span>`,
+    G.event+=row("Events", `<span class="mute">${st.events.filter(e=>e.id).map(e=>esc(e.name)+" "+e.legs).join(" · ")}</span>`, master?`<button class="btn" onclick="eventsSheet()">Edit</button>`:"");
+    if(master) G.results+=row("Results to take home", `<span class="mute">Results spreadsheet, program and race log as a zip file</span>`,
       `<a class="btn" href="/event_pack.zip" download>Today</a>${(st.past_events||[]).length?`<button class="btn" onclick="packSheet()">Saved events</button>`:""}`);
-    if(master) L+=row("Problem report", `<span class="mute">If something went wrong, send this file to the kit owner – no passwords in it</span>`,
+    if(master) G.results+=row("Problem report", `<span class="mute">If something went wrong, send this file to the kit owner – no passwords in it</span>`,
       `<a class="btn" href="/diagnostics.zip" download>Download</a><button class="btn" onclick="post('/api/diagnostics',{}).then(()=>toast('Checked the USB stick'))">Save to USB</button>`);
-    if(master&&st.owner) L+=row("Owner lock", !st.owner.set?`<span class="mute">Off · set an owner PIN before hiring the kit out – it locks updates and advanced settings</span>`
+    if(master&&st.owner) G.system+=row("Owner lock", !st.owner.set?`<span class="mute">Off · set an owner PIN before hiring the kit out – it locks updates and advanced settings</span>`
         :st.owner.open?`<b class="okb">Unlocked</b><span class="mute"> · locks again in ${st.owner.mins} min</span>`:`<b>On</b><span class="mute"> · updates and advanced settings are locked</span>`,
       !st.owner.set?`<button class="btn" onclick="ownerSheet('set')">Set PIN</button>`:st.owner.open?`<button class="btn" onclick="ownDo({lock:true},'Locked')">Lock now</button><button class="btn" onclick="ownerSheet('set')">Change PIN</button>`
         :`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
-    if(master) L+=row("New event", (st.past_events||[]).length?`<span class="mute">Last saved: ${esc(st.past_events[0])}</span>`:`<span class="mute">Saves today, then clears for a fresh start</span>`,
+    if(master) G.event+=row("New event", (st.past_events||[]).length?`<span class="mute">Last saved: ${esc(st.past_events[0])}</span>`:`<span class="mute">Saves today, then clears for a fresh start</span>`,
       `<button class="btn red" ${racing?"disabled":""} onclick="askNewEvent()">Start new event</button>`);
-    if(master&&st.power&&st.power.on) L+=row("Power", `<span class="mute">Turn the timing ${st.power.pi?"Pi":"computer"} off safely – no need to open the case</span>`,
+    if(master&&st.power&&st.power.on) G.system+=row("Power", `<span class="mute">Turn the timing ${st.power.pi?"Pi":"computer"} off safely – no need to open the case</span>`,
       `<button class="btn" ${racing?"disabled":""} onclick="powerAsk('restart')">Restart</button><button class="btn red" ${racing?"disabled":""} onclick="powerAsk('off')">Power off</button>`);
-    L+=row("Advanced", `<span class="mute">App address, timing desk PIN, your name, hire kit list, timing box messages, restart</span>`,
-      `<button class="btn" onclick="advOpen=!advOpen;lastKey='';render()">${advOpen?"Hide ▴":"Show ▾"}</button>`);
-    if(advOpen){
+    {
       let A="";
       if(master&&st.access&&ownLocked) A+=row("App address, timing desk PIN, restart", `<span class="mute">Locked by the owner</span>`, `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
       if(master&&st.access&&!ownLocked) A+=row("App address", `<div class="sin"><input type="text" id="waddr" value="${esc(a.net.addr)}" placeholder="${esc(a.auto_url)}"></div>
@@ -5776,8 +5809,17 @@ function renderSystem(){
       if(master&&st.connected&&!ownLocked) A+=row("Restart timing program", `<span class="mute">Only if the screen says the timing program stopped – clears any race in progress</span>`,
         `<button class="btn red" onclick="askYes('Restart the timing program in the timing box? Any race in progress is cleared.',()=>cmd('restart'),'Yes, restart')">Restart</button>`);
       A+=row("Versions", `App v${esc(st.app)} · timing box program v${esc(st.fw||"?")}${st.port?" on "+esc(st.port):""}`, "");
-      L+=`<div class="sadv">${A}</div>`;
+      G.adv=A;
     }
+    { const b=st.brand||{}, u=st.update||{}, w=st.wifi||{}, i=st.inet||{}, pu=st.pico_upd||{};
+      const boxBad=!st.connected||st.faults.length||(pu.newer&&!pu.app_first&&st.connected);
+      const sysBad=(u.newer)||(st.power&&st.power.pi&&st.access&&!st.access.master_pin);
+      L=sec("event","Today's event",[b.club||"Club not set",st.lanes.length&&st.fw?st.lanes.length+" lanes":"",st.draw?st.draw.name:"no LiveHeats draw",st.practice?"PRACTICE MODE ON":""].filter(Boolean).join(" · "),G.event,st.practice)
+       +sec("box","Timing box",!st.connected?"Not connected":st.faults.length?"Wiring fault: "+st.faults.length:"Connected · wiring OK"+(st.fw?" · v"+st.fw:"")+(pu.newer&&!pu.app_first?" · update ready":""),G.box,boxBad)
+       +(G.net?sec("net","Wi-Fi and phones",w.on?[w.mode==="hotspot"?"On the timing hotspot":w.mode==="wifi"?"Home Wi-Fi: "+w.name:"No Wi-Fi",w.hs_ssid?"hotspot "+w.hs_ssid:"",i.two?(i.name?"internet via "+i.name:"no internet Wi-Fi"):""].filter(Boolean).join(" · "):"Join card Wi-Fi and phones",G.net,false):"")
+       +sec("results","Results and backup",st.backup?(st.backup.ok?"Backed up "+st.backup.at:"Backup problem"):"Results zip, USB backup, problem report",G.results,st.backup&&!st.backup.ok)
+       +sec("system","Updates, owner lock and power",["App v"+st.app,u.newer?"v"+u.latest+" available":"",st.owner&&st.owner.set?(st.owner.open?"unlocked":"owner lock on"):""].filter(Boolean).join(" · "),G.system,sysBad)
+       +sec("adv","Advanced","App address, timing desk PIN, your name, timing box messages, versions",G.adv,false); }
     c=`<div class="card slist">${L}</div>`;
   }
   $("system").innerHTML=h+c;
@@ -5786,6 +5828,13 @@ function renderSystem(){
     if((cnt[n]||0)>(prevCounts[n]||0)){ d.classList.remove("flash"); void d.offsetWidth; d.classList.add("flash"); } });
   prevCounts=Object.assign({},cnt);
 }
+// ---------- Setup sections: fold away what isn't needed; anything needing attention opens itself ----------
+let secOpen={}; try{ secOpen=JSON.parse(localStorage.getItem("irb_secs")||"{}")||{}; }catch(e){}
+function secIs(id,attn){ if(id==="adv") return advOpen; return id in secOpen?secOpen[id]:(attn||id==="event"); }
+function secToggle(id,attn){ if(id==="adv") advOpen=!advOpen; else { secOpen[id]=!secIs(id,attn); try{ localStorage.setItem("irb_secs",JSON.stringify(secOpen)); }catch(e){} } lastKey=""; render(); }
+function sec(id,title,sum,inner,attn){ if(!inner) return ""; const open=secIs(id,attn);
+  return `<div class="ssec ${open?"open":""} ${attn?"attn":""}" id="sec_${id}"><button class="ssh" onclick="secToggle('${id}',${!!attn})"><span class="sst">${attn?`<span class="sdot"></span>`:""}${esc(title)}</span>
+    <span class="sss">${open?"":esc(sum)}</span><span class="ssa">${open?"▾":"▸"}</span></button>${open?`<div class="ssb">${inner}</div>`:""}</div>`; }
 // ---------- lanes in use (training 2, NZ 6-7, Australia 9-10); the rest are ignored ----------
 function lanesWord(){ const n=st.lanes.length, mx=st.lanes_max||n;
   if(!st.connected||!st.fw||!n) return `<span class="mute">Waiting for the timing box${st.lanes_use?` · ${st.lanes_use} chosen`:""}</span>`;
@@ -6006,7 +6055,7 @@ function render(){
     ["race","results","program","marshal","history","system"].forEach(s=>$(s).hidden=(s!==tab)); lastKey=""; }
   if(st&&wasWaiting){ wasWaiting=false; justLogged=true; tabRole=""; toast("Approved – "+ROLE_NAME[st.role]); }
   if(st) applyTabs();
-  drawNext();
+  drawNext(); drawTestFS();
   const sb=$("sbadge"); if(sb&&st){ const n=st.access?st.access.requests.length:0; sb.innerHTML=n?`<span class="badge">${n}</span>`:""; }
   const pb=$("pbadge"); if(pb&&st){ const w=st.program&&(st.program.warn||(st.program.mode==null&&st.official)); pb.innerHTML=w?`<span class="badge">!</span>`:""; }
   const qb=$("qbadge"); if(qb&&st){ const n=st.official?st.queue_n:0; qb.innerHTML=n?`<span class="badge">${n}</span>`:""; }
