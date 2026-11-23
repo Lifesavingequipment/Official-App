@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.8.3"
+APP_VERSION = "1.9.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -876,6 +876,10 @@ def nm_fields(line):
     return [x.replace("\\:", ":") for x in re.split(r"(?<!\\):", line)]
 
 
+INET = {"two": False, "dev": "", "hs_dev": "", "state": "", "name": "", "ip": "", "net": "", "saved": [],
+        "scan": [], "scanned": 0, "busy": "", "msg": "", "pinned": False}
+
+
 def wifi_refresh():
     if not IS_LINUX or not (os.environ.get("IRB_NMCLI") or shutil.which("nmcli")):
         WIFI["on"] = False
@@ -886,27 +890,158 @@ def wifi_refresh():
             WIFI["on"] = False
             return
         wifis = [f[0] for f in map(nm_fields, out.splitlines()) if len(f) >= 2 and f[1] == "802-11-wireless"]
-        saved, aps = [], []
+        saved, aps, ssids = [], [], {}
         for n in wifis:
-            _, mode, _ = nm(["-g", "802-11-wireless.mode", "connection", "show", n])
-            (aps if mode.strip() == "ap" else saved).append(n)
-        _, out, _ = nm(["-t", "-f", "NAME,TYPE", "connection", "show", "--active"])
-        act = [f[0] for f in map(nm_fields, out.splitlines()) if len(f) >= 2 and f[1] == "802-11-wireless"]
-        name = act[0] if act else ""
-        hs = name if name in aps else ("IRB Timing" if "IRB Timing" in aps else (aps[0] if aps else ""))
-        ip = ""
-        if name:
-            _, out, _ = nm(["-g", "IP4.ADDRESS", "connection", "show", name])
-            ip = out.strip().split("|")[0].split("/")[0].strip()
+            _, o2, _ = nm(["-g", "802-11-wireless.mode,802-11-wireless.ssid", "connection", "show", n])
+            l2 = o2.splitlines() + ["", ""]
+            ssids[n] = l2[1].strip() or n
+            (aps if l2[0].strip() == "ap" else saved).append(n)
+        # Wi-Fi radios: built-in only, or built-in + a USB adapter
+        _, out, _ = nm(["-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device"])
+        devs = [f for f in map(nm_fields, out.splitlines()) if len(f) >= 4 and f[1] == "wifi"]
+        on_dev = {f[0]: ("" if f[3] in ("--", "") else f[3]) for f in devs}
+        hs = next((c for c in on_dev.values() if c in aps), "") or ("IRB Timing" if "IRB Timing" in aps else (aps[0] if aps else ""))
+        if len(devs) >= 2:
+            hs_dev = next((d for d, c in on_dev.items() if c == hs), "") or ("wlan0" if "wlan0" in on_dev else devs[0][0])
+            usb = next(d for d in on_dev if d != hs_dev)
+            name = hs if on_dev.get(hs_dev) == hs else ""
+            ip = ""
+            if name:
+                _, o3, _ = nm(["-g", "IP4.ADDRESS", "device", "show", hs_dev])
+                ip = o3.strip().split("|")[0].split("/")[0].strip()
+            if hs and not INET["pinned"]:            # the hotspot always lives on the built-in Wi-Fi
+                _, o4, _ = nm(["-g", "connection.interface-name", "connection", "show", hs])
+                if o4.strip() != hs_dev:
+                    nm(["connection", "modify", hs, "connection.interface-name", hs_dev])
+                    note("Timing hotspot pinned to the built-in Wi-Fi (%s); the USB Wi-Fi is for internet" % hs_dev)
+                INET["pinned"] = True
+            st_ = next((f[2] for f in devs if f[0] == usb), "")
+            iname = on_dev.get(usb, "")
+            iip = ""
+            if iname:
+                _, o5, _ = nm(["-g", "IP4.ADDRESS", "device", "show", usb])
+                iip = o5.strip().split("|")[0].split("/")[0].strip()
+            net = ""
+            if iname and st_ == "connected":
+                _, o6, _ = nm(["networking", "connectivity", "check"], timeout=12)
+                net = o6.strip()                   # full / limited / portal / none
+            INET.update(two=True, dev=usb, hs_dev=hs_dev, state=st_, name=iname, ip=iip, net=net,
+                        saved=[{"name": n, "ssid": ssids[n]} for n in saved][:12])
+        else:
+            INET.update(two=False, dev="", state="", name="", ip="", net="")
+            _, out, _ = nm(["-t", "-f", "NAME,TYPE", "connection", "show", "--active"])
+            act = [f[0] for f in map(nm_fields, out.splitlines()) if len(f) >= 2 and f[1] == "802-11-wireless"]
+            name = act[0] if act else ""
+            ip = ""
+            if name:
+                _, o3, _ = nm(["-g", "IP4.ADDRESS", "connection", "show", name])
+                ip = o3.strip().split("|")[0].split("/")[0].strip()
         ssid = pw = ""
         if hs:
-            _, out, _ = nm(["-s", "-g", "802-11-wireless.ssid,802-11-wireless-security.psk", "connection", "show", hs])
-            lines = out.splitlines() + ["", ""]
+            _, o7, _ = nm(["-s", "-g", "802-11-wireless.ssid,802-11-wireless-security.psk", "connection", "show", hs])
+            lines = o7.splitlines() + ["", ""]
             ssid, pw = lines[0].strip(), lines[1].strip()
         WIFI.update(on=True, mode="hotspot" if name and name == hs else ("wifi" if name else "none"),
                     name=name, ip=ip, hotspot=hs, hs_ssid=ssid or hs, hs_pass=pw, saved=saved[:6])
     except Exception:
         WIFI["on"] = False
+
+
+def inet_view():
+    return {k: INET[k] for k in ("two", "dev", "state", "name", "ip", "net", "saved", "scan", "scanned", "busy", "msg")}
+
+
+def inet_scan():
+    rc, out, err = nm(["-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list", "ifname", INET["dev"], "--rescan", "yes"], timeout=40)
+    if rc:
+        raise RuntimeError((err or out).strip()[:100] or "scan failed")
+    best = {}
+    for f in map(nm_fields, out.splitlines()):
+        if len(f) < 3 or not f[0].strip() or f[0] == WIFI["hs_ssid"]:
+            continue
+        sig = int(f[1]) if f[1].isdigit() else 0
+        if f[0] not in best or sig > best[f[0]]["signal"]:
+            best[f[0]] = {"ssid": f[0][:64], "signal": sig, "lock": f[2].strip() not in ("", "--")}
+    INET["scan"] = sorted(best.values(), key=lambda x: -x["signal"])[:30]
+    INET["scanned"] = time.time()
+
+
+def inet_action(d):
+    if not INET["two"]:
+        return "Plug in the USB Wi-Fi adapter first"
+    if INET["busy"]:
+        return "Busy - wait a moment"
+    usb = INET["dev"]
+    def run(label, fn):
+        def go():
+            INET.update(busy=label, msg="")
+            try:
+                fn()
+            except Exception as e:
+                INET["msg"] = str(e)[:160]
+                note("Internet Wi-Fi: %s" % INET["msg"])
+            finally:
+                INET["busy"] = ""
+                wifi_refresh()
+        threading.Thread(target=go, daemon=True).start()
+        return "ok"
+    if d.get("scan"):
+        return run("Looking for Wi-Fi", inet_scan)
+    if d.get("forget"):
+        n = str(d["forget"])
+        if n not in [x["name"] for x in INET["saved"]]:
+            return "not allowed"
+        def forget():
+            nm(["connection", "delete", n])
+            INET["msg"] = "Forgot %s" % n
+        return run("Forgetting %s" % n, forget)
+    if d.get("use"):
+        n = str(d["use"])
+        if n not in [x["name"] for x in INET["saved"]]:
+            return "not allowed"
+        def use():
+            rc, out, err = nm(["connection", "up", n, "ifname", usb], timeout=60)
+            if rc:
+                raise RuntimeError("Couldn't join %s - is it in range?" % n)
+            INET["msg"] = "Joined %s" % n
+            note("Internet Wi-Fi: joined %s" % n)
+        return run("Joining %s" % n, use)
+    if "join" in d:
+        ssid = str(d.get("join") or "").strip()[:64]
+        pw = str(d.get("password") or "")
+        if not ssid:
+            return "Type the Wi-Fi name"
+        if pw and not 8 <= len(pw) <= 63:
+            return "Wi-Fi passwords are 8 to 63 characters"
+        known = next((x["name"] for x in INET["saved"] if x["ssid"] == ssid), "")
+        before = set(x["name"] for x in INET["saved"])
+        def join():
+            if known and not pw:
+                rc, out, err = nm(["connection", "up", known, "ifname", usb], timeout=60)
+            else:
+                if known:                          # new password for a saved network: start that one fresh
+                    nm(["connection", "delete", known])
+                args = ["device", "wifi", "connect", ssid] + (["password", pw] if pw else []) + ["ifname", usb]
+                if d.get("hidden"):
+                    args += ["hidden", "yes"]
+                rc, out, err = nm(args, timeout=90)
+            # the profile NetworkManager made for this network
+            _, o, _ = nm(["-t", "-f", "NAME,TYPE", "connection", "show"])
+            names = [f[0] for f in map(nm_fields, o.splitlines()) if len(f) >= 2 and f[1] == "802-11-wireless"]
+            made = [n for n in names if n not in before and n != WIFI["hotspot"]]
+            if rc:
+                for n in made:                     # don't keep a profile that never worked
+                    nm(["connection", "delete", n])
+                e = (err or out).lower().replace(ssid.lower(), "")      # the network's own name can't fool the check
+                raise RuntimeError("Couldn't join %s - %s" % (ssid, "is it in range?" if "no network with ssid" in e
+                                                               else "check the password" if ("secrets were required" in e or "802-1x" in e or "password" in e)
+                                                               else "try again"))
+            for n in made or ([known] if known else []):
+                nm(["connection", "modify", n, "connection.interface-name", usb, "connection.autoconnect", "yes"])
+            INET["msg"] = "Joined %s" % ssid
+            note("Internet Wi-Fi: joined %s" % ssid)
+        return run("Joining %s" % ssid, join)
+    return "not allowed"
 
 
 def wifi_loop():
@@ -2858,6 +2993,7 @@ def snapshot(role="master", local=True, tok=None):
             d["kit"] = KIT["text"]
             d["upd_key"] = bool(UPD_KEY["v"])
             d["wifi"] = {k: WIFI[k] for k in ("on", "mode", "name", "ip", "hotspot", "hs_ssid", "saved", "busy", "msg")}
+            d["inet"] = inet_view()
             d["power"] = {"on": IS_LINUX, "pi": IS_PI}
         hs = [x for x in (S["heat"], S["race_heat"], (S["results"] or {}).get("heat")) + tuple(nxt) if x]
         d["checkin"] = {x["heat_id"]: checkin.get(x["heat_id"], {}) for x in hs if x.get("heat_id")}
@@ -3012,7 +3148,7 @@ class H(BaseHTTPRequestHandler):
             r = new_event(data) if self.role() == "master" else "Only the timing desk can start a new event"
             self.send(200, json.dumps({"result": r}))
             return
-        for route, fn in (("/api/wifi", wifi_action), ("/api/power", power_action)):     # Pi: no lock held while they run
+        for route, fn in (("/api/wifi", wifi_action), ("/api/power", power_action), ("/api/inet", inet_action)):     # Pi: no lock held
             if self.path.startswith(route):
                 r = fn(data) if self.role() == "master" else "Only the timing desk can do that"
                 self.send(200, json.dumps({"result": r}))
@@ -4033,6 +4169,11 @@ const HELP={
 // each item: [title, what you see (or ""), [steps], quick?]  quick = also listed in the ? sheet
 const TROUBLE=[
  ["Phones and tablets",[
+  ["No internet at the beach (LiveHeats, updates)","The timing works without internet – only LiveHeats and updates need it.",[
+    "With a USB Wi-Fi adapter in the Pi: System › Setup › Internet Wi-Fi › Choose, then join the club's Wi-Fi. The timing hotspot stays on.",
+    "Says 'needs a sign-in page'? That Wi-Fi wants you to accept terms in a browser – pick a different Wi-Fi, or sign in on the Pi's own screen.",
+    "Says 'check the password'? Join again and tick Show password to check it.",
+    "No USB Wi-Fi adapter? Switch the Pi to another Wi-Fi under System › Setup › Wi-Fi – but phones lose the app until it's back on the hotspot."]],
   ["Forgot the timing desk PIN","Nobody can get in as the timing desk, and the Pi is in its sealed box.",[
     "The kit owner's PIN also works as the timing desk PIN: Officials › Use the timing desk PIN.",
     "No owner nearby? At the timing box, between races: hold FINISH and GO down together for 15 seconds until it beeps 3 times.",
@@ -4536,7 +4677,7 @@ let undoT=null;
 function showUndo(text,back,fn){ const u=$("undo"); $("undotxt").textContent=text; u.classList.add("on");
   $("undobtn").onclick=()=>{ u.classList.remove("on"); if(fn) fn(); else cmd(back); };
   clearTimeout(undoT); undoT=setTimeout(()=>u.classList.remove("on"),7000); }
-function closeSheet(){ sel=null; $("sheet").classList.remove("on"); }
+function closeSheet(){ sel=null; inetOpen=false; inetPick=null; $("sheet").classList.remove("on"); }
 let yesFn=null;
 function askYes(q,fn,yes,red){ yesFn=fn;
   $("sheetin").innerHTML=`<h2>${esc(q)}</h2><div class="row"><button class="btn ${red===false?"pri":"red"}" id="yesgo">${esc(yes||"Yes")}</button><button class="btn" onclick="closeSheet()">Cancel</button></div>`;
@@ -5485,7 +5626,7 @@ function renderSystem(){
       `<button class="btn" onclick="openLoad()">${st.draw?"Reload":"Load"}</button>`);
     if(master&&st.power&&st.power.pi&&st.access&&!st.access.master_pin) L+=row("Timing desk PIN", `<b class="bad">Not set</b><span class="mute"> – the first phone to open the app will be asked to choose one. Set it now if you're at the Pi's screen.</span>`,
       ownLocked?`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`:`<button class="btn pri" onclick="advOpen=true;lastKey='';render();setTimeout(()=>{const e=$('mpin');if(e){e.scrollIntoView({block:'center'});e.focus();}},50)">Set PIN</button>`,"hi");
-    if(master&&st.wifi&&st.wifi.on) L+=wifiRow(row,racing);
+    if(master&&st.wifi&&st.wifi.on) L+=(st.inet&&st.inet.two)?hotspotRow(row)+inetRow(row):wifiRow(row,racing);
     if(master&&st.access&&st.wifi&&st.wifi.on&&st.wifi.mode==="hotspot") L+=row("Wi-Fi for join card", `<span class="mute">Filled in by itself – the <b>${esc(st.wifi.hs_ssid)}</b> hotspot name and password</span>`, "");
     else if(master&&st.access) L+=row("Wi-Fi for join card", `<div class="sin"><input type="text" id="wssid" value="${esc(a.net.ssid)}" placeholder="Wi-Fi name">
         <input type="text" id="wpass" value="${esc(a.net.pass)}" placeholder="Password"></div>`,
@@ -5573,6 +5714,46 @@ function wifiRow(row,racing){ const w=st.wifi, dis=racing||w.busy?"disabled":"";
   if(w.mode!=="hotspot"&&w.hotspot) b+=`<button class="btn pri" ${dis} onclick="wifiAsk('hotspot')">Timing hotspot</button>`;
   for(const n of w.saved) if(n!==w.name) b+=`<button class="btn" ${dis} onclick="wifiAsk('wifi',this.dataset.n)" data-n="${esc(n)}">Use ${esc(n)}</button>`;
   return row("Wi-Fi", stt+(w.msg?`<div class="warn" style="margin-top:4px">${esc(w.msg)}</div>`:"")+(racing?`<div class="mute" style="font-size:13px">Switch after the race</div>`:""), b); }
+// ---------- two radios: built-in = timing hotspot (always on), USB = internet Wi-Fi ----------
+function hotspotRow(row){ const w=st.wifi;
+  return row("Timing hotspot", w.mode==="hotspot"?`<b class="ok">On</b><span class="mute"> · phones join <b>${esc(w.hs_ssid)}</b> · http://${esc(w.ip||"10.42.0.1")}:${location.port||80} · always on, on the built-in Wi-Fi</span>`
+    :`<b class="bad">Off</b><span class="mute"> – restart the Pi (power off and on at the wall) to bring it back</span>`, ""); }
+function inetWord(i){ if(i.busy) return `<b class="okb">${esc(i.busy)}…</b>`;
+  if(!i.name) return `<b class="bad">No internet Wi-Fi</b><span class="mute"> – LiveHeats and updates need internet. Tap Choose to join one.</span>`;
+  const net=i.net==="full"?`<span class="ok">internet ✓</span>`:i.net==="portal"?`<span class="bad">needs a sign-in page – open any website on the Pi's screen to sign in</span>`
+    :i.net==="limited"||i.net==="none"?`<span class="bad">joined, but no internet</span>`:`<span class="mute">checking internet…</span>`;
+  return `<b>${esc(i.name)}</b><span class="mute"> · USB Wi-Fi · </span>${net}`; }
+function inetRow(row){ const i=st.inet;
+  return row("Internet Wi-Fi", inetWord(i)+(i.msg?`<div class="${/^Joined|^Forgot/.test(i.msg)?"ok":"warn"}" style="margin-top:4px">${esc(i.msg)}</div>`:""),
+    `<button class="btn ${i.name&&i.net==="full"?"":"pri"}" onclick="inetSheet()">Choose</button>`, !i.name&&!i.busy?"hi":""); }
+let inetOpen=false, inetPick=null, inetKey="";
+function inetSheet(scan){ inetOpen=true; if(scan!==false&&(!st.inet.scanned||Date.now()/1000-st.inet.scanned>60)&&!st.inet.busy) post("/api/inet",{scan:true}); inetDraw(); $("sheet").classList.add("on"); }
+function inetDraw(){ if(!inetOpen) return; const i=st.inet, bars=n=>n>=70?"▂▄▆█":n>=45?"▂▄▆":n>=25?"▂▄":"▂";
+  const savedS=new Set(i.saved.map(x=>x.ssid)), near=new Set(i.scan.map(x=>x.ssid));
+  if(inetPick){ const n=inetPick;
+    $("sheetin").innerHTML=`<h2>Join ${esc(n.ssid||"another Wi-Fi")}</h2>
+      ${n.ssid?"":`<input type="text" id="inssid" placeholder="Wi-Fi name (exactly as written)" autocomplete="off" autocapitalize="off" spellcheck="false">`}
+      ${n.lock!==false?`<input type="password" id="inpw" placeholder="Wi-Fi password" autocomplete="off" style="margin-top:8px"><label class="mute" style="display:block;margin-top:6px;font-size:14px"><input type="checkbox" onchange="$('inpw').type=this.checked?'text':'password'"> Show password</label>`:`<p class="mute">Open network – no password.</p>`}
+      <p class="mute" style="font-size:14px">The timing hotspot stays on while the Pi joins – you won't lose this screen. The Pi remembers this Wi-Fi and joins it by itself next time.</p>
+      <div class="row"><button class="btn pri" id="ingo">Join</button><button class="btn" onclick="inetPick=null;inetDraw()">Back</button></div><p class="warn" id="inmsg" style="display:none"></p>`;
+    $("ingo").onclick=async()=>{ const ssid=n.ssid||$("inssid").value.trim(), pw=$("inpw")?$("inpw").value:"";
+      if(!ssid){ $("inmsg").style.display="block"; $("inmsg").textContent="Type the Wi-Fi name"; return; }
+      const r=await post("/api/inet",{join:ssid,password:pw,hidden:!n.ssid}); if(r==="ok"){ inetPick=null; inetDraw(); } };
+    return; }
+  $("sheetin").innerHTML=`<h2>Internet Wi-Fi</h2>
+    <p class="mute" style="margin-top:0">For LiveHeats and updates. Uses the USB Wi-Fi – the timing hotspot stays on.</p>
+    <div class="ps" style="margin:6px 0 10px">${inetWord(i)}${i.msg?`<div class="${/^Joined|^Forgot/.test(i.msg)?"ok":"warn"}">${esc(i.msg)}</div>`:""}</div>
+    ${i.saved.length?`<h3 style="margin:8px 0 4px">Saved</h3>${i.saved.slice().sort((a,b)=>(b.name===i.name)-(a.name===i.name)||near.has(b.ssid)-near.has(a.ssid)).map(x=>`<div class="ccrow"><span class="cn">${esc(x.name)}${x.name===i.name?` <span class="ok" style="font-weight:600">· connected</span>`:near.has(x.ssid)?` <span class="mute" style="font-weight:500">· in range</span>`:""}</span>
+      ${x.name!==i.name?`<button class="btn sm" ${i.busy?"disabled":""} onclick="post('/api/inet',{use:this.dataset.n})" data-n="${esc(x.name)}">Use</button>`:""}
+      <button class="btn sm" ${i.busy?"disabled":""} onclick="inetForget(this.dataset.n)" data-n="${esc(x.name)}">Forget</button></div>`).join("")}`:""}
+    <h3 style="margin:12px 0 4px">Nearby ${i.busy==="Looking for Wi-Fi"?`<span class="mute" style="font-weight:500">– looking…</span>`:""}</h3>
+    ${i.scan.filter(x=>!savedS.has(x.ssid)).map((x,j)=>`<div class="ccrow"><span class="cn">${esc(x.ssid)} ${x.lock?"🔒":""}</span><span class="mute" style="font-family:monospace">${bars(x.signal)}</span>
+      <button class="btn sm pri" ${i.busy?"disabled":""} onclick="inetPick=st.inet.scan.find(s=>s.ssid===this.dataset.s);inetDraw()" data-s="${esc(x.ssid)}">Join</button></div>`).join("")
+      ||`<p class="mute">${i.busy?"":"No other Wi-Fi found."}</p>`}
+    <div class="row"><button class="btn" ${i.busy?"disabled":""} onclick="post('/api/inet',{scan:true})">Look again</button>
+      <button class="btn" onclick="inetPick={ssid:'',lock:true};inetDraw()">Other (hidden) Wi-Fi…</button>
+      <button class="btn" onclick="inetOpen=false;inetPick=null;closeSheet()">Done</button></div>`; }
+function inetForget(n){ inetOpen=false; askYes(`Forget ${n}? The Pi won't join it by itself any more.`,async()=>{ await post("/api/inet",{forget:n}); },"Forget",false); }
 function wifiAsk(to,name){ const w=st.wifi;
   const q=to==="hotspot"
     ?`Switch the Pi to the timing hotspot? Every phone and tablet loses the app until it joins the ${w.hs_ssid} Wi-Fi and opens http://10.42.0.1:${location.port||80}`
@@ -5722,6 +5903,7 @@ async function poll(){
   if((tab==="marshal"||location.hash==="#marshalling")&&st&&Date.now()-mAt>2500) await loadMarshal();
   if(location.hash==="#team"&&Date.now()-tmAt>5000){ tmAt=Date.now(); if(tmView==="program") await loadProg(); else if(tmView==="results") await loadHist(); else await loadTeam(); }
   if(!holding) render();
+  if(inetOpen&&!inetPick&&st&&st.inet&&$("sheet").classList.contains("on")){ const k=JSON.stringify(st.inet); if(k!==inetKey){ inetKey=k; inetDraw(); } }
   const c=$("clock"); if(c&&st&&!linkDown) c.textContent=clock(st.elapsed||0);
   setTimeout(poll, tab==="race"&&st&&st.state==="RACING"?100:400);
 }

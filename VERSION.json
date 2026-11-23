@@ -1,9 +1,12 @@
 {
- "app": "1.8.3",
+ "app": "1.9.0",
  "pico": "3.5",
- "sha256": "9be77e90ce92ee516090a42bcaca1c7344e2a5e4c2c7085673f29f95b224b03d",
+ "sha256": "497e8dce8e07ea0f99bba417cf14dd1dddc337524e5dbc1658db5153afbb49bb",
  "pico_sha256": "2de3512b18838ad7b5e7c8cacf92152925683f7a39abe77346b5b61a8b147eb5",
  "notes": [
-  "Timing box v3.5: lane 3 for the bench test - button on GP7 (pin 10), light on GP13 (pin 17)"
+  "With a USB Wi-Fi adapter: the built-in Wi-Fi stays the timing hotspot (always on) and the USB one joins internet Wi-Fi",
+  "System \u203a Setup \u203a Internet Wi-Fi: look for networks, join with a password, saved networks join by themselves, Forget",
+  "Shows whether there is real internet, and spots Wi-Fi that needs a sign-in page",
+  "New troubleshooting item: No internet at the beach"
  ]
 }
