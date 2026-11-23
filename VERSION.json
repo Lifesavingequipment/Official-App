@@ -1,11 +1,9 @@
 {
- "app": "1.10.1",
+ "app": "1.10.2",
  "pico": "3.6",
- "sha256": "1e0377ac8c8b6647f34e7d2f676918fa325c447af7fc57ada342f47c16dfe27e",
+ "sha256": "ca28f23a15374b6d89047f40419738f515e8e740542a3551d2271edbd64bb935",
  "pico_sha256": "89ef995913e7b4952f652be5601e62a4f921fabc194281e846013d865253b62e",
  "notes": [
-  "Marshalling screen fills TV/laptop/tablet with no scrolling \u2013 MARSHALLING heat plus up to 3 NEXT heats",
-  "Marshal phone: fixed at 3 heats seated, with behind / not-sent / on-top-of-it banner and a buzz",
-  "Timing desk shows 'Marshalling behind'"
+  "Marshal fix: heats already sent now count as ready, so 'Behind' only shows when it's true"
  ]
 }

@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.10.1"
+APP_VERSION = "1.10.2"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -2537,10 +2537,12 @@ def marsh_status():
         lanes = list(h.get("crews") or {}) or [str(l) for l in S["lanes"]]
         return bool(lanes) and all(ck.get(str(l)) for l in lanes)
     run = (S["race_heat"] or {}).get("heat_id") if S["state"] == "RACING" else None
-    U = [h for h in hs if h["heat_id"] not in sent and h["heat_id"] not in (aid, run) and h["heat_id"] not in raced]
+    # heats after the one about to race: ready = patients sent out, or every crew reported
+    U = [h for h in hs if h["heat_id"] not in (aid, run) and h["heat_id"] not in raced]
+    ready = lambda h: h["heat_id"] in sent or done(h)
     target = min(MARSH_NEED, len(U))
-    seated = sum(1 for h in U[:MARSH_NEED] if done(h))
-    call = next((h for h in U if not done(h)), None)
+    seated = sum(1 for h in U[:MARSH_NEED] if ready(h))
+    call = next((h for h in U if not ready(h)), None)
     return {"need": MARSH_NEED, "target": target, "seated": seated, "call": call and call["no"],
             "late": about["no"] if about and aid not in sent and aid not in raced else None}
 
@@ -4324,7 +4326,7 @@ function raceWarnings(){
   if(st.silent) h+=`<div class="bad-warn">Timing box not responding – check its USB cable. The last few seconds may not have been recorded here.</div>`;
   if(st.practice) pre+=`<div class="practice">PRACTICE MODE – races are not saved here or sent to the LiveHeats list.${st.min_leg_s<15?` Crews can press again after ${st.min_leg_s} s.`:""}</div>`;
   const ms=st.marsh;
-  if(ms&&st.official&&st.state!=="RACING"){ if(!ms.late&&ms.seated<ms.target) h+=`<div class="warn">Marshalling behind – ${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} seated${ms.call?` · calling Heat ${ms.call}`:""}</div>`; }
+  if(ms&&st.official&&st.state!=="RACING"){ if(!ms.late&&ms.seated<ms.target) h+=`<div class="warn">Marshalling behind – ${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} ready${ms.call?` · calling Heat ${ms.call}`:""}</div>`; }
   if(st.batt!=null&&st.batt<24.0) h+=`<div class="${st.batt<23.0?"bad-warn":"warn"}">Battery: ${battWord(st.batt)[0].toLowerCase()} – before the next race.</div>`;
   if(st.faults.length&&st.state==="RACING"&&st.faults_racing)
     h+=`<div class="bad-warn">Cable fault during race: ${esc(st.faults.join(", "))}. That lane may have a false press – check its presses after the race.</div>`;
@@ -5262,9 +5264,10 @@ function mStatus(){
   const about=["IDLE","ARMED","DONE"].includes(st.state)&&st.heat?hs.find(x=>x.heat_id===st.heat.heat_id):null;
   const run=st.state==="RACING"&&st.race_heat?st.race_heat.heat_id:null;
   const done=x=>{ const ck=(mUp.checkin||{})[x.heat_id]||{}, ln=mLanes(x); return ln.length&&ln.every(([l])=>ck[l]); };
-  const U=hs.filter(x=>!sentOf(x.heat_id)&&x.heat_id!==(about&&about.heat_id)&&x.heat_id!==run);
-  const target=Math.min(3,U.length), seated=U.slice(0,3).filter(done).length;
-  return {late:about&&!sentOf(about.heat_id)?about:null,target,seated,call:U.find(x=>!done(x))||null};
+  // heats after the one about to race: ready = patients sent out, or every crew reported
+  const U=hs.filter(x=>x.heat_id!==(about&&about.heat_id)&&x.heat_id!==run), ready=x=>!!sentOf(x.heat_id)||done(x);
+  const target=Math.min(3,U.length), seated=U.slice(0,3).filter(ready).length;
+  return {late:about&&!sentOf(about.heat_id)?about:null,target,seated,call:U.find(x=>!ready(x))||null};
 }
 function renderMarshal(){
   if(!mUp){ $("marshal").innerHTML=`<div class="card mute">Loading…</div>`; return; }
@@ -5276,8 +5279,8 @@ function renderMarshal(){
   const onStart=(st.heat||{}).heat_id;
   const ms=mStatus(); let warn="";
   if(ms){ if(ms.late) warn=`<div class="mwarn red" role="alert"><b>Heat ${ms.late.no} is about to race</b><span>Its patients haven't been sent – send them now.</span><button class="btn sm" onclick="mSel='${ms.late.heat_id}';mPicked=true;lastKey='';render()">Heat ${ms.late.no}</button></div>`;
-    else if(ms.seated<ms.target) warn=`<div class="mwarn amb" role="alert"><b>Behind – only ${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} seated</b><span>${ms.call?`Call Heat ${ms.call.no} now.`:""}</span>${ms.call?`<button class="btn sm" onclick="mSel='${ms.call.heat_id}';mPicked=true;lastKey='';render()">Heat ${ms.call.no}</button>`:""}</div>`;
-    else if(ms.target) warn=`<div class="mwarn ok"><b>${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} seated ✓</b><span>On top of it – no need to call more yet.</span></div>`;
+    else if(ms.seated<ms.target) warn=`<div class="mwarn amb" role="alert"><b>Behind – only ${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} ready</b><span>${ms.call?`Call Heat ${ms.call.no} now.`:""}</span>${ms.call?`<button class="btn sm" onclick="mSel='${ms.call.heat_id}';mPicked=true;lastKey='';render()">Heat ${ms.call.no}</button>`:""}</div>`;
+    else if(ms.target) warn=`<div class="mwarn ok"><b>${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} ready ✓</b><span>On top of it${ms.call?` – Heat ${ms.call.no} is next to call when you're ready`:" – no need to call more yet"}.</span></div>`;
     const lvl=ms.late?2:ms.seated<ms.target?1:0; if(lvl>mBuzz&&st.role==="marshal"){ try{ navigator.vibrate&&navigator.vibrate(lvl>1?[250,120,250]:200); }catch(e){} } mBuzz=lvl; }
   // heat picker: one heat on screen at a time
   let h=warn+`<div class="mpick">${mUp.heats.map((ht,i)=>{ if(false) return ""; const ck=mUp.checkin[ht.heat_id]||{}, ln=mLanes(ht), n=ln.filter(([l])=>ck[l]).length;
