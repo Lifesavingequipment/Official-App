@@ -1,11 +1,12 @@
 {
- "app": "1.9.1",
+ "app": "1.9.2",
  "pico": "3.6",
- "sha256": "3d65103a9a65a2128f065a5f05288b0fb87e506e8209f658f310db3b6b3cc96a",
+ "sha256": "bb343521cad031b42d1d7cbb029771881251974963bd0676d8d85a2af10d418a",
  "pico_sha256": "89ef995913e7b4952f652be5601e62a4f921fabc194281e846013d865253b62e",
  "notes": [
-  "Lanes in use: pick 1 to 10 in System \u203a Setup \u203a Lanes (and in Get started) - training 2, NZ 6-7, Australia 9-10",
-  "Lanes not in use are ignored: no cable warnings, no lights, not in the results",
-  "Timing box v3.6: wired for 10 lanes (pin map in the program), remembers the lanes in use"
+  "On the Pi the join card always uses the timing hotspot (name, password, address), whatever Wi-Fi the Pi is on",
+  "System \u203a Setup \u203a Hotspot name and password: rename the hotspot or change its password from the app (owner-locked)",
+  "Help, guides and Wi-Fi rows show the hotspot's real address (e.g. 10.0.0.1)",
+  "Lanes row says 'Waiting for the timing box' instead of '0 lane in use'"
  ]
 }
