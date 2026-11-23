@@ -1,10 +1,11 @@
 {
- "app": "1.9.4",
+ "app": "1.10.0",
  "pico": "3.6",
- "sha256": "ed75df426b2af1858f37cb215b9f87fbb55bbd931d99e3b9d6c86cafdb8453bd",
+ "sha256": "f1dfa71277e2ccb2c4b300247dd560e85f026b558cc4cea4279f5b5c1d8f462b",
  "pico_sha256": "89ef995913e7b4952f652be5601e62a4f921fabc194281e846013d865253b62e",
  "notes": [
-  "App and timing box updates now sit side by side in System \u203a Setup \u203a Updates",
-  "Owner lock and power have their own section"
+  "New look: clean scoreboard style \u2013 rounder cards, Inter font, softer colours (light only, readable in sun)",
+  "Phones and tablets: tabs move to a bottom bar with icons",
+  "Font is built in, so it works with no internet"
  ]
 }
