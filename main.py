@@ -1,4 +1,6 @@
-# IRB Finish Timing - bench test v3.5
+# IRB Finish Timing - bench test v3.6
+# v3.6: wired for up to 10 lanes; the app chooses how many are in use (lanes N). Lanes not in use are
+#       ignored completely - no cable faults, no lights, not in results. Saved in lanes.txt on the Pico.
 # v3.5: lane 3 for the bench test - button GP7 (pin 10), light GP13 (pin 17).
 # v3.4: the PIN reset needs FINISH and GO held down together for 15 s (one stuck button can't do it).
 # v3.3: hold FINISH for 15 s between races (not in a race or button test) = clear the app's timing desk
@@ -97,12 +99,17 @@ HIST_RACES_PER_FILE = 50      # races per history file
 HIST_MAX_FILES = 10           # files kept (oldest deleted) = about 500 races
 HIST_MIN_FREE = 150_000       # also delete oldest files if free space drops below this
 
-LANE_PINS = {1: 2, 2: 3, 3: 7}   # lane number : GPIO (lane 3: GP7, pin 10)
+# lane number : GPIO. Pin numbers are the Pico's physical pins - lane 1 GP2 (4), 2 GP3 (5), 3 GP7 (10),
+# 4 GP8 (11), 5 GP9 (12), 6 GP14 (19), 7 GP15 (20), 8 GP0 (1), 9 GP1 (2), 10 GP16 (21)
+LANE_PINS = {1: 2, 2: 3, 3: 7, 4: 8, 5: 9, 6: 14, 7: 15, 8: 0, 9: 1, 10: 16}
+LANES_FILE = "lanes.txt"      # how many lanes are in use (set from the app)
 SET_PIN = 4
 GO_PIN = 5
 FINISH_PIN = 6
 SIREN_PIN = 10
-LIGHT_PINS = {1: 11, 2: 12, 3: 13}   # lane 3 light: GP13, pin 17 (needs a 4th relay)
+# lane lights (relay inputs): 1 GP11 (15), 2 GP12 (16), 3 GP13 (17), 4 GP17 (22), 5 GP18 (24),
+# 6 GP19 (25), 7 GP20 (26), 8 GP21 (27), 9 GP22 (29), 10 GP27 (32). Siren GP10 (14).
+LIGHT_PINS = {1: 11, 2: 12, 3: 13, 4: 17, 5: 18, 6: 19, 7: 20, 8: 21, 9: 22, 10: 27}
 # ------------------------------------------
 
 HIT = 1 if BOARD_NPN else 0
@@ -134,11 +141,30 @@ def make_irq(code):
     return handler
 
 
-lane_in = {}
-for lane, gp in LANE_PINS.items():
-    p = Pin(gp, Pin.IN, PULL)
-    p.irq(handler=make_irq(lane), trigger=TRIG, hard=True)
-    lane_in[lane] = p
+def lanes_saved():
+    try:
+        with open(LANES_FILE) as fh:
+            return max(1, min(len(LANE_PINS), int(fh.read().strip())))
+    except (OSError, ValueError):
+        return len(LANE_PINS)
+
+
+lane_all = {lane: Pin(gp, Pin.IN, PULL) for lane, gp in LANE_PINS.items()}
+lane_in = {}                  # only the lanes in use: watched, checked for faults, in the results
+
+
+def use_lanes(n):
+    lane_in.clear()
+    for lane, p in lane_all.items():
+        if lane <= n:
+            p.irq(handler=make_irq(lane), trigger=TRIG, hard=True)
+            lane_in[lane] = p
+        else:
+            p.irq(handler=None)
+            lights[lane].value(0)
+
+
+use_lanes(lanes_saved())
 
 set_in = Pin(SET_PIN, Pin.IN, PULL)
 set_in.irq(handler=make_irq(CODE_SET), trigger=TRIG, hard=True)
@@ -323,7 +349,7 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "3.5", "pin_reset": True, "lanes": sorted(LANE_PINS), "race": race_no,
+    emit({"ev": "hello", "fw": "3.6", "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
           "clock": True, "beat": True, "batt": BATT_ENABLED})
     emit({"ev": "test", "on": test_mode})
@@ -466,7 +492,7 @@ state = "IDLE"      # IDLE, ARMED, RACING, DONE
 armed_at_ms = 0
 go_at_ms = 0
 t0 = 0
-hits = {lane: [] for lane in LANE_PINS}
+hits = {lane: [] for lane in lane_in}
 legs_set = 0        # officials' leg count (0 = automatic)
 race_no = hist_last_race()   # carries on from the saved history
 version = 0         # officials' change count for the current race
@@ -493,7 +519,7 @@ reset_fired = False
 
 def reset_race():
     global hits, adj, legs_set, ties, race_faults, held_since
-    hits = {lane: [] for lane in LANE_PINS}
+    hits = {lane: [] for lane in lane_in}
     adj = {}
     ties = set()
     legs_set = 0
@@ -694,7 +720,7 @@ def read_batt():
 
 
 def command(line):
-    global adj, legs_set, version, ties, MIN_LEG_US
+    global adj, legs_set, version, ties, MIN_LEG_US, hits, last_fault_report
     w = line.strip().lower().split()
     if not w:
         return
@@ -714,6 +740,35 @@ def command(line):
         n = MIN_LEG_US // 1_000_000
         print("Presses under %d s after a crew's last press are ignored." % n)
         emit({"ev": "minleg", "s": n if MIN_LEG_US >= 1_000_000 else 1})
+        return
+    if c == "lanes":                        # how many lanes are in use (the rest are ignored)
+        try:
+            n = int(w[1])
+        except (IndexError, ValueError):
+            print("Give the number of lanes in use, e.g.  lanes 6")
+            return
+        if not 1 <= n <= len(LANE_PINS):
+            print("Lanes must be 1 to %d." % len(LANE_PINS))
+            return
+        if state in ("ARMED", "RACING") or test_mode:
+            print("Change the lanes between races (not during a race or the button test).")
+            emit({"ev": "lanes", "lanes": sorted(lane_in), "max": len(LANE_PINS), "refused": True})
+            return
+        if n != len(lane_in):
+            use_lanes(n)
+            for lane in list(light_seq):
+                if lane not in lane_in:
+                    light_seq.pop(lane, None)
+            try:
+                with open(LANES_FILE, "w") as fh:
+                    fh.write(str(n))
+            except OSError:
+                pass
+            if state == "IDLE":
+                hits = {lane: [] for lane in lane_in}
+            last_fault_report = None      # report the wiring for the new set of lanes
+        print("%d lanes in use: %s" % (n, ", ".join(str(x) for x in sorted(lane_in))))
+        emit({"ev": "lanes", "lanes": sorted(lane_in), "max": len(LANE_PINS)})
         return
     if test_mode and c in ("f", "r", "set", "go"):
         print("Button test is running - type  test off  first.")
@@ -941,7 +996,7 @@ def finish_race(reason="Race finished by official."):
 poller = uselect.poll()
 poller.register(sys.stdin, uselect.POLLIN)
 
-print("IRB finish timing - bench test v3.5 (legs, adjustments, history, app link, test, ties, clock)")
+print("IRB finish timing - bench test v3.6 (legs, adjustments, history, app link, test, ties, clock)")
 print("History: last saved race %d. Type log to see files." % race_no)
 emit_all()
 print("Board:", "NPN (hit = pin goes HIGH)" if BOARD_NPN else "PNP (hit = pin goes LOW)")
@@ -981,6 +1036,8 @@ while True:
         if ok == 2:
             spikes[code] = spikes.get(code, 0) + 1
             continue
+        if code not in (CODE_SET, CODE_GO) and code not in lane_in:
+            continue                                    # a lane that isn't in use
         t = to_ext(raw)
         if test_mode:
             if code == CODE_SET:

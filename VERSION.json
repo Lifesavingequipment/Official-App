@@ -1,12 +1,11 @@
 {
- "app": "1.9.0",
- "pico": "3.5",
- "sha256": "497e8dce8e07ea0f99bba417cf14dd1dddc337524e5dbc1658db5153afbb49bb",
- "pico_sha256": "2de3512b18838ad7b5e7c8cacf92152925683f7a39abe77346b5b61a8b147eb5",
+ "app": "1.9.1",
+ "pico": "3.6",
+ "sha256": "3d65103a9a65a2128f065a5f05288b0fb87e506e8209f658f310db3b6b3cc96a",
+ "pico_sha256": "89ef995913e7b4952f652be5601e62a4f921fabc194281e846013d865253b62e",
  "notes": [
-  "With a USB Wi-Fi adapter: the built-in Wi-Fi stays the timing hotspot (always on) and the USB one joins internet Wi-Fi",
-  "System \u203a Setup \u203a Internet Wi-Fi: look for networks, join with a password, saved networks join by themselves, Forget",
-  "Shows whether there is real internet, and spots Wi-Fi that needs a sign-in page",
-  "New troubleshooting item: No internet at the beach"
+  "Lanes in use: pick 1 to 10 in System \u203a Setup \u203a Lanes (and in Get started) - training 2, NZ 6-7, Australia 9-10",
+  "Lanes not in use are ignored: no cable warnings, no lights, not in the results",
+  "Timing box v3.6: wired for 10 lanes (pin map in the program), remembers the lanes in use"
  ]
 }

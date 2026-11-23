@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.9.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -75,7 +75,7 @@ FW_RULE = "IRB_timing_app"
 
 lock = threading.Lock()
 S = {
-    "connected": False, "port": None, "fw": None, "lanes": [], "min_leg_s": 15, "minleg_cmd": False,
+    "connected": False, "port": None, "fw": None, "lanes": [], "lanes_max": 0, "lanes_cmd": False, "min_leg_s": 15, "minleg_cmd": False,
     "state": "UNKNOWN", "race": 0, "faults": [], "go_at": None,
     "live": {}, "results": None, "at_prompt": False,
     "event": "", "race_event": None, "app_start": False,
@@ -98,6 +98,7 @@ officials = {}            # device token -> {"name", "role", "since", "seen"}
 requests_ = {}            # device token -> {"name", "code", "at"} waiting for the Master
 regulars = {}             # lower-case name -> {"name", "role"}: officials the Master remembers
 PIN_TRIES = []                               # times of recent wrong timing desk PINs
+LANES = {"use": 0}                           # lanes in use (0 = whatever the timing box has); the rest are ignored
 CLUB_CODES = {}                              # club name -> 4-digit code a team manager unlocks changes with (this event)
 COACHES = {}                                 # device token -> {"club", "since", "seen"}: team managers who used the code
 CODE_TRIES = {}                              # device address -> times of recent wrong club codes
@@ -171,6 +172,10 @@ def load_settings():
         for k in NET:
             NET[k] = str((s.get("net") or {}).get(k, ""))[:64]
         PICO_UPD["prev"] = str(s.get("pico_prev") or "")[:12]
+        try:
+            LANES["use"] = max(0, min(10, int(s.get("lanes_use") or 0)))
+        except (TypeError, ValueError):
+            pass
         if isinstance(s.get("last_test"), dict):
             S["last_test"] = s["last_test"]
     except (OSError, ValueError, AttributeError):
@@ -194,7 +199,7 @@ def save_settings():
                        "access_day": access_day[0], "regulars": regulars, "net": NET, "last_test": S["last_test"],
                        "setup_done": SETUP["done"], "brand": BRAND, "owner_pin": OWNER["pin"], "events": EVENTS[1:],
                        "kit": KIT["text"], "upd_key": UPD_KEY["v"], "pico_prev": PICO_UPD["prev"],
-                       "club_codes": CLUB_CODES, "coaches": COACHES}, fh)
+                       "club_codes": CLUB_CODES, "coaches": COACHES, "lanes_use": LANES["use"]}, fh)
     except OSError:
         pass                    # still used for this session
 
@@ -2648,12 +2653,20 @@ def handle_line(line):
         S["has_test"] = bool(d.get("test"))
         S["beat"] = bool(d.get("beat"))
         S["minleg_cmd"] = bool(d.get("minleg_cmd"))
+        S["lanes_max"] = int(d.get("lanes_max") or len(S["lanes"]))
+        S["lanes_cmd"] = bool(d.get("lanes_cmd"))
         if d.get("clock") and ser:
             try:                    # give the Pico the real date and time for its history file
                 ser.write(("clock %s\r\n" % datetime.now().strftime("%Y %m %d %H %M %S")).encode())
             except (serial.SerialException, OSError):
                 pass
         pico_minleg()
+        pico_lanes()
+    elif ev == "lanes":
+        S["lanes"] = [int(x) for x in d.get("lanes") or []]
+        S["lanes_max"] = int(d.get("max") or S["lanes_max"])
+        if d.get("refused"):
+            note("Lanes not changed - the timing box was in a race or the button test. Try again between races.")
     elif ev == "minleg":
         S["min_leg_s"] = d.get("s", 15)
     elif ev == "state":
@@ -2877,6 +2890,36 @@ ADJUST = re.compile(r"^(ok|place|dq|dnf|clear|legs|tie)\b")
 CMD_OK = re.compile(r"^(f|j|p|set|go|test on|test off|tie \d+|ok \d+|place \d+ \d+|dq \d+|dnf \d+|clear|clear \d+|legs \d+)$")
 
 
+def pico_lanes():
+    # tell the timing box how many lanes are in use (v3.6 or later); the rest are ignored
+    n = LANES["use"]
+    if ser and S.get("lanes_cmd") and n and n != len(S["lanes"]):
+        try:
+            ser.write(("lanes %d\r\n" % min(n, S["lanes_max"] or n)).encode())
+        except (serial.SerialException, OSError):
+            pass
+
+
+def lanes_action(d):
+    try:
+        n = int(d.get("n"))
+    except (TypeError, ValueError):
+        return "Pick a number of lanes"
+    top = S["lanes_max"] or 10
+    if not 1 <= n <= top:
+        return "Pick 1 to %d lanes" % top
+    if S["state"] in ("ARMED", "RACING") or S.get("test"):
+        return "Change the lanes between races"
+    LANES["use"] = n
+    save_settings()
+    if ser and S.get("lanes_cmd"):
+        pico_lanes()
+        return "ok"
+    if ser:
+        return "Saved - the timing box needs program v3.6 or newer to switch lanes off (System › Setup › Timing box program)"
+    return "ok"
+
+
 def pico_minleg():
     # practice: crews can press again after 1 s; racing: 15 s (timing box v3.0 or later)
     if ser and S.get("minleg_cmd"):
@@ -2947,7 +2990,7 @@ def snapshot(role="master", local=True, tok=None):
     # built into text while locked, so the Pico thread can't change it half way through
     with lock:
         program_sync()
-        d = {k: S[k] for k in ("connected", "port", "fw", "lanes", "state", "race", "faults", "live",
+        d = {k: S[k] for k in ("connected", "port", "fw", "lanes", "lanes_max", "lanes_cmd", "state", "race", "faults", "live",
                                "results", "at_prompt", "min_leg_s", "event", "race_event", "app_start",
                                "heat", "race_heat")}
         d["draw"] = draw_info()
@@ -2975,6 +3018,7 @@ def snapshot(role="master", local=True, tok=None):
         d["can_start"] = role in ("master", "starter")
         d["local"] = local
         d["claimable"] = can_claim() and not local
+        d["lanes_use"] = LANES["use"]
         d["coach"] = (COACHES.get(tok or "") or {}).get("club", "")
         if official:
             d["clubs"] = clubs_view()
@@ -3217,6 +3261,16 @@ class H(BaseHTTPRequestHandler):
                 COACHES.pop(self.token() or "", None)
                 save_settings()
             self.send(200, json.dumps({"result": "ok"}))
+            return
+        if self.path.startswith("/api/lanes"):           # timing desk: how many lanes are in use
+            if self.role() != "master":
+                r = "Only the timing desk can do that"
+            else:
+                with lock:
+                    r = lanes_action(data)
+            if r == "ok":
+                note("Lanes in use: %s" % data.get("n"))
+            self.send(200, json.dumps({"result": r}))
             return
         if self.path.startswith("/api/club_codes"):      # officials: a new code for a club
             if self.role() not in ("master", "admin"):
@@ -3652,7 +3706,8 @@ body.board header,body.board #nextbar{display:none}
 .mscr{flex:0 0 auto;align-self:center;width:50px;height:48px;border:1.5px solid var(--line);border-radius:10px;background:#fff;color:var(--mute);font:800 17px/1 system-ui;cursor:pointer;padding:4px 0}
 .mscr small{display:block;font:600 10px system-ui;margin-top:3px}
 .rolefix{margin-top:6px;padding:8px 10px;border:2px solid var(--red);border-radius:10px;background:#fde8e8;font-size:14px}
-.rolefix>b{color:var(--red)}.chgd{font-size:11px;font-weight:800;color:#7a4a00;background:#fff1d6;border:1px solid #e0b060;border-radius:6px;padding:0 5px;margin-left:3px}
+.rolefix>b{color:var(--red)}.lanegrid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;max-width:420px}.lanegrid .btn{min-height:48px;font-size:20px;font-weight:800;padding:0}
+.chgd{font-size:11px;font-weight:800;color:#7a4a00;background:#fff1d6;border:1px solid #e0b060;border-radius:6px;padding:0 5px;margin-left:3px}
 .tmlock{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:-4px 0 8px;padding:8px 10px;background:var(--soft,#eef2f7);border-radius:10px}
 .ccrow{display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid #dde3ea}.ccrow .cn{flex:1 1 8em;font-weight:700;min-width:0;overflow-wrap:anywhere}
 .ccrow .cc{font:800 22px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:3px}
@@ -4023,6 +4078,9 @@ function wizSteps(){
      status:!st.connected?"Not connected":st.faults.length?"Check wiring: "+st.faults.join(", "):"Connected · wiring OK",
      body:()=>!st.connected?`<p>Plug the timing box's USB cable into this computer. If Thonny is open, close it. The app finds the box by itself.</p>`
        :st.faults.length?`<p>These look unplugged or held down: <b>${esc(st.faults.join(", "))}</b>. Check those cables.</p>`:`<p class="ok">All good – nothing to do.</p>`},
+    {k:"lanes",title:"Lanes",ok:!!st.lanes_use&&(!st.connected||!st.lanes_cmd||st.lanes.length===st.lanes_use),
+     status:st.lanes_use?st.lanes_use+" lane"+(st.lanes_use>1?"s":"")+" in use":"How many lanes are you racing?",
+     body:()=>`<p class="mute" style="margin-top:0">Pick how many lanes you're using today. The others are ignored, so they won't show cable warnings.</p>${lanesButtons()}`},
     {k:"club",opt:true,title:"Club and event",ok:!!b.club,status:b.club?b.club+(b.event?" · "+b.event:""):"Shown on the screens and join card",
      body:()=>`<div class="wform"><input type="text" id="bclub" value="${esc(b.club||"")}" placeholder="Club name, e.g. Kurrawa SLSC" maxlength="40">
        <input type="text" id="bevent" value="${esc(b.event||"")}" placeholder="Event, e.g. Club IRB Carnival" maxlength="40"></div>
@@ -4090,7 +4148,7 @@ function renderRace(){
     }
     h+=`</div>`;
     if(ht){ const extra=Object.keys(ht.crews||{}).map(Number).filter(l=>!st.lanes.includes(l)).sort((a,b)=>a-b);
-      if(extra.length) h+=`<div class="others">Not wired yet: ${extra.map(l=>"Lane "+l+" "+esc(ht.crews[String(l)])).join(" · ")}</div>`; }
+      if(extra.length) h+=`<div class="others">${st.lanes_cmd&&(st.lanes_max||0)>=Math.max(...extra)?"Lane not in use":"Not wired yet"}: ${extra.map(l=>"Lane "+l+" "+esc(ht.crews[String(l)])).join(" · ")}${st.role==="master"&&st.lanes_cmd?` · <a href="#" onclick="lanesSheet();return false">Lanes</a>`:""}</div>`; }
     right+=`<div class="ctl">${controls()}</div>`;
     if(st.state!=="RACING") right+=heatCard();
     if(st.state!=="RACING"&&st.official&&st.heat&&!evOpen){
@@ -4118,7 +4176,7 @@ function raceWarnings(){
   if(st.faults.length&&st.state==="RACING"&&st.faults_racing)
     h+=`<div class="bad-warn">Cable fault during race: ${esc(st.faults.join(", "))}. That lane may have a false press – check its presses after the race.</div>`;
   else if(st.faults.length&&st.state!=="RACING")
-    h+=`<div class="warn">Check wiring: ${esc(st.faults.join(", "))} (open circuit or button held)</div>`;
+    h+=`<div class="warn">Check wiring: ${esc(st.faults.join(", "))} (open circuit or button held)${st.role==="master"&&st.lanes_cmd&&st.faults.some(f=>/^Lane/.test(f))?` · not using ${st.faults.filter(f=>/^Lane/.test(f)).length>1?"those lanes":"that lane"} today? <a href="#" onclick="lanesSheet();return false">Set the lanes in use</a>`:""}</div>`;
   const ht=shownHeat();
   if(ht&&(st.state==="RACING"||st.state==="DONE")){
     const empty=st.lanes.filter(l=>!crewOf(ht,l)&&(st.live[String(l)]||[]).length);
@@ -5637,6 +5695,7 @@ function renderSystem(){
       `<button class="btn ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Turn off":"Turn on"}</button>`);
     L+=row("Timing box", st.connected?(st.faults.length?`<span class="bad">Wiring fault: ${esc(st.faults.join(", "))}</span>`
         :`<span class="ok">Connected · wiring OK</span>`):`<span class="bad">Not connected – plug its USB cable into this computer</span>`, "");
+    if(master) L+=row("Lanes", lanesWord(), `<button class="btn" ${racing||st.test?"disabled":""} onclick="lanesSheet()">Change</button>`);
     if(master&&st.pico_upd) L+=picoRow(row,racing,ownLocked);
     if(master&&st.firewall&&st.firewall.state!=null) L+=row("Phones", st.firewall.state?`<span class="ok">Windows lets phones connect</span>`:`<span class="bad">Windows is blocking phones${st.firewall.busy?" – answer Yes on the Windows prompt":""}</span>`,
       st.firewall.state||st.firewall.busy?"":`<button class="btn pri" onclick="post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))">Allow phones</button>`);
@@ -5686,6 +5745,16 @@ function renderSystem(){
     if((cnt[n]||0)>(prevCounts[n]||0)){ d.classList.remove("flash"); void d.offsetWidth; d.classList.add("flash"); } });
   prevCounts=Object.assign({},cnt);
 }
+// ---------- lanes in use (training 2, NZ 6-7, Australia 9-10); the rest are ignored ----------
+function lanesWord(){ const n=st.lanes.length, mx=st.lanes_max||n;
+  if(!st.connected) return st.lanes_use?`${st.lanes_use} in use`:"Not set";
+  return `<b>${n} lane${n>1?"s":""} in use</b>${mx>n?`<span class="mute"> of ${mx} wired · lanes ${n+1}–${mx} are ignored</span>`:`<span class="mute"> · all wired lanes</span>`}`; }
+function lanesButtons(){ const mx=st.lanes_max||10, cur=st.lanes_use||st.lanes.length, busy=st.state==="ARMED"||st.state==="RACING"||st.test;
+  return `<div class="lanegrid">${Array.from({length:mx},(_,i)=>i+1).map(n=>`<button class="btn ${n===cur?"pri":""}" ${busy?"disabled":""} onclick="setLanes(${n})">${n}</button>`).join("")}</div>
+    <p class="mute" style="font-size:14px;margin:6px 0 0">Training often 2 · New Zealand 6–7 · Australia 9–10.${busy?" Change it between races.":""}</p>`; }
+async function setLanes(n){ const r=await post("/api/lanes",{n:n}); if(r==="ok"){ toast(n+" lane"+(n>1?"s":"")+" in use"); if(st) st.lanes_use=n; lastKey=""; render(); if($("sheet").classList.contains("on")&&$("lanesheet")) lanesSheet(); } }
+function lanesSheet(){ $("sheetin").innerHTML=`<h2 id="lanesheet">Lanes in use</h2><p class="mute" style="margin-top:0">The timing box is wired for ${st.lanes_max||10}. Lanes you don't use are ignored – no cable warnings, no lights, not in the results.</p>
+    ${lanesButtons()}<div class="row"><button class="btn" onclick="closeSheet()">Done</button></div>`; $("sheet").classList.add("on"); }
 // ---------- timing box program updates over USB ----------
 function picoRow(row,racing,ownLocked){ const p=st.pico_upd, busy=!!p.busy, dis=racing||busy||!st.connected?"disabled":"";
   const stt=busy?`<b class="okb">Updating the timing box – ${esc(p.busy)}…</b><div class="mute" style="font-size:13px">Don't unplug it. Takes about a minute.</div>`
@@ -5776,13 +5845,13 @@ function pageKey(){
   if(!st) return JSON.stringify([tab,linkDown,tab==="history"?hist:0]);
   const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes];
   k.push(st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags,st.unconfirmed);
-  if(tab==="race") k.push(st.setup_done,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,evOpen,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
+  if(tab==="race") k.push(st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,evOpen,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
     st.state==="RACING"&&(st.elapsed||0)<5);
   else if(tab==="results") k.push(st.results);
   else if(tab==="history") k.push(hist,queue,enterAsk);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
-  else k.push(sysView,dayOpen,updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
+  else k.push(sysView,dayOpen,updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.lanes,st.lanes_use,st.lanes_max,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
   return JSON.stringify(k);
 }
 function brandBar(){ const b=(st&&st.brand)||{}; if(!b.club&&!b.event&&!b.logo) return "";
