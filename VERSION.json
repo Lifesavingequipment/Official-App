@@ -1,9 +1,9 @@
 {
  "app": "1.8.3",
- "pico": "3.4",
+ "pico": "3.5",
  "sha256": "9be77e90ce92ee516090a42bcaca1c7344e2a5e4c2c7085673f29f95b224b03d",
- "pico_sha256": "fce09671a32d57107f5c2e47e2f0cb2f117d7ef8e89bcd6448a067aa525f8dab",
+ "pico_sha256": "2de3512b18838ad7b5e7c8cacf92152925683f7a39abe77346b5b61a8b147eb5",
  "notes": [
-  "After an app update or going back, the screen returns to System \u203a Setup and says which version is now running"
+  "Timing box v3.5: lane 3 for the bench test - button on GP7 (pin 10), light on GP13 (pin 17)"
  ]
 }

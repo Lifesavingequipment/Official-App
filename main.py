@@ -1,4 +1,5 @@
-# IRB Finish Timing - bench test v3.4
+# IRB Finish Timing - bench test v3.5
+# v3.5: lane 3 for the bench test - button GP7 (pin 10), light GP13 (pin 17).
 # v3.4: the PIN reset needs FINISH and GO held down together for 15 s (one stuck button can't do it).
 # v3.3: hold FINISH for 15 s between races (not in a race or button test) = clear the app's timing desk
 #       PIN, so a kit with a forgotten PIN never needs opening. Three long beeps confirm it.
@@ -96,12 +97,12 @@ HIST_RACES_PER_FILE = 50      # races per history file
 HIST_MAX_FILES = 10           # files kept (oldest deleted) = about 500 races
 HIST_MIN_FREE = 150_000       # also delete oldest files if free space drops below this
 
-LANE_PINS = {1: 2, 2: 3}      # lane number : GPIO
+LANE_PINS = {1: 2, 2: 3, 3: 7}   # lane number : GPIO (lane 3: GP7, pin 10)
 SET_PIN = 4
 GO_PIN = 5
 FINISH_PIN = 6
 SIREN_PIN = 10
-LIGHT_PINS = {1: 11, 2: 12}
+LIGHT_PINS = {1: 11, 2: 12, 3: 13}   # lane 3 light: GP13, pin 17 (needs a 4th relay)
 # ------------------------------------------
 
 HIT = 1 if BOARD_NPN else 0
@@ -322,7 +323,7 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "3.4", "pin_reset": True, "lanes": sorted(LANE_PINS), "race": race_no,
+    emit({"ev": "hello", "fw": "3.5", "pin_reset": True, "lanes": sorted(LANE_PINS), "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
           "clock": True, "beat": True, "batt": BATT_ENABLED})
     emit({"ev": "test", "on": test_mode})
@@ -940,7 +941,7 @@ def finish_race(reason="Race finished by official."):
 poller = uselect.poll()
 poller.register(sys.stdin, uselect.POLLIN)
 
-print("IRB finish timing - bench test v3.4 (legs, adjustments, history, app link, test, ties, clock)")
+print("IRB finish timing - bench test v3.5 (legs, adjustments, history, app link, test, ties, clock)")
 print("History: last saved race %d. Type log to see files." % race_no)
 emit_all()
 print("Board:", "NPN (hit = pin goes HIGH)" if BOARD_NPN else "PNP (hit = pin goes LOW)")
