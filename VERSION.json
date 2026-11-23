@@ -1,10 +1,10 @@
 {
- "app": "1.10.3",
+ "app": "1.10.4",
  "pico": "3.6",
- "sha256": "395dc54c6fca35ed31d20a22194f7a9682560023a1f9ab0b38ad6300c0a6ed9a",
+ "sha256": "a6260a1d876150833a294e0dcee6e67252340ab9d7e815463a55664b1bcc1d00",
  "pico_sha256": "89ef995913e7b4952f652be5601e62a4f921fabc194281e846013d865253b62e",
  "notes": [
-  "Clearer sections: each Setup section is its own card",
-  "Marshalling screen: heat header bands and one clear row per crew"
+  "LiveHeats tab is now called Results",
+  "Referee is now called Admin everywhere"
  ]
 }

@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.10.3"
+APP_VERSION = "1.10.4"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -94,7 +94,7 @@ last_rx = 0.0             # when the Pico last sent anything
 # with their name, shows a 3-digit code, and the Master approves it with a level. Everything ends
 # when the Master closes the event (or overnight). Team Manager and Results screen need nothing.
 ROLES = ("master", "admin", "starter", "marshal")
-ROLE_NAME = {"master": "Timing desk", "admin": "Referee", "starter": "Starter", "marshal": "Marshal", "viewer": "Viewer"}
+ROLE_NAME = {"master": "Timing desk", "admin": "Admin", "starter": "Starter", "marshal": "Marshal", "viewer": "Viewer"}
 PINS = {"master": ""}     # optional PIN for a backup Master phone ("" = off)
 officials = {}            # device token -> {"name", "role", "since", "seen"}
 requests_ = {}            # device token -> {"name", "code", "at"} waiting for the Master
@@ -294,7 +294,7 @@ def officials_action(d):
         if "approve" in d:
             role = str(d.get("role", ""))
             if role not in ("admin", "starter", "marshal"):
-                return "Choose Referee, Starter or Marshal"
+                return "Choose Admin, Starter or Marshal"
             officials[k] = {"name": rq["name"], "role": role, "since": time.time(), "seen": time.time()}
             access_day[0] = today()
             if d.get("remember"):
@@ -1431,7 +1431,7 @@ def allowed(role, path, data):
         return "View only - ask the timing desk for access"
     cmd = str(data.get("cmd", "")).strip().lower()
     if path.startswith("/api/marshal"):
-        return None if role in ("admin", "marshal") else "Only the Marshal or Referee can check crews in"
+        return None if role in ("admin", "marshal") else "Only the Marshal or Admin can check crews in"
     if role == "admin":
         if path.startswith("/api/cmd"):
             return None if ADMIN_CMDS.match(cmd) else "SET, GO and FINISH are for the Starter"
@@ -1441,10 +1441,10 @@ def allowed(role, path, data):
         return "Only the timing desk can do that"
     if role == "starter":
         if path.startswith("/api/cmd"):
-            return None if cmd in STARTER_CMDS else "Only the Referee can change results"
+            return None if cmd in STARTER_CMDS else "Only the Admin can change results"
         if path.startswith("/api/heat") and data.get("next") and len([k for k in data if k not in ("who", "next")]) == 0:
-            return None if prog_on() else "The Referee chooses the heats when there's no program"
-        return "%s can't do that - ask the Referee" % who
+            return None if prog_on() else "The Admin chooses the heats when there's no program"
+        return "%s can't do that - ask the Admin" % who
     return "%s can't do that" % who
 
 
@@ -1473,7 +1473,7 @@ def confirm_results(race, undo, who="?"):
     with lock:
         res = S["results"]
         if not res or res.get("race") != race:
-            # an earlier race, confirmed later from the Confirm or LiveHeats tab
+            # an earlier race, confirmed later from the Confirm or Results tab
             if not any(r.get("race") == race for r in history_summary()):
                 return "That race isn't in today's results"
             f = flags.setdefault(str(race), {})
@@ -3313,7 +3313,7 @@ class H(BaseHTTPRequestHandler):
                 if co:
                     co["seen"] = time.time()
             official = rl in ("master", "admin")
-            who = ((me.get("name") or "Timing desk") + (" (Referee)" if rl == "admin" else " (timing desk)")) if official else \
+            who = ((me.get("name") or "Timing desk") + (" (Admin)" if rl == "admin" else " (timing desk)")) if official else \
                   ("Team manager, " + co["club"] if co else "")
             self.send(200, json.dumps({"result": set_role(data, official, co["club"] if co else "", who)}))
             return
@@ -3343,7 +3343,7 @@ class H(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/api/club_codes"):      # officials: a new code for a club
             if self.role() not in ("master", "admin"):
-                r = "Only the timing desk or referee can do that"
+                r = "Only the timing desk or admin can do that"
             else:
                 with lock:
                     r = club_action(data)
@@ -4143,7 +4143,7 @@ details{border-bottom:1px solid var(--line)}
  <button class="tab" data-t="results">Confirm</button>
  <button class="tab" data-t="program">Program<span id="pbadge"></span></button>
  <button class="tab" data-t="marshal" hidden>Marshal</button>
- <button class="tab" data-t="history">LiveHeats<span id="qbadge"></span></button>
+ <button class="tab" data-t="history">Results<span id="qbadge"></span></button>
  <button class="tab" data-t="system">System<span id="sbadge"></span></button>
  <button class="qbtn" id="helpbtn" onclick="openHelp()" aria-label="Help for this screen">?</button>
 </header>
@@ -4373,7 +4373,7 @@ function raceWarnings(){
     else if(sd.missing&&sd.missing.length&&Object.keys((st.checkin||{})[st.heat.heat_id]||{}).length) h+=`<div class="warn">Patients sent, but lane ${sd.missing.join(", ")} ${sd.missing.length>1?"were":"was"} not checked in by the Marshal. Check before SET.</div>`;
   }
   if(pg.warn&&st.state!=="RACING")
-    h+=`<div class="warn">Only ${pg.left} heat${pg.left===1?"":"s"} left in the program after this one. ${st.official?`<a href="#" onclick="goTab('program');return false">Add more on the Program tab</a>, or turn the program off.`:"Tell the Referee."}</div>`;
+    h+=`<div class="warn">Only ${pg.left} heat${pg.left===1?"":"s"} left in the program after this one. ${st.official?`<a href="#" onclick="goTab('program');return false">Add more on the Program tab</a>, or turn the program off.`:"Tell the Admin."}</div>`;
   else if(pg.mode==null&&st.official&&st.state!=="RACING")
     h+=`<div class="warn">How are heats being run today? <a href="#" onclick="goTab('program');return false">Set up the program</a> (or choose No program).</div>`;
   if(pg.lh_changed&&st.official&&st.state!=="RACING")
@@ -4438,7 +4438,7 @@ const TROUBLE=[
     "Timing carries on and nothing is lost – the timing computer keeps everything."]],
   ["An official is waiting for access","Their phone shows a 3-digit code.",[
     "On the timing computer: System › Today. Their name and code are at the top.",
-    "Check the code matches their phone, then tap their job (Starter, Marshal or Referee).",
+    "Check the code matches their phone, then tap their job (Starter, Marshal or Admin).",
     "Declined or timed out? They tap Officials and ask again. Access ends when the event is closed."]],
   ["A screen keeps going to sleep","",[
     "Set the screen timeout to Never (or the longest) in that device's settings.",
@@ -4473,7 +4473,7 @@ const TROUBLE=[
  ["Racing",[
   ["The wrong heat is on the start","",[
     "With a program on, the program sets the order – nobody picks heats by hand.",
-    "The timing desk or Referee changes it on the Program tab: tap the heat you want, then Run it next."],true],
+    "The timing desk or Admin changes it on the Program tab: tap the heat you want, then Run it next."],true],
   ["Started by mistake","",[
     "Press GO again within 5 seconds: that's a recall – the race is cancelled and not counted.",
     "SET without GO cancels itself after 60 seconds."]],
@@ -4530,7 +4530,7 @@ function printTrouble(){ let p=$("printcard"); if(!p){ p=document.createElement(
   const b=(st&&st.brand)||{}; p.innerHTML=troublePages(`<div class="gtop">${b.logo?`<img src="/logo?v=${b.logo}" alt="">`:""}<span>${esc(b.club||"IRB Racing")}${b.event?" · "+esc(b.event):""}</span></div>`);
   try{ window.print(); }catch(e){ toast("Printing isn't available here"); } }
 function openHelp(){
-  const names={race:"Race",results:"Confirm",program:"Program",history:"LiveHeats",marshal:"Marshal",system:"System"};
+  const names={race:"Race",results:"Confirm",program:"Program",history:"Results",marshal:"Marshal",system:"System"};
   $("sheetin").innerHTML=`<h2>${names[tab]||"Help"} – what this screen is for</h2><ul class="helpl">${(HELP[tab]||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
     <p class="mute">The blue <b>Next</b> bar at the top always shows the next thing to do.</p>
     <h2 style="margin-top:14px">Something not working?</h2>${FIXES.map(([q,a])=>`<details class="fix"><summary>${esc(q)}</summary><p>${esc(hsFix(a))}</p></details>`).join("")}
@@ -4547,7 +4547,7 @@ function dayChecks(){
   if(st.has_test){ const today=lt&&lt.date===st.today, bad=today&&(lt.missing.length||(lt.clash||[]).length);
     c.push({ok:today&&!bad,label:"Button test",hint:st.test?"Running now – press every button, then end the test":!today?"Not done today – use the Button test card":bad?"Found problems – fix and test again":"Done today, all buttons working"}); }
   const ns=a.officials.filter(o=>o.role==="starter").length, nm=a.officials.filter(o=>o.role==="marshal").length, na=a.officials.filter(o=>o.role==="admin").length;
-  c.push({opt:true,ok:a.officials.length>0,label:"Officials approved",hint:a.officials.length?`Starter ${ns} · Marshal ${nm} · Referee ${na}`:"None yet – they scan the join card and ask for access"});
+  c.push({opt:true,ok:a.officials.length>0,label:"Officials approved",hint:a.officials.length?`Starter ${ns} · Marshal ${nm} · Admin ${na}`:"None yet – they scan the join card and ask for access"});
   if(st.firewall&&st.firewall.state===false) c.push({opt:true,ok:false,label:"Phones can connect",hint:"Windows is blocking phones",btn:"Allow",act:"post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))"});
   c.push({opt:true,ok:!!(st.join&&st.join.ssid),label:"Join card ready",hint:st.join&&st.join.ssid?"Wi-Fi: "+st.join.ssid:"Add the Wi-Fi name and password",btn:st.join&&st.join.ssid?"":"Setup",act:"sysView='setup';lastKey='';render()"});
   c.push({opt:true,ok:!!(st.backup&&st.backup.ok),label:"Backup stick",hint:st.backup?(st.backup.ok?"Copied to "+st.backup.where:st.backup.msg):"Not checked yet",btn:st.backup&&st.backup.ok?"":"Check",act:"post('/api/backup',{}).then(()=>{lastKey='';render()})"});
@@ -4601,7 +4601,7 @@ function nextStep(){
   }
   if(role==="starter"&&st.has_test&&(!st.last_test||st.last_test.date!==st.today)) return {text:"Do the button test before the first race",tab:"system",btn:"Test"};
   if(st.faults.length) return {text:"Fix wiring before SET: "+st.faults.join(", "),tab:"system",btn:"System"};
-  if(pg.mode==="on"&&!st.heat) return {text:"The program is finished"+(st.official?" – add more heats":" – tell the Referee"),tab:st.official?"program":"race",btn:st.official?"Program":"Race"};
+  if(pg.mode==="on"&&!st.heat) return {text:"The program is finished"+(st.official?" – add more heats":" – tell the Admin"),tab:st.official?"program":"race",btn:st.official?"Program":"Race"};
   // small carnival with no Marshal approved: the Master does the marshalling too
   if(role==="master"&&pg.mode==="on"&&st.heat&&!(st.sent||{})[st.heat.heat_id]&&!((st.access||{}).officials||[]).some(o=>o.role==="marshal"))
     return {text:`Patients not marked as sent for Heat ${st.heat.no} – no Marshal is logged in`,tab:"marshal",btn:"Marshal",act:`mSel='${st.heat.heat_id}'`};
@@ -4619,7 +4619,7 @@ function drawNext(){
   const g=$("nxgo"); if(g) g.onclick=()=>{ if(n.act) (new Function(n.act))(); goTab(n.tab); lastKey=""; render(); };
 }
 function goTab(n){ const b=document.querySelector('.tab[data-t="'+n+'"]'); if(b) b.click(); }
-const ROLE_NAME={master:"Timing desk",admin:"Referee",starter:"Starter",marshal:"Marshal",viewer:"Viewer"};
+const ROLE_NAME={master:"Timing desk",admin:"Admin",starter:"Starter",marshal:"Marshal",viewer:"Viewer"};
 function setWarnings(){
   const w=[];
   const ph=st.program&&st.program.mode==="on";
@@ -4637,7 +4637,7 @@ let setAsk=0;
 function controls(){
   const s=st.state, app=st.app_start;
   let h="";
-  if(!st.can_start) return st.role==="admin"?`<div class="viewonly"><div><b>Referee</b><div class="mute">SET, GO and FINISH are on the Starter's screen.</div></div></div>`
+  if(!st.can_start) return st.role==="admin"?`<div class="viewonly"><div><b>Admin</b><div class="mute">SET, GO and FINISH are on the Starter's screen.</div></div></div>`
     :`<div class="viewonly"><div><b>View only</b><div class="mute">Officials: ask the timing desk for access.</div></div>
     <button class="btn pri" onclick="openRequest()">Officials</button></div>`;
   if(st.test) return "";
@@ -4679,15 +4679,15 @@ function heatCard(){
   if(st.program&&st.program.mode==="on"){       // the program decides the heat
     let h=`<div class="card"><h2>Heat for the next race</h2>`;
     h+=st.heat?`<div><b>${esc(st.heat.div)}</b></div><div class="mute">${esc(st.heat.round)} · Heat ${st.heat.no}</div>`
-      :`<p class="warn">The program is finished – ${st.official?"add more heats on the Program tab":"the Referee adds more heats"}.</p>`;
-    h+=`<p class="mute" style="margin:6px 0 0">Heats follow the program. ${st.official?"To change the order, use the Program tab.":"The Referee changes the order on the Program tab."}</p>`;
+      :`<p class="warn">The program is finished – ${st.official?"add more heats on the Program tab":"the Admin adds more heats"}.</p>`;
+    h+=`<p class="mute" style="margin:6px 0 0">Heats follow the program. ${st.official?"To change the order, use the Program tab.":"The Admin changes the order on the Program tab."}</p>`;
     if(st.official) h+=`<div class="row">${st.heat?`<button class="btn" onclick="openSwap()">Swap lanes</button>`:""}<button class="btn" onclick="goTab('program')">Program ›</button></div>`;
     return h+`</div>`;
   }
   if(!st.official){
     const pon=st.program&&st.program.mode==="on";
     let h=st.heat?`<div class="card"><h2>Heat for the next race</h2><div><b>${esc(st.heat.div)}</b></div><div class="mute">${esc(st.heat.round)} · Heat ${st.heat.no}</div>`
-      :`<div class="card"><h2>Heat</h2><p class="mute">${st.role==="starter"?"The Referee chooses the heat.":"No heat chosen yet."}</p>`;
+      :`<div class="card"><h2>Heat</h2><p class="mute">${st.role==="starter"?"The Admin chooses the heat.":"No heat chosen yet."}</p>`;
     if(st.role==="starter"&&pon) h+=`<div class="row"><button class="btn pri" onclick="post('/api/heat',{next:true})">Next in program ›</button></div>`;
     return h+`</div>`;
   }
@@ -4813,7 +4813,7 @@ function resultsTable(res, tappable){
 function earlierCard(){ const u=((st&&st.unconfirmed)||[]).slice().sort((a,b)=>a-b); if(!u.length||!(st.role==="master"||st.role==="admin")) return "";
   return `<div class="card earlier"><h2>Earlier races not confirmed <span class="badge">${u.length}</span></h2>
     <p class="mute" style="margin:0 0 6px">The next race went ahead before ${u.length>1?"these were":"this was"} confirmed: Race ${u.join(", ")}.
-      On the LiveHeats tab you can check, confirm and tick off each one in LiveHeats in one go.</p>
+      On the Results tab you can check, confirm and tick off each one in LiveHeats in one go.</p>
     <button class="btn pri" style="width:100%" onclick="entGo(${u[0]})">Catch up – Race ${u[0]}${u.length>1?" first":""} ›</button></div>`; }
 async function entGo(race){ histAt=0; await loadHist(); const i=queue.findIndex(x=>x.race===race); if(i>=0) entIdx=i; lastKey=""; goTab("history"); }
 function entShow(race){ const i=queue.findIndex(x=>x.race===race); if(i>=0) entIdx=i; lastKey=""; render(); }
@@ -4839,8 +4839,8 @@ function renderResults(){
   const counts=res.rows.map(r=>r.presses_us.length).filter(n=>n>0);
   const inc=res.rows.filter(r=>r.status==="INCOMPLETE").length;
   // one warning, not two: incomplete crews are the usual reason press counts differ
-  if(inc&&can) w+=`<div class="warn">${inc} crew${inc>1?"s":""} incomplete (fewer presses) – referee check, then Edit to accept or place them.</div>`;
-  else if(counts.length&&Math.min(...counts)!==Math.max(...counts)) w+=`<div class="warn">Crews have different press counts – referee check.</div>`;
+  if(inc&&can) w+=`<div class="warn">${inc} crew${inc>1?"s":""} incomplete (fewer presses) – admin check, then Edit to accept or place them.</div>`;
+  else if(counts.length&&Math.min(...counts)!==Math.max(...counts)) w+=`<div class="warn">Crews have different press counts – admin check.</div>`;
   h+=`<div class="narrowonly">${w}</div>`+resultsTable(res, can);
   h+=can?`<p class="mute narrowonly" style="margin-bottom:0">Press Edit to accept, place, DQ or DNF a crew.</p>`
     :live?`<p class="mute">Confirmed – press Reopen results to change anything.</p>`
@@ -5229,7 +5229,7 @@ function sendPatients(hid,on){
 // people in a crew (from LiveHeats): patients for marshalling, everyone for team managers
 function crewMembers(ht,l){ const crew=((ht&&ht.crews)||{})[String(l)]||"", fx=(st&&st.role_fix)||{};
   return (((ht&&ht.members)||{})[String(l)]||[]).map(x=>{ const f=fx[(crew+"|"+x[0]).toLowerCase()]; return [x[0],f||x[1]||"",!!f&&f!==x[1],x[1]||""]; }); }
-// can this device change roles for this club? (its club code, or the timing desk / referee)
+// can this device change roles for this club? (its club code, or the timing desk / admin)
 function canRoles(club){ return !!st&&(st.role==="master"||st.role==="admin"||(!!st.coach&&!!club&&st.coach.toLowerCase()===club.toLowerCase())); }
 function pats(ht,l){ const m=crewMembers(ht,l); const p=m.filter(x=>x[1]==="Patient"), u=m.filter(x=>!x[1]);
   return p.map(x=>x[0]).concat(u.map(x=>x[0]+" (role not set)")); }
@@ -5435,7 +5435,7 @@ function renderTeam(){
   if(!tmData){ $("race").innerHTML=h+`<p class="mute">Loading…</p></div>`+homeBtn(); return; }
   const edit=canRoles(c), offl=st&&(st.role==="master"||st.role==="admin");
   h+=`<div class="card" style="margin:0"><h2>Coming up for ${esc(c)}</h2>
-    <div class="tmlock">${offl?`<span class="mute">You can change any crew's roles (${st.role==="admin"?"Referee":"timing desk"})</span>`
+    <div class="tmlock">${offl?`<span class="mute">You can change any crew's roles (${st.role==="admin"?"Admin":"timing desk"})</span>`
       :edit?`<span class="ok">✓ Changes unlocked for ${esc(c)}</span><button class="btn sm" onclick="clubLock()">Lock</button>`
       :`<span class="mute">Team manager? Unlock to set Driver, Crew and Patient</span><button class="btn sm pri" onclick="clubUnlock()">Unlock changes</button>`}</div>`;
   if(!tmData.upcoming.length) h+=`<p class="mute">No heats coming up.</p>`;
@@ -5462,7 +5462,7 @@ async function entered(race,undo){
   lastKey=""; render();
   if(!undo) showUndo(`Race ${race} ticked off as entered in LiveHeats`+(queue.length?` – next: Race ${(queue[Math.min(entIdx,queue.length-1)]||{}).race}`:" – all done ✓"), null, ()=>entered(race,true));
 }
-// catching up: confirm and tick off in one tap (the referee/timing desk has just checked the places)
+// catching up: confirm and tick off in one tap (the admin/timing desk has just checked the places)
 async function confirmEntered(race){
   if(entBusy) return; entBusy=true;
   try{ const r=await post("/api/confirm",{race:race,who:myName()||"?"}); if(r!=="ok"){ return; }
@@ -5580,7 +5580,7 @@ function offSheet(id){ const o=st.access.officials.find(x=>x.id===id); if(!o) re
 function askClose(){
   const q=st.queue_n||0;
   $("sheetin").innerHTML=`<h2>Close the event?</h2><p>Everyone's access ends now – ${st.access.officials.length} official${st.access.officials.length===1?"":"s"}. Remembered names are kept for next time.</p>
-    ${q?`<p class="warn">${q} race${q===1?" is":"s are"} not ticked off as entered in LiveHeats yet (LiveHeats tab).</p>`:""}
+    ${q?`<p class="warn">${q} race${q===1?" is":"s are"} not ticked off as entered in LiveHeats yet (Results tab).</p>`:""}
     <p class="mute">Results are saved on this computer. A USB backup is made after every race if a stick with an IRB_backup folder is plugged in.</p>
     <div class="row"><button class="btn red" onclick="closeSheet();offDo({close:true},'Event closed – all access removed')">Yes, close the event</button><button class="btn" onclick="closeSheet()">Cancel</button></div>`;
   $("sheet").classList.add("on"); }
@@ -5629,7 +5629,7 @@ function renderHome(){
     ${st.claimable?`<button class="hbtn pri" id="claimbtn" onclick="openClaim()">Set up the timing desk<small>New kit – no timing desk PIN yet. Choose one and this device runs the day</small></button>`:""}
     <a class="hbtn ${st.claimable?"":"pri"}" href="#team" onclick="tmView='club'">Team Manager<small>Your club's heats, lanes and results · the program · all results</small></a>
     <a class="hbtn" href="#board">Results<small>Live results and the next heat – for a screen or your phone</small></a>
-    <button class="hbtn" onclick="openRequest()">Officials<small>Starter, Marshal, Referee – ask the timing desk for access</small></button>
+    <button class="hbtn" onclick="openRequest()">Officials<small>Starter, Marshal, Admin – ask the timing desk for access</small></button>
     <p style="text-align:center;margin-top:14px"><a href="#fix">Something not working? Troubleshooting</a></p></div>`;
 }
 function openRequest(){
@@ -5820,8 +5820,8 @@ const GUIDES=[
     "Officials scan the join card and tap Officials. Their name and a 3-digit code show under System – check the code on their phone, then tap their job.",
     "Team managers: System › Today › Club codes › Print club codes. Hand each club its slip at check-in – it lets their team manager set Driver, Crew and Patient for their own crews.",
     "Watch the blue Next bar at the top. It always shows the next thing to do.",
-    "After each race, check the result on the Confirm tab and press Confirm results (or let the Referee do it).",
-    "End of day: every race ticked on the LiveHeats tab, then System › Setup › Start new event. That saves everything.",
+    "After each race, check the result on the Confirm tab and press Confirm results (or let the Admin do it).",
+    "End of day: every race ticked on the Results tab, then System › Setup › Start new event. That saves everything.",
     "Something wrong? Press ? on any screen for fixes."]],
   ["Starter","SET, GO and FINISH.",[
     "Scan the join card: 1 for the Wi-Fi, 2 for the app. Tap Officials, type your name and show the code to the timing desk.",
@@ -5836,11 +5836,11 @@ const GUIDES=[
     "Tap a crew when its patients arrive. Tap again to undo. Scratch is only for a crew that's out.",
     "When that heat's patients go out on the water, press Patients sent. The screen moves on to the next heat.",
     "Patients report 5 races before their heat. The Marshalling screen on the TV shows who is needed."]],
-  ["Referee","Results and LiveHeats.",[
+  ["Admin","Results and LiveHeats.",[
     "Scan the join card: 1 for the Wi-Fi, 2 for the app. Tap Officials, type your name and show the code to the timing desk.",
     "Confirm tab: after each race, check the places and times. Tap Edit on a crew to accept, move, DQ or DNF them.",
     "When the judges agree, press Confirm results. The screens then show the result as Final.",
-    "LiveHeats tab: type each confirmed race into LiveHeats, then press Entered.",
+    "Results tab: type each confirmed race into LiveHeats, then press Entered.",
     "Program tab: change the running order or add heats when needed."]]];
 const PI_DESK=["Timing desk","Your phone or tablet. You run the day – the Pi stays closed in its box.",[
     "Plug in the Pi box and the timing box. Wait about a minute: the timing app and the IRB Timing Wi-Fi start by themselves.",
@@ -5850,8 +5850,8 @@ const PI_DESK=["Timing desk","Your phone or tablet. You run the day – the Pi s
     "Follow Get started on the Race tab: timing box, club name, how heats are run, button test, join card.",
     "Officials scan the join card and tap Officials. Their name and a 3-digit code show under System – check the code on their phone, then tap their job.",
     "Team managers: System › Today › Club codes › Print club codes. Hand each club its slip at check-in – it lets their team manager set Driver, Crew and Patient for their own crews.",
-    "Watch the blue Next bar at the top. After each race, check the Confirm tab and press Confirm results (or let the Referee do it).",
-    "End of day: every race ticked on the LiveHeats tab, System › Setup › Start new event, then System › Setup › Power off. When the green light stops, switch off at the wall."]];
+    "Watch the blue Next bar at the top. After each race, check the Confirm tab and press Confirm results (or let the Admin do it).",
+    "End of day: every race ticked on the Results tab, System › Setup › Start new event, then System › Setup › Power off. When the green light stops, switch off at the wall."]];
 const PI_PIN=["Timing desk PIN","Getting in – and what to do if it's forgotten.",[
     "The timing desk PIN lets a phone or tablet do everything the Pi's own screen can, so the box never needs opening.",
     "A new kit has no PIN: the first phone to open the app is asked to set one.",
@@ -5866,7 +5866,7 @@ function printGuides(){ let p=$("printcard"); if(!p){ p=document.createElement("
       <p class="gfoot">Stuck? Ask the timing desk. App address: ${esc((st.join||{}).url||"")}</p></div>`).join("")
     +`<div class="guide">${top}<h1>Hire kit checklist</h1><p class="gsub">Tick each item out, and back in when you pack up.</p>
       <table class="gkit"><tr><th>Item</th><th>Out</th><th>Back</th></tr>${(st.kit||"").split("\n").map(x=>x.trim()).filter(Boolean).map(x=>`<tr><td>${esc(x)}</td><td>☐</td><td>☐</td></tr>`).join("")}</table>
-      <h2>Packing up</h2><ol><li>Every race ticked on the LiveHeats tab.</li><li>System › Setup › Results to take home › Today – save the zip.</li>
+      <h2>Packing up</h2><ol><li>Every race ticked on the Results tab.</li><li>System › Setup › Results to take home › Today – save the zip.</li>
       <li>System › Setup › Start new event.</li><li>Battery on charge. Everything back in the box.</li></ol></div>`+troublePages(top);
   try{ window.print(); }catch(e){ toast("Printing isn't available here"); } }
 function renderSystem(){
