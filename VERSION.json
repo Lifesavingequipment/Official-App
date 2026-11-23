@@ -1,11 +1,11 @@
 {
- "app": "1.10.0",
+ "app": "1.10.1",
  "pico": "3.6",
- "sha256": "f1dfa71277e2ccb2c4b300247dd560e85f026b558cc4cea4279f5b5c1d8f462b",
+ "sha256": "1e0377ac8c8b6647f34e7d2f676918fa325c447af7fc57ada342f47c16dfe27e",
  "pico_sha256": "89ef995913e7b4952f652be5601e62a4f921fabc194281e846013d865253b62e",
  "notes": [
-  "New look: clean scoreboard style \u2013 rounder cards, Inter font, softer colours (light only, readable in sun)",
-  "Phones and tablets: tabs move to a bottom bar with icons",
-  "Font is built in, so it works with no internet"
+  "Marshalling screen fills TV/laptop/tablet with no scrolling \u2013 MARSHALLING heat plus up to 3 NEXT heats",
+  "Marshal phone: fixed at 3 heats seated, with behind / not-sent / on-top-of-it banner and a buzz",
+  "Timing desk shows 'Marshalling behind'"
  ]
 }

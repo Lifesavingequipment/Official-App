@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.10.0"
+APP_VERSION = "1.10.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -1798,7 +1798,7 @@ def save_program():
             d = {k: program[k] for k in ("mode", "items", "lh_sig", "manual", "seq", "last_block", "breaks", "timing")}
             d["checkin"] = checkin
             d["sent"] = sent
-            d["required"] = program.get("required", 2)
+            d["required"] = MARSH_NEED
             json.dump(d, fh)
     except OSError:
         pass
@@ -2522,6 +2522,29 @@ def select_heat(data):
     return "ok"
 
 
+MARSH_NEED = 3     # heats of patients seated in marshalling, ready to go
+
+def marsh_status():
+    """How marshalling is keeping up – for the timing desk chip. None until marshalling is used today."""
+    if not (checkin or sent):
+        return None
+    now, nxt = upcoming(8)
+    about = S["heat"] if S["state"] in ("IDLE", "ARMED", "DONE") and S["heat"] else None
+    aid = (about or {}).get("heat_id")
+    hs = ([now] if now else []) + list(nxt)
+    def done(h):
+        ck = checkin.get(h["heat_id"], {})
+        lanes = list(h.get("crews") or {}) or [str(l) for l in S["lanes"]]
+        return bool(lanes) and all(ck.get(str(l)) for l in lanes)
+    run = (S["race_heat"] or {}).get("heat_id") if S["state"] == "RACING" else None
+    U = [h for h in hs if h["heat_id"] not in sent and h["heat_id"] not in (aid, run) and h["heat_id"] not in raced]
+    target = min(MARSH_NEED, len(U))
+    seated = sum(1 for h in U[:MARSH_NEED] if done(h))
+    call = next((h for h in U if not done(h)), None)
+    return {"need": MARSH_NEED, "target": target, "seated": seated, "call": call and call["no"],
+            "late": about["no"] if about and aid not in sent and aid not in raced else None}
+
+
 def upcoming(n=2):
     # the heat on now (or next up) and the heats after it in the same division
     now = S["race_heat"] if S["state"] == "RACING" else S["heat"]
@@ -3082,6 +3105,7 @@ def snapshot(role="master", local=True, tok=None):
         d["checkin"] = {x["heat_id"]: checkin.get(x["heat_id"], {}) for x in hs if x.get("heat_id")}
         d["sent"] = {x["heat_id"]: sent[x["heat_id"]] for x in hs if x.get("heat_id") in sent}
         d["next_break"] = next_break()
+        d["marsh"] = marsh_status()
         d["elapsed"] = (time.time() - S["go_at"]) if (S["state"] == "RACING" and S["go_at"]) else None
         d["messages"] = list(messages)[-20:]
         d["app"] = APP_VERSION
@@ -3163,7 +3187,7 @@ class H(BaseHTTPRequestHandler):
                       if S["state"] == "RACING" and h is now or h.get("heat_id") not in raced][:10]   # the marshal only needs heats still to race
                 body = json.dumps({"heats": hs, "checkin": {h["heat_id"]: checkin.get(h["heat_id"], {}) for h in hs},
                                    "sent": {h["heat_id"]: sent[h["heat_id"]] for h in hs if h["heat_id"] in sent},
-                                   "required": program.get("required", 2), "times": est_times()})
+                                   "required": MARSH_NEED, "times": est_times()})
             self.send(200, body)
         elif self.path.startswith("/api/team"):
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -3733,6 +3757,18 @@ body.board header,body.board #nextbar{display:none}
 .mb .mbbig .mbl>b{font-size:clamp(13px,calc(2*var(--u)),24px)}.mb .mbbig .mbl>i{font-size:clamp(11px,calc(1.6*var(--u)),19px);padding:calc(.2*var(--u)) .6vw}
 .mb .mbbig .hd{font-size:clamp(17px,calc(2.8*var(--u)),34px)}.mb .mbbig{padding:calc(.8*var(--u)) 1vw}
 .mb .st-none{visibility:hidden}
+.mb .mbca,.mb .mbcb{display:grid;gap:calc(1*var(--u));align-content:start;min-width:0}.mb .mbcb:empty{display:none}
+.mb .mbbig.nx{border:2px solid var(--line);box-shadow:none}
+.mb.fit{overflow:hidden;display:flex;flex-direction:column}.mb.fit>*{flex:0 0 auto}.mb.fit>.mbgrid{flex:1 1 auto;min-height:0;overflow:hidden}
+.mb.fit .mbrows{height:100%;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:calc(1*var(--u))}.mb.fit .mbca{flex:0 0 auto}.mb.fit .mbcb{flex:1 1 auto;overflow:hidden;min-height:0}
+@media (min-width:1300px) and (orientation:landscape){.mb .mbrows{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);align-items:start}.mb.fit .mbrows{display:grid;align-items:stretch}.mb.fit .mbca{overflow:hidden;min-height:0}
+ .mb .mbcb .mbbig .mbl{grid-template-columns:auto 1fr auto}}
+.mb.t1 .mbbig .mbl>span{font-size:clamp(13px,calc(2.1*var(--u)),26px)}.mb.t1 .mbbig .hd{font-size:clamp(15px,calc(2.4*var(--u)),30px)}.mb.t1 .mbbig .mbl{margin-top:calc(.3*var(--u))}
+.mb.t2 .mbbig .mbl>span{font-size:clamp(12px,calc(1.8*var(--u)),22px);padding:0}.mb.t2 .mbbig .mbl>b{width:1.4em;height:1.4em}.mb.t2 .mbm{font-size:clamp(12px,calc(1.8*var(--u)),20px)}
+.mwarn{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;border-radius:16px;padding:12px 14px;margin:0 0 10px;box-shadow:var(--sh)}
+.mwarn b{font-size:17px}.mwarn span{grid-column:1;font-weight:600;font-size:15px}.mwarn .btn{grid-row:1/3;grid-column:2}
+.mwarn.red{background:var(--red);color:#fff}.mwarn.amb{background:#fff3d6;color:#3d2600;box-shadow:inset 0 0 0 2px var(--amber)}.mwarn.ok{background:#e3f4ea;color:#0b4a2f}
+.mwarn.red .btn{background:#fff;color:var(--red)}
 .mb .mbrow{padding:calc(.5*var(--u)) 1vw}
 @media (max-width:699px){.mb .mbbig .mbl>span{white-space:normal}}
 .mb .mbaside{display:grid;gap:calc(1.4*var(--u));width:clamp(200px,20vw,340px)}
@@ -4067,6 +4103,7 @@ details{border-bottom:1px solid var(--line)}
  header .tab .badge{position:absolute;top:3px;left:calc(50% + 5px);margin:0}
  header .qbtn{align-self:center;flex:0 0 auto;margin:0 4px;width:36px!important;height:36px!important}
  main{padding-bottom:calc(100px + env(safe-area-inset-bottom,0px))}
+ body.board main{padding-bottom:12px}
  .undo,.toast{bottom:calc(84px + env(safe-area-inset-bottom,0px))}
  #testfs.mini{bottom:calc(84px + env(safe-area-inset-bottom,0px))}
 }
@@ -4286,6 +4323,8 @@ function raceWarnings(){
   let h="", pre="";
   if(st.silent) h+=`<div class="bad-warn">Timing box not responding – check its USB cable. The last few seconds may not have been recorded here.</div>`;
   if(st.practice) pre+=`<div class="practice">PRACTICE MODE – races are not saved here or sent to the LiveHeats list.${st.min_leg_s<15?` Crews can press again after ${st.min_leg_s} s.`:""}</div>`;
+  const ms=st.marsh;
+  if(ms&&st.official&&st.state!=="RACING"){ if(!ms.late&&ms.seated<ms.target) h+=`<div class="warn">Marshalling behind – ${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} seated${ms.call?` · calling Heat ${ms.call}`:""}</div>`; }
   if(st.batt!=null&&st.batt<24.0) h+=`<div class="${st.batt<23.0?"bad-warn":"warn"}">Battery: ${battWord(st.batt)[0].toLowerCase()} – before the next race.</div>`;
   if(st.faults.length&&st.state==="RACING"&&st.faults_racing)
     h+=`<div class="bad-warn">Cable fault during race: ${esc(st.faults.join(", "))}. That lane may have a false press – check its presses after the race.</div>`;
@@ -5215,6 +5254,18 @@ function crewPeople(ht,l){ const m=crewMembers(ht,l); if(!m.length) return "";
 function shortName(n){ const role=n.endsWith(" (role not set)")?" (?)":""; n=n.replace(" (role not set)","");
   const p=n.trim().split(/\s+/); return (p.length>1?p[0]+" "+p[p.length-1][0]:p[0])+role; }
 function mLanes(ht){ const crews=Object.entries(ht.crews||{}).sort((a,b)=>a[0]-b[0]); return crews.length?crews:st.lanes.map(l=>[String(l),""]); }
+let mBuzz=0;
+// how marshalling is keeping up: 3 heats of patients seated (all reported, not yet sent), and the heat about to race already sent
+function mStatus(){
+  if(!mUp||!mUp.heats.length||!st) return null;
+  const sentOf=id=>(mUp.sent||{})[id], hs=mUp.heats;
+  const about=["IDLE","ARMED","DONE"].includes(st.state)&&st.heat?hs.find(x=>x.heat_id===st.heat.heat_id):null;
+  const run=st.state==="RACING"&&st.race_heat?st.race_heat.heat_id:null;
+  const done=x=>{ const ck=(mUp.checkin||{})[x.heat_id]||{}, ln=mLanes(x); return ln.length&&ln.every(([l])=>ck[l]); };
+  const U=hs.filter(x=>!sentOf(x.heat_id)&&x.heat_id!==(about&&about.heat_id)&&x.heat_id!==run);
+  const target=Math.min(3,U.length), seated=U.slice(0,3).filter(done).length;
+  return {late:about&&!sentOf(about.heat_id)?about:null,target,seated,call:U.find(x=>!done(x))||null};
+}
 function renderMarshal(){
   if(!mUp){ $("marshal").innerHTML=`<div class="card mute">Loading…</div>`; return; }
   const can=st.role==="marshal"||st.official;
@@ -5223,8 +5274,13 @@ function renderMarshal(){
   const sentOf=id=>(mUp.sent||{})[id];
   if(!mPicked||!mUp.heats.some(x=>x.heat_id===mSel)) mSel=(mUp.heats.find(x=>!sentOf(x.heat_id))||mUp.heats[0]).heat_id;   // open on the first heat whose patients haven't gone
   const onStart=(st.heat||{}).heat_id;
+  const ms=mStatus(); let warn="";
+  if(ms){ if(ms.late) warn=`<div class="mwarn red" role="alert"><b>Heat ${ms.late.no} is about to race</b><span>Its patients haven't been sent – send them now.</span><button class="btn sm" onclick="mSel='${ms.late.heat_id}';mPicked=true;lastKey='';render()">Heat ${ms.late.no}</button></div>`;
+    else if(ms.seated<ms.target) warn=`<div class="mwarn amb" role="alert"><b>Behind – only ${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} seated</b><span>${ms.call?`Call Heat ${ms.call.no} now.`:""}</span>${ms.call?`<button class="btn sm" onclick="mSel='${ms.call.heat_id}';mPicked=true;lastKey='';render()">Heat ${ms.call.no}</button>`:""}</div>`;
+    else if(ms.target) warn=`<div class="mwarn ok"><b>${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} seated ✓</b><span>On top of it – no need to call more yet.</span></div>`;
+    const lvl=ms.late?2:ms.seated<ms.target?1:0; if(lvl>mBuzz&&st.role==="marshal"){ try{ navigator.vibrate&&navigator.vibrate(lvl>1?[250,120,250]:200); }catch(e){} } mBuzz=lvl; }
   // heat picker: one heat on screen at a time
-  let h=`<div class="mpick">${mUp.heats.map((ht,i)=>{ if(false) return ""; const ck=mUp.checkin[ht.heat_id]||{}, ln=mLanes(ht), n=ln.filter(([l])=>ck[l]).length;
+  let h=warn+`<div class="mpick">${mUp.heats.map((ht,i)=>{ if(false) return ""; const ck=mUp.checkin[ht.heat_id]||{}, ln=mLanes(ht), n=ln.filter(([l])=>ck[l]).length;
     return `<button class="${ht.heat_id===mSel?"on":""} ${n===ln.length||sentOf(ht.heat_id)?"done":""}" onclick="mSel='${ht.heat_id}';mPicked=true;lastKey='';render()">
       <small>${ht.heat_id===onStart?"On the start":i===0||(i===1&&mUp.heats[0].heat_id===onStart)?"Next":"Then"}</small>Heat ${ht.no}<small class="mpd">${esc(ht.div)}</small><b>${sentOf(ht.heat_id)?"Sent ✓":n+"/"+ln.length}</b></button>`; }).join("")}</div>`;
   const ht=mUp.heats.find(x=>x.heat_id===mSel), ck=mUp.checkin[ht.heat_id]||{}, lanes=mLanes(ht);
@@ -5246,8 +5302,6 @@ function renderMarshal(){
       <button class="btn sm" onclick="sendPatients('${ht.heat_id}',false)">Undo</button></div>`
     :`<button class="btn pri msend" onclick="sendPatients('${ht.heat_id}',true)">Patients sent ›</button>`;
   h+=`</div><p class="mute mhelp" style="margin:8px 4px">Tap a crew again to undo. Press <b>Patients sent</b> when the heat's patients go out on the water – the heat then shows as closed on the marshalling screen.</p>`;
-  if(can) h+=`<div class="row" style="margin:4px;align-items:center"><span class="mute">Heats of patients seated in marshalling:</span>
-    ${[2,3].map(n=>`<button class="btn sm ${(mUp.required||2)===n?"pri":""}" onclick="mReq(${n})">${n}</button>`).join("")}</div>`;
   const old=document.querySelector(".mpick"), oldX=old?old.scrollLeft:0;
   $("marshal").innerHTML=`<div class="mwrap">${h}</div>`;
   const b=document.querySelector(".mpick .on"), p=document.querySelector(".mpick");
@@ -5267,30 +5321,43 @@ function mbSmall(ht){
 }
 function renderMBoard(){
   if(!mUp){ $("race").innerHTML=`<p class="mute">Loading…</p>`; return; }
-  const hs=mUp.heats||[], R=mUp.required||2, sentOf=id=>(mUp.sent||{})[id];
+  const hs=mUp.heats||[], sentOf=id=>(mUp.sent||{})[id];
   const onId=(st&&(st.state==="RACING"?st.race_heat:st.heat)||{}).heat_id, onStart=hs.find(x=>x.heat_id===onId), rest=hs.filter(x=>x.heat_id!==onId);
   const tm=id=>{ const x=(mUp.times||{})[id]||{}; return x.exp||x.plan||""; };
   const now=new Date(), clk=String(now.getHours()).padStart(2,"0")+":"+String(now.getMinutes()).padStart(2,"0");
   const lab=x=>`Heat ${x.no} <small>· ${esc(x.div)} · ${esc(x.round)}${tm(x.heat_id)?" · "+tm(x.heat_id):""}</small>`;
   const small=(x,tag,cls)=>`<div class="mbrow"><span class="tg ${cls}">${tag}</span><span class="lab">${lab(x)}</span></div>`;
   let rows="";
-  if(onStart) rows+=small(onStart,st.state==="RACING"?"RACING":"ABOUT TO RACE","race")+(sentOf(onStart.heat_id)?"":`<div class="mbrow" style="border-color:var(--red);color:var(--red)">Patients for this heat have not been marked as sent</div>`);
-  let req=0, nxt=0, big=0;
-  rest.forEach((x,k)=>{
-    if(req>=R&&nxt>=1) return;
-    if(big>=3&&!sentOf(x.heat_id)){ if(nxt<1){ nxt++; rows+=small(x,"NEXT","next"); } req=R; return; }
-    if(sentOf(x.heat_id)){ if(req===0) rows+=small(x,"CLOSED","closed"); else if(nxt<1){ rows+=small(x,"CLOSED","closed"); } return; }
-    if(k<2||req<R){ const late=k<2, ck=(mUp.checkin||{})[x.heat_id]||{}, left=mLanes(x).filter(([l])=>!ck[l]).length; if(!late) req++; big++;
-      rows+=`<div class="mbbig ${late?"late":""}"><div class="hd"><span class="tg ${late?"now":"req"}">${late?"SEND NOW":"REQUIRED"}</span><span>Heat ${x.no} · ${esc(x.div)}</span></div>
-        <div class="mbm">${esc(x.round)}${tm(x.heat_id)?" · "+tm(x.heat_id):""} · ${left?left+" still to report":"all patients here"}</div>${mbLanes(x,true)}</div>`; return; }
-    if(nxt<1){ nxt++; rows+=small(x,"NEXT","next"); }
-  });
-  if(!hs.length) rows=`<div class="mbbig"><div class="hd">No heats coming up yet</div></div>`;
+  let rowsB="", big=0;
+  if(onStart) rows+=small(onStart,st.state==="RACING"?"RACING":"ABOUT TO RACE","race");
+  for(const x of rest){
+    if(big>=4) break;
+    if(sentOf(x.heat_id)){ if(!big) rows+=small(x,"CLOSED","closed"); continue; }
+    const ck=(mUp.checkin||{})[x.heat_id]||{}, left=mLanes(x).filter(([l])=>!ck[l]).length, first=!big; big++;
+    const card=`<div class="mbbig ${first?"":"nx"}"><div class="hd"><span class="tg ${first?"req":"next"}">${first?"MARSHALLING":"NEXT"}</span><span>Heat ${x.no} · ${esc(x.div)}</span></div>
+      <div class="mbm">${esc(x.round)}${tm(x.heat_id)?" · "+tm(x.heat_id):""} · ${left?left+" still to report":"all patients here"}</div>${mbLanes(x,true)}</div>`;
+    if(first) rows+=card; else rowsB+=card;
+  }
+  if(!hs.length){ rows=`<div class="mbbig"><div class="hd">No heats coming up yet</div></div>`; rowsB=""; }
   let h=`<div class="mb ${big>=3?"tight":""}"><div class="mbtop"><span class="mbb">${st&&st.brand&&st.brand.logo?`<img src="/logo?v=${st.brand.logo}" alt="">`:""}${st&&st.brand&&st.brand.club?esc(st.brand.club)+" · ":""}Marshalling – patients</span><span class="mbclock">${clk}</span></div>`;
   if(st&&st.next_break) h+=`<div class="mbbreak">Next: ${esc(st.next_break.label)}${st.next_break.until?" – racing resumes "+esc(st.next_break.until):st.next_break.mins?" – "+st.next_break.mins+" minutes":""}</div>`;
-  h+=`<div class="mbgrid"><div class="mbrows">${rows}</div><div class="mbaside"><div class="mbnote">Patients: report to marshalling 5 races before your heat.</div>${boardQr().replace('class="bqr"','class="bqr inl"')}</div></div></div>`;
+  h+=`<div class="mbgrid"><div class="mbrows"><div class="mbca">${rows}</div><div class="mbcb">${rowsB}</div></div><div class="mbaside"><div class="mbnote">Patients: report to marshalling 5 races before your heat.</div>${boardQr().replace('class="bqr"','class="bqr inl"')}</div></div></div>`;
   $("race").innerHTML=h+homeBtn();
+  fitMB();
 }
+// TV / laptop / tablet: the board fills the screen exactly – shrink a little, then drop the last heats, never scroll
+function fitMB(){
+  const mb=document.querySelector("#race .mb"); if(!mb) return;
+  mb.classList.remove("fit","t1","t2"); if(innerWidth<700) return;
+  mb.classList.add("fit"); const pb=parseFloat(getComputedStyle(mb.closest("main")||document.body).paddingBottom)||0; mb.style.height=Math.max(300,innerHeight-mb.getBoundingClientRect().top-pb-4)+"px";
+  const cols=[...mb.querySelectorAll(".mbca,.mbcb")], over=()=>cols.some(c=>c.scrollHeight>c.clientHeight+1)||mb.scrollWidth>mb.clientWidth+1;
+  if(!over()) return;
+  mb.classList.add("t1");
+  let nx=[...mb.querySelectorAll(".mbbig.nx")];
+  while(over()&&nx.length){ nx.pop().remove(); }
+  if(over()) mb.classList.add("t2");
+}
+let fitT=0; addEventListener("resize",()=>{ clearTimeout(fitT); fitT=setTimeout(()=>{ if(location.hash==="#marshalling"){ lastKey=""; render(); } },200); });
 
 // ---------- Team Manager (#team): one club's heats and results, no PIN ----------
 let tmData=null, tmAt=0, tmClubs=[];
