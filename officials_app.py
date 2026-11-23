@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.10.4"
+APP_VERSION = "1.11.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -88,6 +88,8 @@ S = {
     "beat": False, "batt": None, "batt_at": None,   # Pico v2.8 features
     "race_go_wall": None,                            # computer clock time of GO (for video)
     "practice": False, "backup": None,
+    "estop": False, "estop_fitted": False, "estop_cmd": False,    # emergency stop (timing box v3.7)
+    "estop_at": None, "estop_stopped": None,
 }
 last_rx = 0.0             # when the Pico last sent anything
 # Access levels. The timing computer itself is always Master. An official's phone asks for access
@@ -2718,6 +2720,10 @@ def handle_line(line):
         S["minleg_cmd"] = bool(d.get("minleg_cmd"))
         S["lanes_max"] = int(d.get("lanes_max") or len(S["lanes"]))
         S["lanes_cmd"] = bool(d.get("lanes_cmd"))
+        S["estop_cmd"] = bool(d.get("estop_cmd"))
+        S["estop_fitted"] = bool(d.get("estop_fitted"))
+        if not S["estop_cmd"]:
+            S["estop"] = False
         if d.get("clock") and ser:
             try:                    # give the Pico the real date and time for its history file
                 ser.write(("clock %s\r\n" % datetime.now().strftime("%Y %m %d %H %M %S")).encode())
@@ -2746,6 +2752,7 @@ def handle_line(line):
             S["live"] = {}
         if new == "ARMED":
             S["results"] = None
+            S["estop_stopped"] = None
         S["state"] = new
         S["race"] = d.get("race", S["race"])
     elif ev == "running":
@@ -2803,6 +2810,20 @@ def handle_line(line):
     elif ev == "batt":
         S["batt"] = d.get("v")
         S["batt_at"] = time.time()
+    elif ev == "estop":
+        on = bool(d.get("on"))
+        S["estop_fitted"] = bool(d.get("fitted", S["estop_fitted"]))
+        if on and not S["estop"]:
+            S["estop_at"] = time.time()
+            S["estop_stopped"] = d.get("stopped")
+            S["live"] = {}
+            messages.append([datetime.now().strftime("%H:%M:%S"), "EMERGENCY STOP pressed" +
+                             (" - race %s stopped, re-run the heat" % d["stopped"] if d.get("stopped") else "")])
+        elif not on and S["estop"]:
+            messages.append([datetime.now().strftime("%H:%M:%S"), "Emergency stop released"])
+        S["estop"] = on
+        if d.get("refused"):
+            note("E-stop setting not changed - the timing box was in a race. Try again between races.")
     elif ev == "recall":
         messages.append([datetime.now().strftime("%H:%M:%S"), "RECALL - race cancelled"])
     elif ev == "results":
@@ -2918,6 +2939,7 @@ def serial_loop_once():
             msg = str(e)
             with lock:
                 S["connected"] = False
+                S["estop"] = False
                 ser = None
             if opened:
                 # it was working, so the cable was pulled or the Pico reset
@@ -3060,6 +3082,9 @@ def snapshot(role="master", local=True, tok=None):
         for k in ("ties", "has_test", "test", "test_seen", "last_test", "faults_racing"):
             d[k] = S[k]
         d["raced"] = raced
+        d["estop"] = {"on": S["estop"], "fitted": S["estop_fitted"], "cmd": S["estop_cmd"],
+                      "since": int(time.time() - S["estop_at"]) if S["estop"] and S["estop_at"] else None,
+                      "stopped": S["estop_stopped"]}
         d["confirmed"] = bool(S["results"] and is_confirmed(S["results"].get("race")))
         d["queue_n"] = len([1 for r in history_summary() if not flags.get(str(r.get("race")), {}).get("entered")])
         cur_race = (S["results"] or {}).get("race") if S["state"] == "DONE" else None
@@ -3330,6 +3355,25 @@ class H(BaseHTTPRequestHandler):
                 COACHES.pop(self.token() or "", None)
                 save_settings()
             self.send(200, json.dumps({"result": "ok"}))
+            return
+        if self.path.startswith("/api/estop"):           # timing desk: is an emergency stop button fitted?
+            if self.role() != "master":
+                r = "Only the timing desk can do that"
+            else:
+                with lock:
+                    if not (ser and S["estop_cmd"]):
+                        r = "The timing box needs program v3.7 or newer for the emergency stop (System › Setup › Updates)"
+                    elif S["state"] in ("ARMED", "RACING"):
+                        r = "Change this between races"
+                    else:
+                        try:
+                            ser.write(("estop %s\r\n" % ("on" if data.get("fitted") else "off")).encode())
+                            r = "ok"
+                        except (serial.SerialException, OSError):
+                            r = "Couldn't reach the timing box"
+            if r == "ok":
+                note("Emergency stop %s" % ("fitted" if data.get("fitted") else "not fitted"))
+            self.send(200, json.dumps({"result": r}))
             return
         if self.path.startswith("/api/lanes"):           # timing desk: how many lanes are in use
             if self.role() != "master":
@@ -4111,6 +4155,15 @@ details{border-bottom:1px solid var(--line)}
 }
 .tab[data-t=race]{--ic:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Ccircle cx=%2212%22 cy=%2213%22 r=%228%22/%3E%3Cpath d=%22M12 9v4l2.5 2M9 2h6%22/%3E%3C/svg%3E")}.tab[data-t=results]{--ic:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Ccircle cx=%2212%22 cy=%2212%22 r=%229%22/%3E%3Cpath d=%22M8 12.5l2.7 2.7L16 9.8%22/%3E%3C/svg%3E")}.tab[data-t=program]{--ic:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01%22/%3E%3C/svg%3E")}.tab[data-t=marshal]{--ic:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M5 21V4M5 4h11l-2 4 2 4H5%22/%3E%3C/svg%3E")}.tab[data-t=history]{--ic:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M12 16V5M7.5 9.5L12 5l4.5 4.5M5 19h14%22/%3E%3C/svg%3E")}.tab[data-t=system]{--ic:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Ccircle cx=%2212%22 cy=%2212%22 r=%223%22/%3E%3Cpath d=%22M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z%22/%3E%3C/svg%3E")}
 
+#estopfs.on{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:24px;background:#b3170a;color:#fff;text-align:center;animation:esflash 1s steps(1) infinite}
+@keyframes esflash{50%{background:#e02414}}
+@media (prefers-reduced-motion:reduce){#estopfs.on{animation:none}}
+#estopfs .esbox{max-width:900px;display:grid;gap:14px}
+#estopfs .esword{font:900 clamp(96px,28vw,320px)/.9 var(--f);letter-spacing:-.02em}
+#estopfs .essub{font:800 clamp(22px,5vw,48px)/1.15 var(--f)}
+#estopfs .esrace{font:800 clamp(18px,3.6vw,34px)/1.2 var(--f);background:#fff;color:#8f1308;border-radius:16px;padding:12px 18px}
+#estopfs .eshelp{font:600 clamp(16px,2.6vw,24px)/1.3 var(--f);opacity:.95}
+body.estopped{overflow:hidden}
 /* v1.10.3: clearer separation – each Setup section is its own card; marshalling heats get a header band and one row per crew */
 .card.slist{background:none;box-shadow:none;padding:0}
 .ssec{background:#fff;border:0!important;border-radius:20px;box-shadow:var(--sh);margin:0 0 14px;padding:0 18px;overflow:hidden}
@@ -4352,6 +4405,7 @@ function raceWarnings(){
   let h="", pre="";
   if(st.silent) h+=`<div class="bad-warn">Timing box not responding – check its USB cable. The last few seconds may not have been recorded here.</div>`;
   if(st.practice) pre+=`<div class="practice">PRACTICE MODE – races are not saved here or sent to the LiveHeats list.${st.min_leg_s<15?` Crews can press again after ${st.min_leg_s} s.`:""}</div>`;
+  if(st.estop&&st.estop.stopped&&!st.estop.on&&st.state!=="RACING"&&st.official) h+=`<div class="bad-warn">Race ${st.estop.stopped} was stopped by the emergency stop – re-run this heat.</div>`;
   const ms=st.marsh;
   if(ms&&st.official&&st.state!=="RACING"){ if(!ms.late&&ms.seated<ms.target) h+=`<div class="warn">Marshalling behind – ${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} ready${ms.call?` · calling Heat ${ms.call}`:""}</div>`; }
   if(st.batt!=null&&st.batt<24.0) h+=`<div class="${st.batt<23.0?"bad-warn":"warn"}">Battery: ${battWord(st.batt)[0].toLowerCase()} – before the next race.</div>`;
@@ -5829,7 +5883,8 @@ const GUIDES=[
     "Check the heat on your screen matches the crews on the start.",
     "SET arms the race. GO starts the clock. The handheld buttons do the same.",
     "Red messages must be checked before SET.",
-    "When every crew is in, press FINISH (it asks twice)."]],
+    "When every crew is in, press FINISH (it asks twice).",
+    "EMERGENCY STOP: push the red button on the timing box. Every light flashes, the siren pulses and every screen shows STOP. Any race running is stopped and must be re-run. Twist the button to release it when it's safe."]],
   ["Marshal","Patients in, patients out.",[
     "Scan the join card: 1 for the Wi-Fi, 2 for the app. Tap Officials, type your name and show the code to the timing desk.",
     "The heat at the top is the next one to marshal.",
@@ -5928,6 +5983,12 @@ function renderSystem(){
       `<button class="btn ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Turn off":"Turn on"}</button>`);
     G.box+=row("Timing box", st.connected?(st.faults.length?`<span class="bad">Wiring fault: ${esc(st.faults.join(", "))}</span>`
         :`<span class="ok">Connected · wiring OK</span>`):`<span class="bad">Not connected – plug its USB cable into this computer</span>`, "");
+    if(master&&st.connected){ const e=st.estop||{};
+      G.box+=row("Emergency stop", !e.cmd?`<span class="mute">Needs timing box program v3.7 – update it under Updates</span>`
+        :e.on?`<span class="bad">PRESSED – twist the button on the box to release</span>`
+        :e.fitted?`<span class="ok">Fitted · all clear</span> <span class="mute">– pressing it stops every race, flashes every light and sounds the siren</span>`
+        :`<span class="mute">Not fitted – turn on once a latching E-stop is wired to GP28 (normally-closed contact to GND)</span>`,
+        e.cmd&&!e.on?`<button class="btn" ${racing?"disabled":""} onclick="estopFit(${!e.fitted})">${e.fitted?"Not fitted":"It's fitted"}</button>`:""); }
     if(master) G.event+=row("Lanes", lanesWord(), `<button class="btn" ${racing||st.test?"disabled":""} onclick="lanesSheet()">Change</button>`);
     if(master&&st.pico_upd) G.upd+=picoRow(row,racing,ownLocked);
     if(master&&st.firewall&&st.firewall.state!=null) G.net+=row("Phones", st.firewall.state?`<span class="ok">Windows lets phones connect</span>`:`<span class="bad">Windows is blocking phones${st.firewall.busy?" – answer Yes on the Windows prompt":""}</span>`,
@@ -6000,6 +6061,11 @@ function lanesWord(){ const n=st.lanes.length, mx=st.lanes_max||n;
 function lanesButtons(){ const mx=st.lanes_max||10, cur=st.lanes_use||st.lanes.length, busy=st.state==="ARMED"||st.state==="RACING"||st.test;
   return `<div class="lanegrid">${Array.from({length:mx},(_,i)=>i+1).map(n=>`<button class="btn ${n===cur?"pri":""}" ${busy?"disabled":""} onclick="setLanes(${n})">${n}</button>`).join("")}</div>
     <p class="mute" style="font-size:14px;margin:6px 0 0">Training often 2 · New Zealand 6–7 · Australia 9–10.${busy?" Change it between races.":""}</p>`; }
+function estopFit(on){
+  const go=async()=>{ const r=await post("/api/estop",{fitted:on}); toast(r==="ok"?(on?"Emergency stop on":"Emergency stop off"):r,4000); };
+  if(on) askYes("Is the emergency stop button wired to the timing box (GP28)? If it isn't, the box will go straight to STOP.",go,"Yes, it's wired");
+  else askYes("Turn the emergency stop off? Pressing the button will do nothing.",go,"Turn off");
+}
 async function setLanes(n){ const r=await post("/api/lanes",{n:n}); if(r==="ok"){ toast(n+" lane"+(n>1?"s":"")+" in use"); if(st) st.lanes_use=n; lastKey=""; render(); if($("sheet").classList.contains("on")&&$("lanesheet")) lanesSheet(); } }
 function lanesSheet(){ $("sheetin").innerHTML=`<h2 id="lanesheet">Lanes in use</h2><p class="mute" style="margin-top:0">The timing box is wired for ${st.lanes_max||10}. Lanes you don't use are ignored – no cable warnings, no lights, not in the results.</p>
     ${lanesButtons()}<div class="row"><button class="btn" onclick="closeSheet()">Done</button></div>`; $("sheet").classList.add("on"); }
@@ -6195,7 +6261,22 @@ function renderBoard(){
   $("race").innerHTML=h+boardRecent(skip)+`</div>`+boardQr()+homeBtn();
   fitRecent();
 }
+// ---------- EMERGENCY STOP: every screen, every role, until the button on the timing box is released ----------
+let esKey="", esWas=false;
+function drawEstop(){
+  let el=$("estopfs"); if(!el){ el=document.createElement("div"); el.id="estopfs"; el.setAttribute("role","alert"); document.body.appendChild(el); }
+  const e=(st&&st.estop)||{}, on=!!e.on, off=st&&st.official!==undefined&&["master","admin","starter","marshal"].includes(st.role);
+  const k=JSON.stringify([on,e.stopped,off]); if(k===esKey) return; esKey=k;
+  if(on&&!esWas){ try{ navigator.vibrate&&navigator.vibrate([600,200,600,200,600]); }catch(x){} }
+  esWas=on; document.body.classList.toggle("estopped",on);
+  if(!on){ el.className=""; el.innerHTML=""; return; }
+  el.className="on";
+  el.innerHTML=`<div class="esbox"><div class="esword">STOP</div><div class="essub">Emergency stop – all crews stop racing now</div>
+    ${e.stopped?`<div class="esrace">Race ${e.stopped} has been stopped. It will be re-run.</div>`:""}
+    ${off?`<div class="eshelp">When it's safe, twist the red emergency stop button on the timing box to release it. Timing can't start until it's released.</div>`:""}</div>`;
+}
 function render(){
+  drawEstop();
   if(location.hash==="#fix"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
     const k=JSON.stringify(["fix",st&&st.brand]); if(k!==lastKey){ lastKey=k; renderFix(); } return; }
   if(location.hash==="#team"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;

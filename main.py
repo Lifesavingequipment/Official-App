@@ -1,7 +1,10 @@
-# IRB Finish Timing - bench test v3.6
+# IRB Finish Timing - bench test v3.7
 # v3.6: wired for up to 10 lanes; the app chooses how many are in use (lanes N). Lanes not in use are
 #       ignored completely - no cable faults, no lights, not in results. Saved in lanes.txt on the Pico.
 # v3.5: lane 3 for the bench test - button GP7 (pin 10), light GP13 (pin 17).
+# v3.7: EMERGENCY STOP on GP28 (latching mushroom button, NC contact to GND). Pressed - or its wire cut -
+#       stops any race (saved as STOPPED, to be re-run), flashes every lane light and pulses the siren
+#       until the button is twisted to release. Off until the app says it's fitted ("estop on").
 # v3.4: the PIN reset needs FINISH and GO held down together for 15 s (one stuck button can't do it).
 # v3.3: hold FINISH for 15 s between races (not in a race or button test) = clear the app's timing desk
 #       PIN, so a kit with a forgotten PIN never needs opening. Three long beeps confirm it.
@@ -107,6 +110,12 @@ SET_PIN = 4
 GO_PIN = 5
 FINISH_PIN = 6
 SIREN_PIN = 10
+ESTOP_PIN = 28                # emergency stop: NC contact between GP28 and GND (closed = all clear)
+ESTOP_FILE = "estop.txt"      # "1" once the app says an E-stop is fitted
+ESTOP_STEADY_MS = 50          # the E-stop input must read the same this long to change
+ESTOP_FLASH_MS = 250          # lane lights flash on/off this fast while stopped
+ESTOP_SIREN_ON_MS = 1000      # siren pulses 1 s on, 0.5 s off while stopped
+ESTOP_SIREN_OFF_MS = 500
 # lane lights (relay inputs): 1 GP11 (15), 2 GP12 (16), 3 GP13 (17), 4 GP17 (22), 5 GP18 (24),
 # 6 GP19 (25), 7 GP20 (26), 8 GP21 (27), 9 GP22 (29), 10 GP27 (32). Siren GP10 (14).
 LIGHT_PINS = {1: 11, 2: 12, 3: 13, 4: 17, 5: 18, 6: 19, 7: 20, 8: 21, 9: 22, 10: 27}
@@ -171,6 +180,18 @@ set_in.irq(handler=make_irq(CODE_SET), trigger=TRIG, hard=True)
 go_in = Pin(GO_PIN, Pin.IN, PULL)
 go_in.irq(handler=make_irq(CODE_GO), trigger=TRIG, hard=True)
 finish_in = Pin(FINISH_PIN, Pin.IN, Pin.PULL_UP)   # pressed = 0
+estop_in = Pin(ESTOP_PIN, Pin.IN, Pin.PULL_UP)     # 0 = circuit closed (all clear), 1 = pressed or wire cut
+
+
+def estop_saved():
+    try:
+        with open(ESTOP_FILE) as fh:
+            return fh.read().strip() == "1"
+    except (OSError, ValueError):
+        return False
+
+
+estop_fitted = estop_saved()
 
 # ---------------- Helpers ----------------
 
@@ -284,6 +305,7 @@ def show_help():
     print("log = list saved history files (download them from Thonny's Files view)")
     print("Jumper test: lanes/SET/GO jumpered to GND = idle, pull out = hit.")
     print("FINISH: touch pin 6 to GND for 1 s.")
+    print("estop on / estop off = emergency stop button fitted to GP28 (NC to GND) - now %s" % ("ON" if estop_fitted else "off"))
 
 
 # ---- Extended microsecond clock ----
@@ -349,9 +371,10 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "3.6", "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
+    emit({"ev": "hello", "fw": "3.7", "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
-          "clock": True, "beat": True, "batt": BATT_ENABLED})
+          "clock": True, "beat": True, "batt": BATT_ENABLED, "estop_cmd": True, "estop_fitted": estop_fitted})
+    emit({"ev": "estop", "on": estop_on, "fitted": estop_fitted})
     emit({"ev": "test", "on": test_mode})
     announce()
     emit({"ev": "faults", "list": faults()})
@@ -514,6 +537,12 @@ go_idle_since = None
 finish_down_since = None
 finish_fired = False
 combo_since = None            # FINISH + GO both held since (a reset must start between races)
+estop_on = False              # emergency stop active
+estop_seen = None             # the raw reading being timed for ESTOP_STEADY_MS
+estop_seen_since = 0
+estop_tick = 0                # light / siren pattern timers while stopped
+estop_light = 0
+estop_siren = 0
 reset_fired = False
 
 
@@ -720,7 +749,7 @@ def read_batt():
 
 
 def command(line):
-    global adj, legs_set, version, ties, MIN_LEG_US, hits, last_fault_report
+    global adj, legs_set, version, ties, MIN_LEG_US, hits, last_fault_report, estop_fitted
     w = line.strip().lower().split()
     if not w:
         return
@@ -740,6 +769,27 @@ def command(line):
         n = MIN_LEG_US // 1_000_000
         print("Presses under %d s after a crew's last press are ignored." % n)
         emit({"ev": "minleg", "s": n if MIN_LEG_US >= 1_000_000 else 1})
+        return
+    if c == "estop":                        # estop on|off - is an emergency stop button fitted to GP28?
+        if len(w) < 2 or w[1] not in ("on", "off"):
+            print("E-stop is %s. Type  estop on  if one is wired to GP28, or  estop off." % ("fitted" if estop_fitted else "not fitted"))
+            return
+        if state in ("ARMED", "RACING"):
+            print("Change the E-stop setting between races.")
+            emit({"ev": "estop", "on": estop_on, "fitted": estop_fitted, "refused": True})
+            return
+        estop_fitted = w[1] == "on"
+        try:
+            with open(ESTOP_FILE, "w") as fh:
+                fh.write("1" if estop_fitted else "0")
+        except OSError:
+            pass
+        print("E-stop %s." % ("fitted - pressing it stops everything" if estop_fitted else "not fitted - GP28 is ignored"))
+        emit({"ev": "estop", "on": estop_on, "fitted": estop_fitted})
+        return
+    if estop_on and c in ("set", "go", "f", "r", "test"):
+        print("EMERGENCY STOP is on - twist the button to release it first.")
+        emit({"ev": "estop", "on": True, "fitted": estop_fitted})
         return
     if c == "lanes":                        # how many lanes are in use (the rest are ignored)
         try:
@@ -992,11 +1042,65 @@ def finish_race(reason="Race finished by official."):
         print("No race running. Press SET to arm a race.")
 
 
+def estop_press():
+    """Emergency stop pressed (or its wire cut): stop everything, flash and sound until released."""
+    global estop_on, state, race_no, test_mode, last_fault_report, estop_tick, estop_light, estop_siren
+    estop_on = True
+    stopped = None
+    if test_mode:
+        set_test(False)
+    if state == "RACING":
+        el = clock_now() - t0
+        race_no += 1
+        stopped = race_no
+        hist_write([[race_no, 0, stamp(), "RACE", "", "", "", "STOPPED", "",
+                     "emergency stop %s s after GO - not raced" % fmt(el)]])
+        print("EMERGENCY STOP - race %d stopped %s s after GO. It will need to be re-run." % (race_no, fmt(el)))
+    else:
+        print("EMERGENCY STOP pressed.")
+    if state in ("RACING", "ARMED"):
+        reset_race()
+    state = "IDLE"
+    last_fault_report = None
+    led.on()
+    now = time.ticks_ms()
+    estop_tick, estop_light, estop_siren = now, now, now
+    set_lights(1)
+    siren.on()
+    emit({"ev": "estop", "on": True, "fitted": True, "stopped": stopped, "race": race_no})
+    announce()
+
+
+def estop_release():
+    global estop_on
+    estop_on = False
+    set_lights(0)
+    siren.off()
+    led.off()
+    print("Emergency stop released - all clear. Press SET to start the next race.")
+    emit({"ev": "estop", "on": False, "fitted": estop_fitted})
+    announce()
+
+
+def estop_run(now):
+    """While stopped: lane lights flash together, the siren pulses."""
+    global estop_light, estop_siren
+    if time.ticks_diff(now, estop_light) >= ESTOP_FLASH_MS:
+        estop_light = now
+        v = 0 if lights[1].value() else 1
+        for l in lights.values():
+            l.value(v)
+    on = siren.value()
+    if time.ticks_diff(now, estop_siren) >= (ESTOP_SIREN_ON_MS if on else ESTOP_SIREN_OFF_MS):
+        estop_siren = now
+        siren.value(0 if on else 1)
+
+
 # ---------------- Main loop ----------------
 poller = uselect.poll()
 poller.register(sys.stdin, uselect.POLLIN)
 
-print("IRB finish timing - bench test v3.6 (legs, adjustments, history, app link, test, ties, clock)")
+print("IRB finish timing - bench test v3.7 (legs, adjustments, history, app link, test, ties, clock)")
 print("History: last saved race %d. Type log to see files." % race_no)
 emit_all()
 print("Board:", "NPN (hit = pin goes HIGH)" if BOARD_NPN else "PNP (hit = pin goes LOW)")
@@ -1013,6 +1117,37 @@ last_batt = time.ticks_ms() - BATT_MS
 line = ""
 
 while True:
+    # 0. EMERGENCY STOP - checked before anything else
+    now = time.ticks_ms()
+    if estop_fitted:
+        raw_e = estop_in.value()
+        if raw_e != estop_seen:
+            estop_seen, estop_seen_since = raw_e, now
+        elif time.ticks_diff(now, estop_seen_since) >= ESTOP_STEADY_MS:
+            if raw_e and not estop_on:
+                estop_press()
+            elif not raw_e and estop_on:
+                estop_release()
+    elif estop_on:
+        estop_release()
+    if estop_on:
+        estop_run(now)
+        tail = head                     # presses while stopped don't count
+        pending = []
+        while poller.poll(0):           # the app can still talk to the box (status, estop off...)
+            c = sys.stdin.read(1)
+            if c in ("\r", "\n"):
+                if line:
+                    command(line)
+                line = ""
+            elif len(line) < 40:
+                line += c
+        if time.ticks_diff(now, last_beat) >= BEAT_MS:
+            last_beat = now
+            print('@{"ev":"beat"}')
+        time.sleep_ms(1)
+        continue
+
     # 1. process interrupt events in order (stamps converted to extended clock)
     clock_now()
     # every edge is checked on its own: it counts if its pin is seen open 2 ms or more after the edge,

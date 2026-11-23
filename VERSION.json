@@ -1,10 +1,11 @@
 {
- "app": "1.10.4",
- "pico": "3.6",
- "sha256": "a6260a1d876150833a294e0dcee6e67252340ab9d7e815463a55664b1bcc1d00",
- "pico_sha256": "89ef995913e7b4952f652be5601e62a4f921fabc194281e846013d865253b62e",
+ "app": "1.11.0",
+ "pico": "3.7",
+ "sha256": "f5cf9d5bda2dfd704b3ac6b74b3eee58757fa736f70060cd0b5dd8fc220974f8",
+ "pico_sha256": "3dabe051a358537892a463f67915d8c843c50acb0e1b61274df71f2cb0ff45eb",
  "notes": [
-  "LiveHeats tab is now called Results",
-  "Referee is now called Admin everywhere"
+  "EMERGENCY STOP: latching E-stop on the timing box (GP28) stops the race, flashes every light, pulses the siren and shows STOP on every screen until released",
+  "Turn it on in System \u203a Setup \u203a Timing box \u203a Emergency stop once it's wired",
+  "Timing box program v3.7 (update the app first)"
  ]
 }
