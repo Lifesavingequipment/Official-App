@@ -1,11 +1,10 @@
 {
- "app": "1.9.3",
+ "app": "1.9.4",
  "pico": "3.6",
- "sha256": "b1cb9d655626402eeba7eb144417a8486df8c96092a03e1e5d85dcfa505e182a",
+ "sha256": "ed75df426b2af1858f37cb215b9f87fbb55bbd931d99e3b9d6c86cafdb8453bd",
  "pico_sha256": "89ef995913e7b4952f652be5601e62a4f921fabc194281e846013d865253b62e",
  "notes": [
-  "System tidy: Setup is now grouped into fold-away sections (anything needing attention opens itself)",
-  "Today page reordered \u2013 button test sits with Start of day; long officials list folds",
-  "Button test opens full screen with big tiles; Minimise to get back"
+  "App and timing box updates now sit side by side in System \u203a Setup \u203a Updates",
+  "Owner lock and power have their own section"
  ]
 }

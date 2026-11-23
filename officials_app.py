@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.9.3"
+APP_VERSION = "1.9.4"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -45,7 +45,7 @@ PROGRAM_FILE = os.path.join(DATA, "program.json")       # the running order of h
 TEMPLATES_FILE = os.path.join(DATA, "templates.json")   # saved programs to reuse     # which races are confirmed / entered in LiveHeats
 LIVEHEATS_API = "https://liveheats.com/api/graphql"
 # where updates come from (the club's GitHub repository). Only the Master can install one.
-UPDATE_URL = os.environ.get("IRB_UPDATE_URL", "https://raw.githubusercontent.com/Lifesavingequipment/official-app/main/")
+UPDATE_URL = os.environ.get("IRB_UPDATE_URL", "https://raw.githubusercontent.com/Lifesavingequipment/Official-App/main/")
 # with a key (a read-only GitHub token) updates come through the GitHub API instead, which also works for a private repository
 UPDATE_API = os.environ.get("IRB_UPDATE_API", "https://api.github.com/repos/Lifesavingequipment/Official-App/contents/")
 UPD_KEY = {"v": ""}
@@ -1202,7 +1202,7 @@ def pico_update_action(d):
     if not d.get("install"):
         return "not allowed"
     if app_behind():
-        return "Update the app to v%s first (Updates, above), then the timing box" % UPD["latest"]
+        return "Update the app to v%s first (Timing app, just above), then the timing box" % UPD["latest"]
     def get():
         PICO_UPD.update(busy="Downloading", msg="")
         try:
@@ -5741,17 +5741,17 @@ function renderSystem(){
     const racing=st.state==="ARMED"||st.state==="RACING";
     const row=(name,status,btns,cls)=>`<div class="srow ${cls||""}"><div class="sn">${name}</div><div class="ss">${status}</div><div class="sb">${btns||""}</div></div>`;
     let L="";
-    const G={event:"",box:"",net:"",results:"",system:"",adv:""};
+    const G={event:"",box:"",upd:"",net:"",results:"",system:"",adv:""};
     const ownLocked=!!(st.owner&&st.owner.set&&!st.owner.open);
     if(master) G.event+=row("Get started", st.setup_done?`<span class="mute">The setup steps for a new carnival</span>`:`<b class="okb">Showing on the Race tab</b>`,
       st.setup_done?`<button class="btn" onclick="brandDo({setup_done:false},'Get started is on the Race tab');goTab('race')">Open</button>`:`<button class="btn" onclick="goTab('race')">Go there</button>`);
     if(master) G.event+=row("Club and event", (st.brand||{}).club?`<b>${esc(st.brand.club)}</b>${st.brand.event?`<span class="mute"> · ${esc(st.brand.event)}</span>`:""}${st.brand.logo?` <span class="mute">· logo</span>`:""}`:`<span class="mute">Not set – shown on the screens and join card</span>`,
       `<button class="btn" onclick="brandSheet()">Change</button>`);
     if(master&&st.update&&ownLocked){ const u=st.update;
-      G.system+=row("Updates", `v${esc(u.current)}${u.newer?` · <b class="okb">v${esc(u.latest)} is out</b>`:""} · <span class="mute">the owner installs updates</span>`,
+      G.upd+=row("Timing app", `v${esc(u.current)}${u.newer?` · <b class="okb">v${esc(u.latest)} is out</b>`:""} · <span class="mute">the owner installs updates</span>`,
         `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`); }
     else if(master&&st.update){ const u=st.update;
-      G.system+=row("Updates", u.newer?`<b class="okb">New version v${esc(u.latest)} available</b>${u.notes.length?`<ul class="snotes">${u.notes.map(n=>`<li>${esc(n)}</li>`).join("")}</ul>`:""}`
+      G.upd+=row("Timing app", u.newer?`<b class="okb">New version v${esc(u.latest)} available</b>${u.notes.length?`<ul class="snotes">${u.notes.map(n=>`<li>${esc(n)}</li>`).join("")}</ul>`:""}`
           :`v${esc(u.current)}${u.latest?` · <span class="ok">up to date</span>${u.checked?" (checked "+esc(u.checked)+")":""}`:""}${u.msg?`<div class="warn" style="margin-top:4px">${esc(u.msg)}</div>`:""}`,
         (u.newer?`<button class="btn pri" ${racing||updBusy?"disabled":""} onclick="askUpdate()">Update</button>`:"")
         +`<button class="btn" ${updBusy?"disabled":""} onclick="updDo({check:true},'Checked')">Check</button>`
@@ -5772,7 +5772,7 @@ function renderSystem(){
     G.box+=row("Timing box", st.connected?(st.faults.length?`<span class="bad">Wiring fault: ${esc(st.faults.join(", "))}</span>`
         :`<span class="ok">Connected · wiring OK</span>`):`<span class="bad">Not connected – plug its USB cable into this computer</span>`, "");
     if(master) G.event+=row("Lanes", lanesWord(), `<button class="btn" ${racing||st.test?"disabled":""} onclick="lanesSheet()">Change</button>`);
-    if(master&&st.pico_upd) G.box+=picoRow(row,racing,ownLocked);
+    if(master&&st.pico_upd) G.upd+=picoRow(row,racing,ownLocked);
     if(master&&st.firewall&&st.firewall.state!=null) G.net+=row("Phones", st.firewall.state?`<span class="ok">Windows lets phones connect</span>`:`<span class="bad">Windows is blocking phones${st.firewall.busy?" – answer Yes on the Windows prompt":""}</span>`,
       st.firewall.state||st.firewall.busy?"":`<button class="btn pri" onclick="post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))">Allow phones</button>`);
     G.event+=row("Events", `<span class="mute">${st.events.filter(e=>e.id).map(e=>esc(e.name)+" "+e.legs).join(" · ")}</span>`, master?`<button class="btn" onclick="eventsSheet()">Edit</button>`:"");
@@ -5812,13 +5812,14 @@ function renderSystem(){
       G.adv=A;
     }
     { const b=st.brand||{}, u=st.update||{}, w=st.wifi||{}, i=st.inet||{}, pu=st.pico_upd||{};
-      const boxBad=!st.connected||st.faults.length||(pu.newer&&!pu.app_first&&st.connected);
-      const sysBad=(u.newer)||(st.power&&st.power.pi&&st.access&&!st.access.master_pin);
+      const updBad=u.newer||(pu.newer&&st.connected)||!!pu.busy;
+      const sysBad=(st.power&&st.power.pi&&st.access&&!st.access.master_pin);
       L=sec("event","Today's event",[b.club||"Club not set",st.lanes.length&&st.fw?st.lanes.length+" lanes":"",st.draw?st.draw.name:"no LiveHeats draw",st.practice?"PRACTICE MODE ON":""].filter(Boolean).join(" · "),G.event,st.practice)
-       +sec("box","Timing box",!st.connected?"Not connected":st.faults.length?"Wiring fault: "+st.faults.length:"Connected · wiring OK"+(st.fw?" · v"+st.fw:"")+(pu.newer&&!pu.app_first?" · update ready":""),G.box,boxBad)
+       +sec("box","Timing box",!st.connected?"Not connected":st.faults.length?"Wiring fault: "+st.faults.length:"Connected · wiring OK"+(st.fw?" · v"+st.fw:""),G.box,!st.connected||st.faults.length)
+       +sec("upd","Updates",pu.busy?"Updating the timing box…":["App v"+st.app+(u.newer?" → v"+u.latest+" available":" up to date"),st.connected&&pu.current?"Timing box v"+pu.current+(pu.newer?" → v"+pu.latest+" available":" up to date"):"Timing box not connected"].join(" · "),G.upd,updBad)
        +(G.net?sec("net","Wi-Fi and phones",w.on?[w.mode==="hotspot"?"On the timing hotspot":w.mode==="wifi"?"Home Wi-Fi: "+w.name:"No Wi-Fi",w.hs_ssid?"hotspot "+w.hs_ssid:"",i.two?(i.name?"internet via "+i.name:"no internet Wi-Fi"):""].filter(Boolean).join(" · "):"Join card Wi-Fi and phones",G.net,false):"")
        +sec("results","Results and backup",st.backup?(st.backup.ok?"Backed up "+st.backup.at:"Backup problem"):"Results zip, USB backup, problem report",G.results,st.backup&&!st.backup.ok)
-       +sec("system","Updates, owner lock and power",["App v"+st.app,u.newer?"v"+u.latest+" available":"",st.owner&&st.owner.set?(st.owner.open?"unlocked":"owner lock on"):""].filter(Boolean).join(" · "),G.system,sysBad)
+       +sec("system","Owner lock and power",[st.owner&&st.owner.set?(st.owner.open?"Owner lock unlocked":"Owner lock on"):"Owner lock off","power off or restart"].join(" · "),G.system,sysBad)
        +sec("adv","Advanced","App address, timing desk PIN, your name, timing box messages, versions",G.adv,false); }
     c=`<div class="card slist">${L}</div>`;
   }
@@ -5849,7 +5850,7 @@ function lanesSheet(){ $("sheetin").innerHTML=`<h2 id="lanesheet">Lanes in use</
 function picoRow(row,racing,ownLocked){ const p=st.pico_upd, busy=!!p.busy, dis=racing||busy||!st.connected?"disabled":"";
   const stt=busy?`<b class="okb">Updating the timing box – ${esc(p.busy)}…</b><div class="mute" style="font-size:13px">Don't unplug it. Takes about a minute.</div>`
     :!st.connected?`<span class="mute">Connect the timing box to check its program</span>`
-    :p.newer&&p.app_first?`<b>New timing box program v${esc(p.latest)}</b><span class="mute"> · now v${esc(p.current||"?")} · update the app to v${esc(p.app_first)} first (Updates row), then this one</span>`
+    :p.newer&&p.app_first?`<b>New timing box program v${esc(p.latest)}</b><span class="mute"> · now v${esc(p.current||"?")} · update the app to v${esc(p.app_first)} first (Timing app, just above), then this one</span>`
     :p.newer?`<b class="okb">New timing box program v${esc(p.latest)}</b><span class="mute"> · now v${esc(p.current||"?")}</span>`
     :`v${esc(p.current||"?")}${p.latest?` · <span class="ok">up to date</span>`:""}`;
   const msg=p.msg?`<div class="${/^Timing box (updated to|back on)/.test(p.msg)?"ok":"warn"}" style="margin-top:4px">${esc(p.msg)}</div>`:"";
