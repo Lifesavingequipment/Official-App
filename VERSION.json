@@ -1,9 +1,10 @@
 {
- "app": "1.10.2",
+ "app": "1.10.3",
  "pico": "3.6",
- "sha256": "ca28f23a15374b6d89047f40419738f515e8e740542a3551d2271edbd64bb935",
+ "sha256": "395dc54c6fca35ed31d20a22194f7a9682560023a1f9ab0b38ad6300c0a6ed9a",
  "pico_sha256": "89ef995913e7b4952f652be5601e62a4f921fabc194281e846013d865253b62e",
  "notes": [
-  "Marshal fix: heats already sent now count as ready, so 'Behind' only shows when it's true"
+  "Clearer sections: each Setup section is its own card",
+  "Marshalling screen: heat header bands and one clear row per crew"
  ]
 }

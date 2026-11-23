@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.10.2"
+APP_VERSION = "1.10.3"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -3729,14 +3729,14 @@ body.board header,body.board #nextbar{display:none}
 .mb .mbh{font:800 clamp(20px,calc(3.6*var(--u)),42px)/1.15 var(--f);margin:calc(.6*var(--u)) 0}
 .mb .mbm{color:var(--mute);font-weight:700;font-size:clamp(14px,calc(2.2*var(--u)),24px)}
 .mb .mbl{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:calc(.4*var(--u)) 1vw;margin-top:calc(1*var(--u))}
-.mb .mbl>b{font:900 clamp(20px,calc(3.8*var(--u)),44px) var(--f);width:1.6em;height:1.6em;border-radius:50%;background:var(--idle);color:#fff;display:flex;align-items:center;justify-content:center;font-size:clamp(16px,calc(2.8*var(--u)),32px)}
-.mb .mbl>span{font:700 clamp(17px,calc(3.2*var(--u)),38px)/1.15 var(--f);overflow-wrap:anywhere;padding:calc(.5*var(--u)) 0;border-bottom:1px solid var(--soft)}
-.mb .mbl>i{font:800 normal clamp(13px,calc(2.2*var(--u)),24px) var(--f);border-radius:99px;padding:calc(.3*var(--u)) .8vw;white-space:nowrap;text-align:center}
+.mb .mbl .ml>b{font:900 clamp(20px,calc(3.8*var(--u)),44px) var(--f);width:1.6em;height:1.6em;border-radius:50%;background:var(--idle);color:#fff;display:flex;align-items:center;justify-content:center;font-size:clamp(16px,calc(2.8*var(--u)),32px)}
+.mb .mbl .ml>span{font:700 clamp(17px,calc(3.2*var(--u)),38px)/1.15 var(--f);overflow-wrap:anywhere;padding:calc(.5*var(--u)) 0;border-bottom:1px solid var(--soft)}
+.mb .mbl .ml>i{font:800 normal clamp(13px,calc(2.2*var(--u)),24px) var(--f);border-radius:99px;padding:calc(.3*var(--u)) .8vw;white-space:nowrap;text-align:center}
 .mb .st-in{background:var(--green);color:#fff}.mb .st-out{background:var(--red);color:#fff}.mb .st-wait{background:#fff4d6;color:var(--amber);border:2px solid var(--amber)}
 .mb .scr>span{text-decoration:line-through;color:#6b2226}
 .mb .mbside{display:grid;gap:calc(1.4*var(--u))}
 .mb .mbcard{background:#fff;border:2px solid var(--line);border-radius:14px;padding:calc(1.2*var(--u)) 1vw}
-.mb .mbcard .mbl>span{font-size:clamp(14px,calc(2.2*var(--u)),24px)}.mb .mbcard .mbl>b{font-size:clamp(13px,calc(1.9*var(--u)),22px)}.mb .mbcard .mbl>i{font-size:clamp(11px,calc(1.6*var(--u)),18px)}
+.mb .mbcard .mbl .ml>span{font-size:clamp(14px,calc(2.2*var(--u)),24px)}.mb .mbcard .mbl .ml>b{font-size:clamp(13px,calc(1.9*var(--u)),22px)}.mb .mbcard .mbl .ml>i{font-size:clamp(11px,calc(1.6*var(--u)),18px)}
 .mb .mbs{display:grid;grid-template-columns:1fr 1fr;gap:calc(.3*var(--u)) 1vw;margin-top:calc(.8*var(--u))}
 .mb .mbs>div{display:flex;gap:.5vw;align-items:baseline;font:600 clamp(13px,calc(2*var(--u)),22px)/1.2 var(--f);min-width:0}
 .mb .mbs b{flex:0 0 1.5em;text-align:right;color:var(--mute)}.mb .mbs span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -3755,8 +3755,8 @@ body.board header,body.board #nextbar{display:none}
 .mb .mbbig .mbl{grid-template-columns:auto 1fr auto auto 1fr auto}
 @media (max-width:699px){.mb .mbbig .mbl{grid-template-columns:auto 1fr auto}}
 .mb .mbbig .mbl{gap:calc(.2*var(--u)) .8vw;margin-top:calc(.6*var(--u))}
-.mb .mbbig .mbl>span{font-size:clamp(15px,calc(2.5*var(--u)),30px);padding:calc(.25*var(--u)) 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.mb .mbbig .mbl>b{font-size:clamp(13px,calc(2*var(--u)),24px)}.mb .mbbig .mbl>i{font-size:clamp(11px,calc(1.6*var(--u)),19px);padding:calc(.2*var(--u)) .6vw}
+.mb .mbbig .mbl .ml>span{font-size:clamp(15px,calc(2.5*var(--u)),30px);padding:calc(.25*var(--u)) 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mb .mbbig .mbl .ml>b{font-size:clamp(13px,calc(2*var(--u)),24px)}.mb .mbbig .mbl .ml>i{font-size:clamp(11px,calc(1.6*var(--u)),19px);padding:calc(.2*var(--u)) .6vw}
 .mb .mbbig .hd{font-size:clamp(17px,calc(2.8*var(--u)),34px)}.mb .mbbig{padding:calc(.8*var(--u)) 1vw}
 .mb .st-none{visibility:hidden}
 .mb .mbca,.mb .mbcb{display:grid;gap:calc(1*var(--u));align-content:start;min-width:0}.mb .mbcb:empty{display:none}
@@ -3765,14 +3765,14 @@ body.board header,body.board #nextbar{display:none}
 .mb.fit .mbrows{height:100%;min-height:0;overflow:hidden;display:flex;flex-direction:column;gap:calc(1*var(--u))}.mb.fit .mbca{flex:0 0 auto}.mb.fit .mbcb{flex:1 1 auto;overflow:hidden;min-height:0}
 @media (min-width:1300px) and (orientation:landscape){.mb .mbrows{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);align-items:start}.mb.fit .mbrows{display:grid;align-items:stretch}.mb.fit .mbca{overflow:hidden;min-height:0}
  .mb .mbcb .mbbig .mbl{grid-template-columns:auto 1fr auto}}
-.mb.t1 .mbbig .mbl>span{font-size:clamp(13px,calc(2.1*var(--u)),26px)}.mb.t1 .mbbig .hd{font-size:clamp(15px,calc(2.4*var(--u)),30px)}.mb.t1 .mbbig .mbl{margin-top:calc(.3*var(--u))}
-.mb.t2 .mbbig .mbl>span{font-size:clamp(12px,calc(1.8*var(--u)),22px);padding:0}.mb.t2 .mbbig .mbl>b{width:1.4em;height:1.4em}.mb.t2 .mbm{font-size:clamp(12px,calc(1.8*var(--u)),20px)}
+.mb.t1 .mbbig .mbl .ml>span{font-size:clamp(13px,calc(2.1*var(--u)),26px)}.mb.t1 .mbbig .hd{font-size:clamp(15px,calc(2.4*var(--u)),30px)}.mb.t1 .mbbig .mbl{margin-top:calc(.3*var(--u))}
+.mb.t2 .mbbig .mbl .ml>span{font-size:clamp(12px,calc(1.8*var(--u)),22px);padding:0}.mb.t2 .mbbig .mbl .ml>b{width:1.4em;height:1.4em}.mb.t2 .mbm{font-size:clamp(12px,calc(1.8*var(--u)),20px)}
 .mwarn{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;border-radius:16px;padding:12px 14px;margin:0 0 10px;box-shadow:var(--sh)}
 .mwarn b{font-size:17px}.mwarn span{grid-column:1;font-weight:600;font-size:15px}.mwarn .btn{grid-row:1/3;grid-column:2}
 .mwarn.red{background:var(--red);color:#fff}.mwarn.amb{background:#fff3d6;color:#3d2600;box-shadow:inset 0 0 0 2px var(--amber)}.mwarn.ok{background:#e3f4ea;color:#0b4a2f}
 .mwarn.red .btn{background:#fff;color:var(--red)}
 .mb .mbrow{padding:calc(.5*var(--u)) 1vw}
-@media (max-width:699px){.mb .mbbig .mbl>span{white-space:normal}}
+@media (max-width:699px){.mb .mbbig .mbl .ml>span{white-space:normal}}
 .mb .mbaside{display:grid;gap:calc(1.4*var(--u));width:clamp(200px,20vw,340px)}
 .mb .mbnote{background:var(--blue);color:#fff;border-radius:14px;padding:calc(1.2*var(--u)) 1vw;font:800 clamp(15px,calc(2.4*var(--u)),28px)/1.25 var(--f)}
 .mb .mbaside .bqr.inl{flex-direction:column;align-items:center}
@@ -3816,7 +3816,7 @@ body.board header,body.board #nextbar{display:none}
 .mpat{display:block;font:600 14px/1.25 var(--f);color:var(--blue);margin-top:1px}
 .mlane.scratched .mpat{text-decoration:line-through;color:#6b2226}
 .mb .mbp{font-style:normal;font-weight:600;color:var(--blue)}
-.mb.tight .mbbig .mbl>span{font-size:clamp(13px,calc(2.05*var(--u)),26px);padding:calc(.1*var(--u)) 0}.mb.tight .mbbig .mbl>b{font-size:clamp(12px,calc(1.7*var(--u)),22px)}
+.mb.tight .mbbig .mbl .ml>span{font-size:clamp(13px,calc(2.05*var(--u)),26px);padding:calc(.1*var(--u)) 0}.mb.tight .mbbig .mbl .ml>b{font-size:clamp(12px,calc(1.7*var(--u)),22px)}
 .mb.tight .mbbig .hd{font-size:clamp(15px,calc(2.3*var(--u)),30px)}.mb.tight .mbbig{padding:calc(.5*var(--u)) 1vw}.mb.tight .mbrows{gap:calc(.6*var(--u))}
 .mb.tight .mbbig .mbm{font-size:clamp(12px,calc(1.8*var(--u)),22px)}.mb.tight .mbrow{padding:calc(.3*var(--u)) 1vw}
 .tmppl{color:var(--ink)!important;margin-top:3px}.tmppl b{color:var(--mute);font-weight:700}
@@ -3954,7 +3954,7 @@ border:2px solid var(--line);border-radius:10px;padding:.25em .7em;line-height:1
  .qbtn{width:38px;height:38px;font-size:18px}
  .mpick button small{font-size:13px}.rst i{font-size:13px;padding:2px 8px}
  .ofrow{flex-wrap:wrap;row-gap:4px}.ofrow .nm{flex:1 1 100%;min-width:0;overflow-wrap:anywhere}.ofrow .btn.sm{margin-left:auto}.ofrow .ofc{display:none}
- .mb .mbl>i,.mb .mbbig .mbl>i{font-size:13px}
+ .mb .mbl .ml>i,.mb .mbbig .mbl .ml>i{font-size:13px}
 }
 /* tablets held upright: use the width – two columns where a phone has one */
 @media (min-width:600px) and (max-width:899px){
@@ -4110,6 +4110,33 @@ details{border-bottom:1px solid var(--line)}
  #testfs.mini{bottom:calc(84px + env(safe-area-inset-bottom,0px))}
 }
 .tab[data-t=race]{--ic:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Ccircle cx=%2212%22 cy=%2213%22 r=%228%22/%3E%3Cpath d=%22M12 9v4l2.5 2M9 2h6%22/%3E%3C/svg%3E")}.tab[data-t=results]{--ic:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Ccircle cx=%2212%22 cy=%2212%22 r=%229%22/%3E%3Cpath d=%22M8 12.5l2.7 2.7L16 9.8%22/%3E%3C/svg%3E")}.tab[data-t=program]{--ic:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01%22/%3E%3C/svg%3E")}.tab[data-t=marshal]{--ic:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M5 21V4M5 4h11l-2 4 2 4H5%22/%3E%3C/svg%3E")}.tab[data-t=history]{--ic:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Cpath d=%22M12 16V5M7.5 9.5L12 5l4.5 4.5M5 19h14%22/%3E%3C/svg%3E")}.tab[data-t=system]{--ic:url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22%3E%3Ccircle cx=%2212%22 cy=%2212%22 r=%223%22/%3E%3Cpath d=%22M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z%22/%3E%3C/svg%3E")}
+
+/* v1.10.3: clearer separation – each Setup section is its own card; marshalling heats get a header band and one row per crew */
+.card.slist{background:none;box-shadow:none;padding:0}
+.ssec{background:#fff;border:0!important;border-radius:20px;box-shadow:var(--sh);margin:0 0 14px;padding:0 18px;overflow:hidden}
+.ssec .ssh{padding:16px 0}
+.ssec.open .ssh{border-bottom:1px solid var(--line);margin-bottom:2px}
+.ssec.attn{box-shadow:inset 0 0 0 2px var(--amber),var(--sh)}
+.ssec .srow{border-bottom:1px solid var(--line);padding:10px 0}.ssec .ssb>.srow:last-child,.ssec .ssb>:last-child .srow:last-child{border-bottom:0}
+.ssec .srow.hi{margin:0 -18px;padding:10px 18px}
+.mb .mbrows,.mb .mbca,.mb .mbcb{gap:calc(1.6*var(--u))}
+.mb .mbbig{padding:0!important;overflow:hidden;box-shadow:var(--sh)}
+.mb .mbbig>.hd{background:#fff1dc;padding:calc(.9*var(--u)) 1.2vw calc(.3*var(--u))}
+.mb .mbbig>.mbm{background:#fff1dc;padding:0 1.2vw calc(.8*var(--u));border-bottom:1px solid #f0d3a8;color:#5c3a00}
+.mb .mbbig.nx>.hd,.mb .mbbig.nx>.mbm{background:#eef2f7}.mb .mbbig.nx>.mbm{border-bottom-color:var(--line);color:var(--mute)}
+.mb .mbbig.nx{border:0!important;box-shadow:inset 0 0 0 2px #c9d1dc,var(--sh)}
+.mb .mbbig .tg.next{background:#fff}
+.mb .mbbig .mbl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:0 1.2vw;margin:0!important;padding:calc(.3*var(--u)) 1.2vw calc(.6*var(--u))}
+.mb .mbl .ml{display:flex;align-items:center;gap:.8vw;min-width:0;padding:calc(.45*var(--u)) .5vw;border-bottom:1px solid #e4e8ee}
+.mb .mbl .ml>span{flex:1 1 auto;min-width:0;border:0!important;padding:0!important}
+.mb .mbl .ml>b{flex:0 0 auto}.mb .mbl .ml>i{flex:0 0 auto}.mb .mbl .ml>i.st-none{display:none}
+.mb .mbl .ml.present{background:#eaf6ef}.mb .mbl .ml.scratched{background:#fdecea}
+@media (max-width:699px){
+ .mb .mbbig .mbl{grid-template-columns:1fr!important;padding:4px 10px 8px}
+ .mb .mbbig>.hd{padding:10px 12px 2px}.mb .mbbig>.mbm{padding:0 12px 8px}
+ .mb .mbl .ml{padding:9px 4px;gap:10px}.mb .mbl .ml:nth-child(even):not(.present):not(.scratched){background:#f6f7f9}
+ .mb .mbl .ml>span{white-space:normal!important}
+}
 </style></head><body>
 <header>
  <button class="tab on" data-t="race">Race</button>
@@ -5315,8 +5342,8 @@ function renderMarshal(){
 function mbLanes(ht,big){
   const ck=(mUp.checkin||{})[ht.heat_id]||{}, ln=mLanes(ht);
   return `<div class="mbl">${ln.map(([l,c])=>{ const s=ck[l]||"";
-    return `<b class="${s==="present"?"st-in":s==="scratched"?"st-out":""}">${l}</b><span class="${s==="scratched"?"":""}"${s==="scratched"?' style="text-decoration:line-through;color:#6b2226"':""}>${esc(c||"Lane "+l)}${big&&pats(ht,l).length?`<em class="mbp"> – ${esc(pats(ht,l).map(shortName).join(", "))}</em>`:""}</span>
-      <i class="${s==="present"?"st-in":s==="scratched"?"st-out":"st-none"}">${s==="present"?"✓ HERE":s==="scratched"?"SCRATCHED":""}</i>`; }).join("")}</div>`;
+    return `<div class="ml ${s}"><b class="${s==="present"?"st-in":s==="scratched"?"st-out":""}">${l}</b><span class="${s==="scratched"?"":""}"${s==="scratched"?' style="text-decoration:line-through;color:#6b2226"':""}>${esc(c||"Lane "+l)}${big&&pats(ht,l).length?`<em class="mbp"> – ${esc(pats(ht,l).map(shortName).join(", "))}</em>`:""}</span>
+      <i class="${s==="present"?"st-in":s==="scratched"?"st-out":"st-none"}">${s==="present"?"✓ HERE":s==="scratched"?"SCRATCHED":""}</i></div>`; }).join("")}</div>`;
 }
 function mbSmall(ht){
   const ck=(mUp.checkin||{})[ht.heat_id]||{};
