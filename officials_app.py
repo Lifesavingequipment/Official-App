@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.17.0"
+APP_VERSION = "1.18.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -3946,6 +3946,7 @@ touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callou
 .start .btn{flex:1;font-size:26px;padding:26px 12px;min-height:84px}
 .btn.amber{background:var(--amber);border-color:var(--amber);color:#fff}.btn.green{background:var(--green);border-color:var(--green);color:#fff}
 .btn.sm{min-height:40px;padding:8px 14px;font-size:15px}
+.nrev{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px;padding-top:10px;border-top:1px solid #e6e8ec}.nrev.col{display:block}
 .confirm{border:3px solid var(--red)}
 td.ed{text-align:right;width:1%}
 .sheet{max-height:85vh;overflow:auto}
@@ -4762,7 +4763,7 @@ function banner(){
   if(s==="ARMED") return `<div class="banner b-armed"><div><div class="big">SET – waiting for GO</div>
     <div class="sub">Race ${r+1}${st.heat?" · "+esc(heatLabel(st.heat)):eventName(chosenEvent())}</div></div></div>`;
   if(s==="DONE") return `<div class="banner b-done"><div><div class="big">Race ${r} finished</div>
-    <div class="sub">${st.confirmed?"Results confirmed. Press SET for the next race.":"Check the result on the Results tab, then press Confirm results."}</div></div></div>`;
+    ${st.confirmed?`<div class="sub">Results confirmed ✓</div>`:""}</div></div>`;
   return `<div class="banner b-idle"><div><div class="big">Ready – press SET</div>
     <div class="sub">${r?("Last race: "+r):"No races yet"}</div></div></div>`;
 }
@@ -4846,21 +4847,7 @@ function renderRace(){
     if(ht){ const extra=Object.keys(ht.crews||{}).map(Number).filter(l=>!st.lanes.includes(l)).sort((a,b)=>a-b);
       if(extra.length) h+=`<div class="others">${st.lanes_cmd&&(st.lanes_max||0)>=Math.max(...extra)?"Lane not in use":"Not wired yet"}: ${extra.map(l=>"Lane "+l+" "+esc(ht.crews[String(l)])).join(" · ")}${st.role==="master"&&st.lanes_cmd?` · <a href="#" onclick="lanesSheet();return false">Lanes</a>`:""}</div>`; }
     right+=`<div class="ctl">${controls()}</div>`;
-    if(st.state!=="RACING") right+=heatCard();
-    if(st.state!=="RACING"&&st.official&&st.heat&&!evOpen){
-      // a chosen heat already sets the event, so just show it
-      const ce=chosenEvent();
-      right+=`<div class="card"><h2>Event</h2><div class="row" style="align-items:center;justify-content:space-between;margin-top:0">
-        <span><b>${esc(ce&&ce.legs?ce.name:"Not set")}</b>${ce&&ce.legs?` · ${ce.legs} leg${ce.legs===1?"":"s"}`:""}</span>
-        <button class="btn sm" onclick="evOpen=true;lastKey='';render()">Change</button></div></div>`;
-    } else if(st.state!=="RACING"&&st.official){
-      let ev=`<div class="card"><h2>Event for the next race</h2><div class="row">`;
-      for(const e of st.events) ev+=`<button class="btn ev ${e.id===st.event?"pri":""}" onclick="setEvent('${e.id}')">${esc(e.name)}${
-        e.legs?`<small>${e.legs} leg${e.legs===1?"":"s"}</small>`:""}</button>`;
-      ev+=`</div></div>`;
-      right+=ev;
-    }
-    right+=`<p class="mute">The starter's SET and GO buttons work too. A press under ${st.min_leg_s} s after a crew's last press is ignored.</p>`;
+    if(st.state!=="RACING") right+=nextRaceCard();
   }
   $("race").innerHTML=`<div class="cols"><div>${h}</div><div>${right}</div></div>`; wireControls();
 }
@@ -4913,6 +4900,7 @@ let warnOpen=false;
 // ---------- help: a few lines on what each screen is for ----------
 const HELP={
   race:["This is where races are started and finished.","SET arms the race, GO starts the clock, FINISH (asks twice) ends it. The beach buttons do the same.",
+    "The starter's SET and GO buttons work too. After a crew presses, their button is ignored for a few seconds so a double press isn't counted as another leg.",
     "The lane cards show each crew's presses as they come in.","Red messages must be checked before SET. Amber ones are reminders."],
   results:["Shows the race that just finished.","Tap Edit on a crew to accept, place, DQ or DNF them.","When the judges agree, press Confirm results. That locks the result.",
     "Every race goes Raced → Confirmed → Entered (in LiveHeats)."],
@@ -5062,9 +5050,10 @@ function dayChecks(){
   c.push({ok:st.connected&&!st.faults.length,label:"Timing box connected",hint:!st.connected?"Plug the timing box's USB cable into this computer":st.faults.length?"Check wiring: "+st.faults.join(", "):"Wiring OK"});
   c.push({ok:pg.mode!=null,label:"Heats for today",hint:pg.mode==="on"?"Program on":pg.mode==="off"?"No program – heats chosen by hand":"Choose the program, or No program",btn:"Program",act:"goTab('program')"});
   if(st.has_test){ const today=lt&&lt.date===st.today, bad=today&&(lt.missing.length||(lt.clash||[]).length);
-    c.push({ok:today&&!bad,label:"Button test",hint:st.test?"Running now – press every button, then end the test":!today?"Not done today – use the Button test card":bad?"Found problems – fix and test again":"Done today, all buttons working"}); }
-  const ns=a.officials.filter(o=>o.role==="starter").length, nm=a.officials.filter(o=>o.role==="marshal").length, na=a.officials.filter(o=>o.role==="admin").length;
-  c.push({opt:true,ok:a.officials.length>0,label:"Officials approved",hint:a.officials.length?`Starter ${ns} · Marshal ${nm} · Admin ${na}`:"None yet – they scan the join card and ask for access"});
+    const can=st.connected&&(st.state==="IDLE"||st.state==="DONE")&&!st.test;
+    c.push({ok:today&&!bad,label:"Button test",hint:st.test?"Running now – press every button, then end the test":!today?"Every morning – the only way to find a broken FINISH cable"
+      :bad?"Found "+lt.missing.map(x=>x+" – no press").concat((lt.clash||[]).map(x=>x+" – went off together")).join(" · ")+". Fix and test again":"Done today at "+lt.at+", all buttons working",
+      btn:can?(today?"Test again":"Start button test"):"",act:"cmd('test on')"}); }
   if(st.firewall&&st.firewall.state===false) c.push({opt:true,ok:false,label:"Phones can connect",hint:"Windows is blocking phones",btn:"Allow",act:"post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))"});
   c.push({opt:true,ok:!!(st.join&&st.join.ssid),label:"Join card ready",hint:st.join&&st.join.ssid?"Wi-Fi: "+st.join.ssid:"Add the Wi-Fi name and password",btn:st.join&&st.join.ssid?"":"Setup",act:"sysView='setup';lastKey='';render()"});
   c.push({opt:true,ok:!!(st.backup&&st.backup.ok),label:"Backup stick",hint:st.backup?(st.backup.ok?"Copied to "+st.backup.where:st.backup.msg):"Not checked yet",btn:st.backup&&st.backup.ok?"":"Check",act:"post('/api/backup',{}).then(()=>{lastKey='';render()})"});
@@ -5076,7 +5065,7 @@ let dayOpen=null;
 function dayCard(){
   const c=dayChecks(), need=c.filter(x=>!x.opt), ready=need.every(x=>x.ok), open=dayOpen==null?!(ready&&racedToday()):dayOpen;
   if(!open) return `<div class="card"><div class="row" style="margin:0;align-items:center;justify-content:space-between"><h2 style="margin:0"><span class="tick">✓</span> Start-of-day checks done</h2>
-    <button class="btn sm" onclick="dayOpen=true;lastKey='';render()">Show</button></div></div>`;
+    <span class="row" style="margin:0">${st.has_test&&st.connected&&(st.state==="IDLE"||st.state==="DONE")?`<button class="btn sm" onclick="cmd('test on')">Button test</button>`:""}<button class="btn sm" onclick="dayOpen=true;lastKey='';render()">Show</button></span></div></div>`;
   let h=`<div class="card"><h2>Start of day</h2>`;
   for(const x of c) h+=`<div class="chk1 ${x.ok?"ok":""} ${x.opt?"opt":""}"><span class="mk">${x.ok?"✓":x.opt?"–":"!"}</span>
     <span class="tx">${esc(x.label)}${x.opt?" <span class='mute' style='font-weight:500'>(optional)</span>":""}<small>${esc(x.hint)}</small></span>
@@ -5101,8 +5090,8 @@ function nextStep(){
   if(!st.connected) return {text:"Timing box not connected – plug its USB cable into this computer",tab:"system",btn:"System"};
   if(role==="master"&&st.setup_done===false&&s!=="ARMED"&&s!=="RACING"&&!st.test){ const w=wizSteps(); return {text:`Get started – ${w.filter(x=>x.ok).length} of ${w.length} steps done`,tab:"race",btn:"Get started"}; }
   if(role==="master"&&st.access&&st.access.requests.length) return {text:`${st.access.requests[0].name} is waiting for access${st.access.requests.length>1?" (+"+(st.access.requests.length-1)+" more)":""}`,tab:"system",btn:"Approve",act:"sysView='today'"};
-  if(s==="RACING") return st.can_start?{text:"Racing – press FINISH when every crew is in",tab:"race",btn:"Race"}:{text:"Race in progress",calm:true};
-  if(s==="ARMED") return st.can_start?{text:"Armed – press GO to start",tab:"race",btn:"Race"}:{text:"Race about to start",calm:true};
+  if(s==="RACING") return st.can_start?{text:"Racing – press FINISH when every crew is in",tab:"race",btn:"Race",dup:true}:{text:"Race in progress",calm:true};
+  if(s==="ARMED") return st.can_start?{text:"Armed – press GO to start",tab:"race",btn:"Race",dup:true}:{text:"Race about to start",calm:true};
   if(st.test) return (role==="master"||role==="starter")?{text:"Button test running – press every button, then end the test",tab:"system",btn:"Test",act:"sysView='today'"}:null;
   if(st.official&&s==="DONE"&&st.results&&!st.confirmed&&!st.results.practice) return tab==="history"&&rView===st.results.race
     ?{text:`Race ${st.results.race} finished – check it, then Confirm results`}
@@ -5124,13 +5113,13 @@ function nextStep(){
   if(role==="master"&&pg.mode==="on"&&st.heat&&!(st.sent||{})[st.heat.heat_id]&&!((st.access||{}).officials||[]).some(o=>o.role==="marshal"))
     return {text:`Patients not marked as sent for Heat ${st.heat.no} – no Marshal is logged in`,tab:"marshal",btn:"Marshal",act:`mSel='${st.heat.heat_id}'`};
   const q=role==="master"&&(st.queue_n||0)>0?` · ${st.queue_n} to enter in LiveHeats`:"";
-  return {text:`Ready – press SET${st.heat?" for "+heatLabel(st.heat):""}${q}`,tab:"race",btn:"Race"};
+  return {text:`Ready – press SET${st.heat?" for "+heatLabel(st.heat):""}${q}`,tab:"race",btn:"Race",dup:!q};
 }
 let nextKey="";
 function drawNext(){
   const b=$("nextbar"), n=nextStep(); if(!b) return;
   const k=JSON.stringify([n,tab]); if(k===nextKey) return; nextKey=k;
-  if(!n){ b.hidden=true; return; }
+  if(!n||(n.dup&&tab==="race")){ b.hidden=true; return; }      // the race screen already says it
   const here=!n.tab||(n.tab===tab&&n.same!==false);
   b.hidden=false; b.className=n.calm?"calm":"";
   b.innerHTML=`<span class="nx">${n.calm?"OK":"NEXT"}</span><span class="nt">${esc(n.text)}</span>${here?"":`<button class="btn sm pri" id="nxgo">${esc(n.btn||"Go")} ›</button>`}`;
@@ -5195,30 +5184,30 @@ function controls(){
   }
   return h;
 }
-function heatCard(){
+function heatInner(){
+  const lab=st.heat?`<div><b>${esc(st.heat.div)}</b></div><div class="mute">${esc(st.heat.round)} · Heat ${st.heat.no}</div>`:"";
   if(st.program&&st.program.mode==="on"){       // the program decides the heat
-    let h=`<div class="card"><h2>Heat for the next race</h2>`;
-    h+=st.heat?`<div><b>${esc(st.heat.div)}</b></div><div class="mute">${esc(st.heat.round)} · Heat ${st.heat.no}</div>`
-      :`<p class="warn">The program is finished – ${st.official?"add more heats on the Program tab":"the Admin adds more heats"}.</p>`;
-    h+=`<p class="mute" style="margin:6px 0 0">Heats follow the program. ${st.official?"To change the order, use the Program tab.":"The Admin changes the order on the Program tab."}</p>`;
-    if(st.official) h+=`<div class="row">${st.heat?`<button class="btn" onclick="openSwap()">Swap lanes</button>`:""}<button class="btn" onclick="goTab('program')">Program ›</button></div>`;
-    return h+`</div>`;
+    return (st.heat?lab:`<p class="warn">The program is finished – ${st.official?"add more heats on the Program tab":"the Admin adds more heats"}.</p>`)
+      +(st.official?`<div class="row">${st.heat?`<button class="btn sm" onclick="openSwap()">Swap lanes</button>`:""}<button class="btn sm" onclick="goTab('program')">Program ›</button></div>`:"");
   }
-  if(!st.official){
-    const pon=st.program&&st.program.mode==="on";
-    let h=st.heat?`<div class="card"><h2>Heat for the next race</h2><div><b>${esc(st.heat.div)}</b></div><div class="mute">${esc(st.heat.round)} · Heat ${st.heat.no}</div>`
-      :`<div class="card"><h2>Heat</h2><p class="mute">${st.role==="starter"?"The Admin chooses the heat.":"No heat chosen yet."}</p>`;
-    if(st.role==="starter"&&pon) h+=`<div class="row"><button class="btn pri" onclick="post('/api/heat',{next:true})">Next in program ›</button></div>`;
-    return h+`</div>`;
+  if(!st.official) return lab||`<p class="mute" style="margin:0">${st.role==="starter"?"The Admin chooses the heat.":"No heat chosen yet."}</p>`;
+  if(!st.draw&&!(st.program&&st.program.manual)) return `<p class="mute" style="margin:0">No heats loaded – lanes show without crew names.</p>
+    <div class="row"><button class="btn sm" onclick="openLoad()">Load LiveHeats draw</button><button class="btn sm" onclick="goTab('program')">Program</button></div>`;
+  return (lab||`<p class="mute" style="margin:0">No heat chosen – lanes show without names.</p>`)
+    +`<div class="row"><button class="btn sm pri" onclick="openHeats()">${st.heat?"Change heat":"Choose heat"}</button>${st.heat?`<button class="btn sm" onclick="post('/api/heat',{next:true})">Next heat ›</button><button class="btn sm" onclick="openSwap()">Swap lanes</button>`:""}</div>`;
+}
+function nextRaceCard(){
+  let h=`<div class="card nrc"><h2>Next race</h2>${heatInner()}`;
+  if(st.official){
+    if(st.heat&&!evOpen){ const ce=chosenEvent();     // a chosen heat already sets the event, so just show it
+      h+=`<div class="nrev"><span>Event: <b>${esc(ce&&ce.legs?ce.name:"Not set")}</b>${ce&&ce.legs?` · ${ce.legs} leg${ce.legs===1?"":"s"}`:""}</span>
+        <button class="btn sm" onclick="evOpen=true;lastKey='';render()">Change</button></div>`; }
+    else { h+=`<div class="nrev col"><span class="mute">Event</span><div class="row" style="margin-top:4px">`;
+      for(const e of st.events) h+=`<button class="btn ev ${e.id===st.event?"pri":""}" onclick="setEvent('${e.id}')">${esc(e.name)}${
+        e.legs?`<small>${e.legs} leg${e.legs===1?"":"s"}</small>`:""}</button>`;
+      h+=`</div></div>`; }
   }
-  if(!st.draw&&!(st.program&&st.program.manual)) return `<div class="card"><h2>Heat</h2><p class="mute">Load a LiveHeats draw, or add heats on the Program tab, to show which heat is racing.</p>
-    <div class="row"><button class="btn" onclick="openLoad()">Load LiveHeats draw</button><button class="btn" onclick="goTab('program')">Program</button></div></div>`;
-  let h=`<div class="card"><h2>Heat for the next race</h2>`;
-  h+=st.heat?`<div><b>${esc(st.heat.div)}</b></div><div class="mute">${esc(st.heat.round)} · Heat ${st.heat.no}</div>`
-            :`<p class="mute">No heat chosen – lanes show without names.</p>`;
-  h+=`<div class="row"><button class="btn pri" onclick="openHeats()">${st.heat?"Change heat":"Choose heat"}</button>`;
-  if(st.heat) h+=`<button class="btn" onclick="post('/api/heat',{next:true})">${st.program&&st.program.mode==="on"?"Next in program ›":"Next heat ›"}</button><button class="btn" onclick="openSwap()">Swap lanes</button>`;
-  return h+`</div></div>`;
+  return h+`</div>`;
 }
 async function reloadDraw(){
   const b=$("reload"); if(b){ b.disabled=true; b.textContent="Loading…"; }
@@ -6317,7 +6306,7 @@ function joinCodes(px){ const j=st.join||{}; let h=`<div class="qrs">`;
 function joinCard(){
   const j=st.join||{};
   return `<div class="card"><h2>Join card</h2>
-    ${j.ssid?"":`<p class="warn" style="margin-top:0">Add the Wi-Fi ${st.role==="master"?"under <b>Setup</b>":"– ask the timing desk"} for the Wi-Fi code.</p>`}
+    ${j.ssid||st.role==="master"?"":`<p class="warn" style="margin-top:0">Ask the timing desk to add the Wi-Fi for the Wi-Fi code.</p>`}
     ${joinCodes(st.role==="master"?130:180)}<div class="row"><button class="btn pri" onclick="downloadCard()">Download</button><button class="btn" onclick="printCard()">Print</button></div></div>`; }
 function cardCanvas(){
   const j=st.join||{}, codes=(j.ssid?[["1. Wi-Fi",wifiText(j),j.ssid]]:[]).concat([[(j.ssid?"2. ":"")+"IRB Racing App",j.url,j.url]]);
@@ -6485,12 +6474,13 @@ function battWord(v){ return v>=13.8?["Charging","good"]:v>=13.0?["Good","good"]
 function voltWord(p){ const v=p.volt; return p.under_volt||v<4.8?["Too low","bad"]:v<4.95?["A bit low – OK","amb"]:["Good","good"]; }
 function tempWord(p){ return {ok:["Cool","good"],warm:["Warm – fine","good"],hot:["Hot – shade the box","amb"],crit:["Overheating","bad"]}[p.level]; }
 function diskWord(d){ return d.free_gb>=2?["Plenty of room","good"]:d.free_gb>=0.5?["Getting full","amb"]:["Nearly full","bad"]; }
+let hxOpen=false;     // the "what's good" lines show for anything not good, or for everything when asked
 function hRow(name,val,w,pc,explain){ return `<div class="hrow"><div class="hhd"><span class="hn">${name}</span><span class="hv ${w[1]}">${val}<small>${w[0]}</small></span></div>
-  ${pc!=null?`<div class="hbar ${w[1]}"><i style="width:${Math.max(3,Math.min(100,pc))}%"></i></div>`:""}<div class="hx">${explain}</div></div>`; }
+  ${pc!=null?`<div class="hbar ${w[1]}"><i style="width:${Math.max(3,Math.min(100,pc))}%"></i></div>`:""}${hxOpen||w[1]!=="good"?`<div class="hx">${explain}</div>`:""}</div>`; }
 function healthRows(){ const b=st.batt, p=st.pi_temp, d=st.storage, c=st.batt_cfg||{}; let h="";
   if(b!=null) h+=hRow("Battery",`${b.toFixed(1)} V · about ${battPct(b)}%`,battWord(b),battPct(b),
     `${battUse()}12 V lithium (LiFePO4). Full 13.3–13.6 V · good 13.0 V or more · charge under 12.8 V · swap under 12.4 V. Reads a little lower while the siren and lights are on.${st.batt_old?" <b>Reading is over a minute old.</b>":""}`);
-  else if(st.role==="master"&&c.cmd&&!c.on) h+=`<div class="hrow"><div class="hhd"><span class="hn">Battery</span><span class="hv">Off</span></div><div class="hx">Not measured yet – wire the battery divider to GP26, then turn it on under Setup › Kit health and power.</div></div>`;
+  else if(st.role==="master"&&c.cmd&&!c.on) h+=`<div class="hrow"><div class="hhd"><span class="hn">Battery</span><span class="hv">Off</span></div><div class="hx">Not measured yet – wire the battery divider to GP26, then turn it on under Setup › Battery, power and owner lock.</div></div>`;
   if(p&&p.volt!=null) h+=hRow("Pi power supply",`${p.volt.toFixed(2)} V`,voltWord(p),(p.volt-4.5)/(5.25-4.5)*100,
     "Good: 5.0–5.2 V. Under 4.8 V the Pi can slow down or restart – check the 5 V converter and use a thick USB-C cable rated 5 A.");
   if(p) h+=hRow("Pi temperature",`${p.temp.toFixed(0)} °C`,tempWord(p),(p.temp-30)/(90-30)*100,
@@ -6511,7 +6501,8 @@ function healthRows(){ const b=st.batt, p=st.pi_temp, d=st.storage, c=st.batt_cf
   return h; }
 function battUse(){ const u=st.batt_use; if(!u) return "";
   return `<b class="hu">Today: ${u.start_v.toFixed(1)} V (${u.start_pct}%) at ${esc(u.start_at)} → ${st.batt.toFixed(1)} V (${u.pct}%)${u.hours_left!=null?` · about ${u.hours_left<1?Math.round(u.hours_left*60)+" min":u.hours_left.toFixed(1)+" hours"} left at this rate (using about ${u.per_hour}% an hour)`:" · time left shows after about 45 minutes of use"}.</b> `; }
-function healthCard(){ const h=healthRows(); return h?`<div class="card"><h2>Kit health</h2>${h}</div>`:""; }
+function healthCard(){ const h=healthRows(); return h?`<div class="card"><div class="row" style="margin:0 0 4px;align-items:center;justify-content:space-between"><h2 style="margin:0">Kit health</h2>
+  <button class="btn sm" id="hxbtn" onclick="hxOpen=!hxOpen;lastKey='';render()">${hxOpen?"Hide info":"What's good?"}</button></div>${h}</div>`:""; }
 function tempWarn(){ const p=st.pi_temp, b=st.batt; if(!st.official&&st.role!=="starter") return ""; let h="";
   if(b!=null){ const w=battWord(b); if(w[1]!=="good") h+=`<div class="${b<12.4?"bad-warn":"warn"}">Battery ${b.toFixed(1)} V (about ${battPct(b)}%) – ${w[0].toLowerCase()}${b<12.8?" before the next race":""}.</div>`; }
   if(p){
@@ -6665,7 +6656,7 @@ function renderSystem(){
     <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected))?' <span class="badge">1</span>':""}</button></div>`:"";
   let c="";
   if(sysView==="today"){
-    if(master&&st.access) c=sysCols(dayCard()+test, officialsCard()+clubCard(), joinCard()+screens+batt);
+    if(master&&st.access) c=sysCols((st.test?test:"")+dayCard(), officialsCard()+clubCard()+batt, joinCard()+screens);   // the button test lives in the checklist
     else c=sysCols(box+test, pinCard()+(st.role==="admin"?clubCard():""), (st.official?screens:"")+batt);
   } else {
     // Setup: one tidy list – a line per item, status in the middle, button on the right
@@ -6688,8 +6679,6 @@ function renderSystem(){
         (u.newer?`<button class="btn pri" ${racing||updBusy?"disabled":""} onclick="askUpdate()">Update</button>`:"")
         +`<button class="btn" ${updBusy?"disabled":""} onclick="updDo({check:true},'Checked')">Check</button>`
         +(u.prev?`<button class="btn" ${racing||updBusy?"disabled":""} onclick="askRollback()">Go back${u.prev!=="earlier"?" to v"+esc(u.prev):""}</button>`:""), u.newer?"hi":""); }
-    G.event+=row("LiveHeats draw", st.draw?`<b>${esc(st.draw.name)}</b><span class="mute"> · ${st.draw.divisions} divisions · ${st.draw.heats} heats</span>`:`<span class="mute">None loaded – timing works without one</span>`,
-      `<button class="btn" onclick="openLoad()">${st.draw?"Reload":"Load"}</button>`);
     if(master&&st.power&&st.power.pi&&st.access&&!st.access.master_pin) G.system+=row("Timing desk PIN", `<b class="bad">Not set</b><span class="mute"> – the first phone to open the app will be asked to choose one. Set it now if you're at the Pi's screen.</span>`,
       ownLocked?`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`:`<button class="btn pri" onclick="advOpen=true;lastKey='';render();setTimeout(()=>{const e=$('mpin');if(e){e.scrollIntoView({block:'center'});e.focus();}},50)">Set PIN</button>`,"hi");
     if(master&&st.wifi&&st.wifi.on) G.net+=(st.inet&&st.inet.two)?hotspotRow(row)+inetRow(row):wifiRow(row,racing);
@@ -6724,8 +6713,7 @@ function renderSystem(){
         :`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
     if(master) G.event+=row("New event", (st.past_events||[]).length?`<span class="mute">Last saved: ${esc(st.past_events[0])}</span>`:`<span class="mute">Saves today, then clears for a fresh start</span>`,
       `<button class="btn red" ${racing?"disabled":""} onclick="askNewEvent()">Start new event</button>`);
-    { const c=st.batt_cfg||{}, hr=healthRows();
-      if(hr) G.system+=`<div class="srow hsrow">${hr}</div>`;
+    { const c=st.batt_cfg||{};
       if(master&&st.connected) G.system+=row("Battery reading", !c.cmd?`<span class="mute">Needs timing box program v3.9 – update it above</span>`
         :c.on?`<span class="ok">On</span> <span class="mute">· GP26 through a 100k/10k divider · calibrate it to a multimeter so it reads exactly</span>`
         :`<span class="mute">Off – wire a 100k and a 10k resistor in series from battery + to GND, the middle to GP26 (pin 31), battery − to the Pico's GND, then turn it on</span>`,
@@ -6734,7 +6722,7 @@ function renderSystem(){
       `<button class="btn" ${racing?"disabled":""} onclick="powerAsk('restart')">Restart</button><button class="btn red" ${racing?"disabled":""} onclick="powerAsk('off')">Power off</button>`);
     {
       let A="";
-      if(master&&st.access&&ownLocked) A+=row("App address, timing desk PIN, restart", `<span class="mute">Locked by the owner</span>`, `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
+      if(master&&st.access&&ownLocked) A+=row("App address and timing desk PIN", `<span class="mute">Locked by the owner</span>`, `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
       if(master&&st.access&&!ownLocked) A+=row("App address", `<div class="sin"><input type="text" id="waddr" value="${esc(a.net.addr)}" placeholder="${esc(a.auto_url)}"></div>
           <div class="mute" style="font-size:13px">Empty = ${esc(a.auto_url)} · set it once the router gives this computer a fixed address</div>`,
           `<button class="btn" onclick="offDo({net:{ssid:a_ssid(),pass:a_pass(),addr:$('waddr').value}},'Saved')">Save</button>`)
@@ -6745,27 +6733,26 @@ function renderSystem(){
       if(st.local||!st.me) A+=row("Your name", `<div class="sin"><input type="text" id="myname" value="${esc(myName())}" placeholder="Name or initials" style="max-width:200px"></div>`,
         `<button class="btn" onclick="setMyName($('myname').value);toast('Saved');lastKey='';render()">Save</button>`);
       A+=row("Screen", `<span class="mute">${wakeMsg}</span>`, "");
-      if(st.connected) A+=row("Timing box messages", `<div class="msgs" style="max-height:120px;overflow:auto">${st.messages.map(m=>esc(m[0]+"  "+m[1])).join("\n")||"—"}</div>`, "");
-      if(master) A+=row("Updates key", st.upd_key?`<span class="ok">Set</span><span class="mute"> · updates come from the private repository</span>`
+      if(st.connected) G.box+=row("Timing box messages", `<div class="msgs" style="max-height:120px;overflow:auto">${st.messages.map(m=>esc(m[0]+"  "+m[1])).join("\n")||"—"}</div>`, "");
+      if(master&&!ownLocked) G.upd+=row("Updates key", st.upd_key?`<span class="ok">Set</span><span class="mute"> · updates come from the private repository</span>`
           :`<span class="mute">Not set – only needed once the GitHub repository is private</span>`,
         ownLocked?"":`<button class="btn" onclick="keySheet()">${st.upd_key?"Change":"Add"}</button>${st.upd_key?`<button class="btn" onclick="askYes('Remove the updates key? Updates stop working if the repository is private.',()=>keyDo(''),'Yes, remove')">Remove</button>`:""}`);
-      if(master) A+=row("Hire kit list", `<span class="mute">${esc((st.kit||"").split("\n").length)} items · printed with the role guides</span>`, ownLocked?"":`<button class="btn" onclick="kitSheet()">Edit</button>`);
-      if(master&&st.connected&&!ownLocked) A+=row("Restart timing program", `<span class="mute">Only if the screen says the timing program stopped – clears any race in progress</span>`,
+      if(master) G.system+=row("Hire kit list", `<span class="mute">${esc((st.kit||"").split("\n").length)} items · printed with the role guides</span>`, ownLocked?"":`<button class="btn" onclick="kitSheet()">Edit</button>`);
+      if(master&&st.connected&&!ownLocked) G.box+=row("Restart timing program", `<span class="mute">Only if the screen says the timing program stopped – clears any race in progress</span>`,
         `<button class="btn red" onclick="askYes('Restart the timing program in the timing box? Any race in progress is cleared.',()=>cmd('restart'),'Yes, restart')">Restart</button>`);
-      A+=row("Versions", `App v${esc(st.app)} · timing box program v${esc(st.fw||"?")}${st.port?" on "+esc(st.port):""}`, "");
+      if(!master) A+=row("Versions", `App v${esc(st.app)} · timing box program v${esc(st.fw||"?")}${st.port?" on "+esc(st.port):""}`, "");
       G.adv=A;
     }
     { const b=st.brand||{}, u=st.update||{}, w=st.wifi||{}, i=st.inet||{}, pu=st.pico_upd||{};
       const updBad=u.newer||(pu.newer&&st.connected)||!!pu.busy;
-      const sysBad=(st.power&&st.power.pi&&st.access&&!st.access.master_pin)||!!(st.pi_temp&&(st.pi_temp.level==="hot"||st.pi_temp.level==="crit"))
-        ||(st.batt!=null&&battWord(st.batt)[1]!=="good")||!!(st.box&&st.box.temp>=55)||clockBad()||!!(st.pi_temp&&st.pi_temp.volt!=null&&voltWord(st.pi_temp)[1]==="bad")||!!(st.storage&&st.storage.free_gb<0.5);
-      L=sec("event","Today's event",[b.club||"Club not set",st.lanes.length&&st.fw?st.lanes.length+" lanes":"",st.draw?st.draw.name:"no LiveHeats draw",st.practice?"PRACTICE MODE ON":""].filter(Boolean).join(" · "),G.event,st.practice)
+      const sysBad=!!(st.power&&st.power.pi&&st.access&&!st.access.master_pin);   // kit health warnings show on Today and the Race tab
+      L=sec("event","Today's event",[b.club||"Club not set",st.lanes.length&&st.fw?st.lanes.length+" lanes":"",st.practice?"PRACTICE MODE ON":""].filter(Boolean).join(" · "),G.event,st.practice)
        +sec("box","Timing box",!st.connected?"Not connected":st.faults.length?"Wiring fault: "+st.faults.length:"Connected · wiring OK"+(st.fw?" · v"+st.fw:""),G.box,!st.connected||st.faults.length)
        +sec("upd","Updates",pu.busy?"Updating the timing box…":["App v"+st.app+(u.newer?" → v"+u.latest+" available":" up to date"),st.connected&&pu.current?"Timing box v"+pu.current+(pu.newer?" → v"+pu.latest+" available":" up to date"):"Timing box not connected"].join(" · "),G.upd,updBad)
        +(G.net?sec("net","Wi-Fi and phones",w.on?[w.mode==="hotspot"?"On the timing hotspot":w.mode==="wifi"?"Home Wi-Fi: "+w.name:"No Wi-Fi",w.hs_ssid?"hotspot "+w.hs_ssid:"",i.two?(i.name?"internet via "+i.name:"no internet Wi-Fi"):""].filter(Boolean).join(" · "):"Join card Wi-Fi and phones",G.net,false):"")
        +sec("results","Results and backup",st.backup?(st.backup.ok?"Backed up "+st.backup.at:"Backup problem"):"Results zip, USB backup, problem report",G.results,st.backup&&!st.backup.ok)
-       +sec("system","Kit health and power",[].concat(st.batt!=null?["Battery "+st.batt.toFixed(1)+" V"]:[],st.pi_temp?["Pi "+st.pi_temp.temp.toFixed(0)+" °C"]:[],st.pi_temp&&st.pi_temp.volt!=null?["5 V supply "+st.pi_temp.volt.toFixed(2)+" V"]:[],[st.owner&&st.owner.set?(st.owner.open?"owner lock unlocked":"owner lock on"):"owner lock off"]).join(" · "),G.system,sysBad)
-       +sec("adv","Advanced","App address, timing desk PIN, your name, timing box messages, versions",G.adv,false); }
+       +sec("system","Battery, power and owner lock",[(st.batt_cfg||{}).on?"battery reading on":"",st.owner&&st.owner.set?(st.owner.open?"owner lock unlocked":"owner lock on"):"owner lock off","hire kit list"].filter(Boolean).join(" · "),G.system,sysBad)
+       +sec("adv","Advanced","App address, timing desk PIN, your name",G.adv,false); }
     c=`<div class="card slist">${L}</div>`;
   }
   $("system").innerHTML=h+c;
@@ -6910,7 +6897,7 @@ function pageKey(){
   else if(tab==="history") k.push(hist,queue,enterAsk,rView,rFilter,rDoneOpen,st.results,st.res_flags,st.confirmed,st.state,innerWidth>=1100);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
-  else k.push(sysView,dayOpen,updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.lanes,st.lanes_use,st.lanes_max,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
+  else k.push(sysView,dayOpen,hxOpen,updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.lanes,st.lanes_use,st.lanes_max,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
   return JSON.stringify(k);
 }
 function brandBar(){ const b=(st&&st.brand)||{}; if(!b.club&&!b.event&&!b.logo) return "";
