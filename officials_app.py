@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.13.1"
+APP_VERSION = "1.13.2"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -4298,6 +4298,11 @@ body.estopped{overflow:hidden}
 .mcall{height:40px;width:50px;flex:0 0 auto;padding:2px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-width:64px;border:1px solid #c9d0da;background:#fff;border-radius:14px;color:var(--blue);font-weight:700;cursor:pointer}
 .mcall small{font-size:12px}.mcall.on{background:#e8f0fe;border-color:var(--blue)}
 .mcalled{color:var(--blue)!important;font-weight:700}
+/* Call and Scratch: one size, side by side in the same column */
+.mside .mcall,.mside .mscr{width:64px!important;min-width:64px;height:42px!important;box-sizing:border-box;border:1px solid #c9d0da;border-radius:12px;padding:2px;
+ display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;font:800 17px/1 var(--f)}
+.mside .mcall small,.mside .mscr small{font:700 12px/1 var(--f);margin:0}
+.mside .mcall svg{width:18px;height:18px}
 
 /* v1.13: one Results tab */
 .rhead{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:2px 10px;margin:2px 2px 10px}.rhead .mute{font-weight:600;font-size:14px}.rhead h2{font-size:28px;margin:0;letter-spacing:-.5px}

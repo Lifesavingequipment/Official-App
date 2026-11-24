@@ -1,9 +1,9 @@
 {
- "app": "1.13.1",
+ "app": "1.13.2",
  "pico": "3.8",
- "sha256": "ae5133a7f61213850699acf1da5d77c8191f5909d77143bab89d8d4f0e83916a",
+ "sha256": "b95189d7e9e796d2f9a503dc8178c8f069d41f80b85e5e7d9a5048b272866496",
  "pico_sha256": "c1ed1e3251f8e72497342ec6f586506f14d0494e842c587f93c1b8aa67aefb78",
  "notes": [
-  "Refreshing the page stays on the tab you were on (and the race or Setup view you had open)"
+  "Marshal: Call and Scratch buttons are the same size"
  ]
 }
