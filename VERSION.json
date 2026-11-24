@@ -1,10 +1,10 @@
 {
- "app": "1.16.0",
+ "app": "1.17.0",
  "pico": "3.10",
- "sha256": "3750a0b1a1908af007664f8305feb7f2db5cb96628a28a0ddaf74621f451a522",
+ "sha256": "7911c8ba666a522c908cf28c7bb4147ffe5c3d022e15122ca13ba01c7f31d864",
  "pico_sha256": "77bbbbbd518693a431f6bb1ce74fef9ac7d382347ebf574398b6b46c26d87b17",
  "notes": [
-  "Kit health: inside-the-box temperature (timing box v3.10, no wiring), phones on the hotspot and using the app, clock check with 'set from this phone', battery used today and about how many hours left",
-  "Warnings for a hot box, a crowded hotspot, a wrong clock and the battery running out"
+  "Self-recovery on the Pi: the app restarts itself if it stops answering for 90 s, the Pi reboots itself if it freezes, and logs are kept across restarts",
+  "Problem report now includes the Pi's logs from before the last restart"
  ]
 }

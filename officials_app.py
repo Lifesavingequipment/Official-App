@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.16.0"
+APP_VERSION = "1.17.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -1594,8 +1594,23 @@ def diagnostics():
                 "Update: %s" % json.dumps(update_view()), "Officials: %d   Requests: %d" % (len(officials), len(requests_)),
                 "", "Recent messages:"] + ["  ".join(str(x) for x in (m if isinstance(m, (list, tuple)) else [m])) for m in list(messages)]
     logs = sorted(glob.glob(os.path.join(DATA, "pico_log_*.txt")))[-3:]
-    return zip_bytes([HIST_FILE, FLAGS_FILE, PROGRAM_FILE] + logs,
-                     {"report.txt": "\n".join(info), "settings.json": json.dumps(s, indent=1)})
+    extra = {"report.txt": "\n".join(info), "settings.json": json.dumps(s, indent=1)}
+    if IS_LINUX and shutil.which("journalctl"):
+        for name, args in (("pi_restarts.txt", ["journalctl", "--list-boots", "--no-pager"]),
+                           ("app_log_before_restart.txt", ["journalctl", "-b", "-1", "-u", "irb-timing", "-n", "300", "--no-pager"]),
+                           ("pi_warnings_before_restart.txt", ["journalctl", "-b", "-1", "-p", "warning", "-n", "200", "--no-pager"]),
+                           ("app_log_now.txt", ["journalctl", "-b", "-u", "irb-timing", "-n", "300", "--no-pager"])):
+            try:
+                r = subprocess.run(args, capture_output=True, text=True, timeout=20)
+                extra[name] = (r.stdout or r.stderr)[-200000:]
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if IS_PI:
+            try:
+                extra["pi_power.txt"] = subprocess.run(["vcgencmd", "get_throttled"], capture_output=True, text=True, timeout=5).stdout
+            except (OSError, subprocess.SubprocessError):
+                pass
+    return zip_bytes([HIST_FILE, FLAGS_FILE, PROGRAM_FILE] + logs, extra)
 
 
 def allowed(role, path, data):
@@ -3386,6 +3401,7 @@ def snapshot(role="master", local=True, tok=None):
         d["batt_old"] = bool(S["batt_at"] and time.time() - S["batt_at"] > 60)
         d["batt_cfg"] = {"cmd": S["batt_cmd"], "on": S["batt_on"]}
         d["storage"] = storage_view()
+        d["resil"] = dict(RESIL)
         d["box"] = {"temp": S["box_temp"], "max": S["box_max"], "max_at": S["box_max_at"],
                     "old": bool(S["box_temp_at"] and time.time() - S["box_temp_at"] > 60)} if S["box_temp"] is not None else None
         d["batt_use"] = batt_usage()
@@ -3495,6 +3511,8 @@ class H(BaseHTTPRequestHandler):
             self.send(200, AWAKE_MP4, "video/mp4", {"Cache-Control": "public, max-age=31536000"})
         elif self.path == "/inter.woff2":      # the app's font, served from the Pi so it works with no internet
             self.send(200, INTER_WOFF2, "font/woff2", {"Cache-Control": "public, max-age=31536000"})
+        elif self.path == "/api/ping":             # the watchdog's "is the web server answering?"
+            self.send(200, "ok", "text/plain")
         elif self.path.startswith("/api/state"):
             SEEN[self.client_address[0]] = time.time()
             self.send(200, snapshot(self.role(), self.is_local(), self.token()))
@@ -6485,6 +6503,9 @@ function healthRows(){ const b=st.batt, p=st.pi_temp, d=st.storage, c=st.batt_cf
   if(st.now_ms){ const bad=clockBad();
     h+=hRow("Clock",new Date(st.now_ms).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})+(bad?` · ${clockOff!=null&&Math.abs(clockOff)>120?offWords(clockOff):"wrong date"}`:""),bad?["Wrong","bad"]:["Correct","good"],null,
       `Checked against this ${/Mobi|Android|iPhone/.test(navigator.userAgent)?"phone":"device"} (phones get the time from the mobile network). If the Pi is more than 2 minutes out, race times and dates in the history will be wrong – usually the Pi's clock battery is flat.${bad&&rCanAct()?` <button class="btn sm pri" onclick="clockFix()">Set the Pi's clock from this phone</button>`:""}`); }
+  const rs=st.resil; if(rs&&rs.state&&rs.state!=="n/a") h+=hRow("Self-recovery",rs.state==="on"?"On":"Not on",rs.state==="on"?["Good","good"]:["Check","amb"],null,
+    rs.state==="on"?`If the timing app stops answering for 90 seconds it restarts itself, and if the whole Pi freezes it reboots itself – phones reconnect on their own and no results are lost. The Pi's logs are kept across restarts, and the Problem report includes them.${rs.msg?" ("+esc(rs.msg)+")":""}`
+      :`${esc(rs.msg||"")} – the app can't restart itself if it hangs. Send a Problem report.`);
   if(d) h+=hRow("Storage",`${d.free_gb.toFixed(1)} GB free`,diskWord(d),d.total_gb?100-d.free_gb/d.total_gb*100:null,
     `Of ${d.total_gb.toFixed(0)} GB. A whole carnival's results use less than 5 MB – it's the Pi's own files that fill it.`);
   return h; }
@@ -7062,6 +7083,85 @@ class Server(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+# ---------- self-recovery on the Pi: the app restarts itself if it hangs, the Pi reboots itself if it freezes,
+# ---------- and logs are kept across restarts so a freeze can be looked into afterwards ----------
+RESIL_ROOT = os.environ.get("IRB_RESIL_ROOT", "")        # tests: write the files under here instead of /
+RESIL = {"state": "", "msg": "", "app_dog": bool(os.environ.get("WATCHDOG_USEC"))}
+RESIL_FILES = {
+    "/etc/systemd/system/irb-timing.service.d/watchdog.conf":
+        "# IRB timing: restart the app if it stops answering for 90 s\n[Service]\nWatchdogSec=90\nNotifyAccess=main\n",
+    "/etc/systemd/system.conf.d/irb-watchdog.conf":
+        "# IRB timing: the Pi's hardware watchdog reboots it if it freezes\n[Manager]\nRuntimeWatchdogSec=15\nRebootWatchdogSec=2min\n",
+    "/etc/systemd/journald.conf.d/irb-keep-logs.conf":
+        "# IRB timing: keep logs across restarts (so a freeze can be looked into), at most 100 MB\n[Journal]\nStorage=persistent\nSystemMaxUse=100M\n",
+}
+
+
+def resil_setup():
+    if not (IS_LINUX and (IS_PI or RESIL_ROOT) and (os.environ.get("IRB_LAUNCHER") or RESIL_ROOT)):
+        RESIL.update(state="n/a")
+        return
+    changed = []
+    try:
+        for path, text in RESIL_FILES.items():
+            full = RESIL_ROOT + path
+            try:
+                with open(full) as fh:
+                    if fh.read() == text:
+                        continue
+            except OSError:
+                pass
+            if RESIL_ROOT:
+                os.makedirs(os.path.dirname(full), exist_ok=True)
+                with open(full, "w") as fh:
+                    fh.write(text)
+            else:
+                subprocess.run(as_root(["mkdir", "-p", os.path.dirname(full)]), capture_output=True, timeout=20, check=True)
+                subprocess.run(as_root(["tee", full]), input=text, capture_output=True, text=True, timeout=20, check=True)
+            changed.append(path)
+        if changed and not RESIL_ROOT:
+            subprocess.run(as_root(["mkdir", "-p", "/var/log/journal"]), capture_output=True, timeout=20)
+            subprocess.run(as_root(["systemctl", "daemon-reload"]), capture_output=True, timeout=60)
+            subprocess.run(as_root(["systemctl", "daemon-reexec"]), capture_output=True, timeout=60)     # hardware watchdog on now
+            subprocess.run(as_root(["systemctl", "restart", "systemd-journald"]), capture_output=True, timeout=60)
+        RESIL.update(state="on", msg=("turned on just now - the app watchdog starts with the next restart" if changed and not RESIL["app_dog"] else ""))
+        if changed:
+            note("Self-recovery turned on: app watchdog, Pi watchdog, logs kept")
+    except (OSError, subprocess.SubprocessError) as e:
+        RESIL.update(state="failed", msg="couldn't turn on self-recovery (%s)" % type(e).__name__)
+
+
+def sd_notify(msg):
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    try:
+        if addr.startswith("@"):
+            addr = "\0" + addr[1:]
+        sk = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        sk.sendto(msg.encode(), addr)
+        sk.close()
+    except OSError:
+        pass
+
+
+def watchdog_loop():
+    """tell systemd we're alive - only while the web server answers and the main lock isn't stuck"""
+    sd_notify("READY=1")
+    while not STOPPING.is_set():
+        ok = lock.acquire(timeout=20)
+        if ok:
+            lock.release()
+            try:
+                with urllib.request.urlopen("http://127.0.0.1:%d/api/ping" % HTTP_PORT, timeout=15) as r:
+                    ok = r.status == 200
+            except (OSError, ValueError):
+                ok = False
+        if ok:
+            sd_notify("WATCHDOG=1")
+        STOPPING.wait(20)
+
+
 def main():
     no_quickedit()
     load_history()
@@ -7084,6 +7184,8 @@ def main():
     threading.Thread(target=update_check, daemon=True).start()       # quietly see if there's a newer version
     threading.Thread(target=firewall_check, daemon=True).start()     # Windows: can phones get in?
     threading.Thread(target=temp_loop, daemon=True).start()          # Pi temperature (box in the sun)
+    threading.Thread(target=resil_setup, daemon=True).start()        # Pi: watchdogs + logs kept (once)
+    threading.Thread(target=watchdog_loop, daemon=True).start()      # Pi: "still alive" to systemd
     if IS_LINUX:
         wifi_refresh()                                                 # Pi: which Wi-Fi / hotspot is it on?
         threading.Thread(target=wifi_loop, daemon=True).start()
