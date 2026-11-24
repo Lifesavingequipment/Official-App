@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.12.4"
+APP_VERSION = "1.13.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -1438,7 +1438,7 @@ def allowed(role, path, data):
     if role == "admin":
         if path.startswith("/api/cmd"):
             return None if ADMIN_CMDS.match(cmd) else "SET, GO and FINISH are for the Starter"
-        if any(path.startswith(p) for p in ("/api/confirm", "/api/note", "/api/entered", "/api/draw/load",
+        if any(path.startswith(p) for p in ("/api/confirm", "/api/note", "/api/entered", "/api/rflag", "/api/draw/load",
                                              "/api/program", "/api/heat", "/api/event", "/api/template")):
             return None
         return "Only the timing desk can do that"
@@ -1517,8 +1517,54 @@ def mark_entered(race, undo):
             f.pop("entered", None)
         else:
             f["entered"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            f.pop("changed", None)
         save_flags()
     return "ok"
+
+
+PROTEST_REASONS = ("Crossed course", "False start", "Patient pick-up", "Equipment", "Interference", "Other")
+
+
+def rflag_action(d):
+    """Results tab: a race under protest (and how it ended), or not needed in LiveHeats (and undo)"""
+    race, who = d.get("race"), str(d.get("who") or "?")[:30]
+    now = datetime.now().strftime("%H:%M:%S")
+    with lock:
+        if not any(r.get("race") == race for r in history_summary()):
+            return "That race isn't in today's results"
+        f = flags.setdefault(str(race), {})
+        log = f.setdefault("log", [])
+        if "protest" in d:
+            p = d["protest"]
+            if p:
+                lanes = [int(x) for x in (p.get("lanes") or []) if str(x).isdigit()][:10]
+                reason = str(p.get("reason") or "")[:40]
+                note = str(p.get("note") or "").strip()[:200]
+                f["protest"] = {"lanes": lanes, "reason": reason, "note": note, "at": now[:5], "by": who}
+                f.pop("entered", None)
+                log.append([now, who, "under protest: %s%s%s" % (", ".join("lane %d" % x for x in lanes) or "whole race",
+                                                                    " - " + reason if reason else "", " (%s)" % note if note else "")])
+            else:
+                out = str(d.get("outcome") or "cleared")[:20]
+                if f.pop("protest", None):
+                    f.setdefault("protests", []).append({"at": now[:5], "by": who, "outcome": out})
+                    log.append([now, who, "protest %s" % out])
+        elif "skip" in d:
+            if d["skip"]:
+                f["skip"] = {"at": now[:5], "by": who, "why": str(d.get("why") or "")[:80]}
+                log.append([now, who, "not needed in LiveHeats" + (" - " + f["skip"]["why"] if f["skip"]["why"] else "")])
+            elif f.pop("skip", None):
+                log.append([now, who, "back on the to-do list"])
+        else:
+            return "Nothing to change"
+        save_flags()
+    return "ok"
+
+
+def to_enter(race):
+    """still to tick off in LiveHeats: not entered, not 'not needed'"""
+    f = flags.get(str(race), {})
+    return not f.get("entered") and not f.get("skip")
 
 
 def entry_queue():
@@ -1526,7 +1572,7 @@ def entry_queue():
     out = []
     for r in sorted(history_summary(), key=lambda r: r.get("race") or 0):
         f = flags.get(str(r.get("race")), {})
-        if not f.get("entered"):
+        if to_enter(r.get("race")):
             rec = dict(r)
             rec["confirmed"] = bool(f.get("confirmed"))
             out.append(rec)
@@ -2251,7 +2297,8 @@ def team_view(club):
             if club_match(club, ht, row["lane"]):
                 res.append({"race": r.get("race"), "heat": ht, "lane": row["lane"], "crew": (ht.get("crews") or {}).get(str(row["lane"])),
                             "place": row.get("place"), "t_us": row.get("t_us"), "status": row.get("status"),
-                            "final": is_confirmed(r.get("race")), "tie": row["lane"] in (r.get("ties") or [])})
+                            "final": is_confirmed(r.get("race")), "tie": row["lane"] in (r.get("ties") or []),
+                            "protest": bool(flags.get(str(r.get("race")), {}).get("protest"))})
     return {"club": club, "upcoming": up[:40], "results": res[:60]}
 
 
@@ -2683,6 +2730,14 @@ def save_result(d):
             if h.get("rows") == d.get("rows") and h.get("changes") == d.get("changes"):
                 return          # already have this exact result (re-sent)
             break
+    f = flags.get(str(d.get("race")), {})
+    if f.get("entered"):
+        prev = next((h for h in reversed(history) if h.get("race") == d.get("race")), None)
+        if prev and (prev.get("rows") != d.get("rows") or prev.get("ties") != d.get("ties")):
+            f.pop("entered", None)              # back on the list: LiveHeats has the old result
+            f["changed"] = datetime.now().strftime("%H:%M")
+            f.setdefault("log", []).append([datetime.now().strftime("%H:%M:%S"), "timing box", "changed after it was entered in LiveHeats"])
+            save_flags()
     rec = dict(d)
     rec["saved_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     history.append(rec)
@@ -3131,7 +3186,7 @@ def snapshot(role="master", local=True, tok=None):
                       "since": int(time.time() - S["estop_at"]) if S["estop"] and S["estop_at"] else None,
                       "stopped": S["estop_stopped"]}
         d["confirmed"] = bool(S["results"] and is_confirmed(S["results"].get("race")))
-        d["queue_n"] = len([1 for r in history_summary() if not flags.get(str(r.get("race")), {}).get("entered")])
+        d["queue_n"] = len([1 for r in history_summary() if to_enter(r.get("race"))])
         cur_race = (S["results"] or {}).get("race") if S["state"] == "DONE" else None
         d["unconfirmed"] = [r.get("race") for r in history_summary()
                             if r.get("race") != cur_race and not flags.get(str(r.get("race")), {}).get("confirmed")
@@ -3537,6 +3592,8 @@ class H(BaseHTTPRequestHandler):
             self.send(200, json.dumps({"result": template_action(data)}))
         elif self.path.startswith("/api/confirm"):
             self.send(200, json.dumps({"result": confirm_results(data.get("race"), bool(data.get("undo")), str(data.get("who") or "?"))}))
+        elif self.path.startswith("/api/rflag"):
+            self.send(200, json.dumps({"result": rflag_action(data)}))
         elif self.path.startswith("/api/note"):
             self.send(200, json.dumps({"result": save_note(data.get("race"), data.get("text"), data.get("who"))}))
         elif self.path.startswith("/api/practice"):
@@ -4241,6 +4298,75 @@ body.estopped{overflow:hidden}
 .mcall{height:40px;width:50px;flex:0 0 auto;padding:2px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-width:64px;border:1px solid #c9d0da;background:#fff;border-radius:14px;color:var(--blue);font-weight:700;cursor:pointer}
 .mcall small{font-size:12px}.mcall.on{background:#e8f0fe;border-color:var(--blue)}
 .mcalled{color:var(--blue)!important;font-weight:700}
+
+/* v1.13: one Results tab */
+.rhead{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:2px 10px;margin:2px 2px 10px}.rhead .mute{font-weight:600;font-size:14px}.rhead h2{font-size:28px;margin:0;letter-spacing:-.5px}
+.rtally{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.rtally>div{background:#fff;border-radius:16px;padding:10px 12px;box-shadow:var(--sh);display:grid;gap:3px}.rtally b{font-size:28px;line-height:1;font-weight:800}
+.rtally span{font-size:12px;font-weight:600;color:var(--mute);line-height:1.25}.c-bl{color:var(--blue)}.c-am{color:var(--amber)}.c-gr{color:var(--green)}
+.rseg{display:flex;gap:4px;background:#e4e7eb;padding:4px;border-radius:99px;margin-bottom:10px}
+.rseg button{flex:1 1 0;min-height:40px;border:0;border-radius:99px;background:none;font:600 14px var(--f);color:var(--mute);cursor:pointer}
+.rseg button.on{background:#fff;color:var(--ink);font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.rlab{font:800 12px var(--f);letter-spacing:.6px;text-transform:uppercase;color:var(--mute);margin:4px 4px 6px}
+.rrow{background:#fff;border-radius:18px;padding:11px 12px 11px 14px;display:flex;align-items:center;gap:10px;box-shadow:var(--sh);margin-bottom:8px;cursor:pointer}
+.rrow.st-protest{box-shadow:inset 0 0 0 2px var(--amber),var(--sh)}.rrow.st-changed{box-shadow:inset 0 0 0 2px var(--red),var(--sh)}.rrow.sel{box-shadow:inset 0 0 0 2px var(--blue),var(--sh)}
+.rrm{flex:1 1 auto;min-width:0;display:grid;gap:2px}.rrt{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.rrt b{font-size:16px;font-weight:800}
+.rrh{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rrs{font-size:13px;color:var(--mute);font-weight:500}
+.rpill{display:inline-flex;align-items:center;gap:5px;font:800 11px var(--f);letter-spacing:.5px;text-transform:uppercase;padding:4px 9px;border-radius:99px;white-space:nowrap}
+.rpill.bl{background:#e8f0fe;color:var(--blue)}.rpill.am{background:#fff3d6;color:#3d2600}.rpill.rd{background:var(--red);color:#fff}.rpill.gr{background:#e3f4ea;color:#0b4a2f}.rpill.gy{background:var(--soft);color:var(--mute)}
+.rdone{width:100%;display:flex;justify-content:space-between;align-items:center;background:#fff;border:0;border-radius:18px;padding:14px 16px;font:700 15px var(--f);color:var(--ink);box-shadow:var(--sh);margin:6px 0 8px;cursor:pointer}
+.rdone>span:first-child{display:flex;align-items:center;gap:8px}.rempty{color:var(--mute);text-align:center}
+.rdh{background:#fff;border-radius:20px;box-shadow:var(--sh);padding:10px 16px 12px;margin-bottom:10px;display:grid;gap:4px}.rdh h2{margin:0;font-size:22px}
+.rdtop{display:flex;justify-content:space-between;align-items:center}.rback{background:none;border:0;color:var(--blue);font:700 15px var(--f);min-height:40px;padding:0;cursor:pointer}
+.rsteps{display:flex;align-items:center;gap:8px;margin-top:4px}.rst2{display:flex;align-items:center;gap:6px;font:700 13px var(--f);color:var(--mute)}
+.rst2 i{font-style:normal;width:22px;height:22px;border-radius:50%;background:#b7bfca;color:#fff;display:flex;align-items:center;justify-content:center;font:800 12px var(--f)}
+.rst2.on{color:var(--ink)}.rst2.on i{background:var(--blue)}.rst2.dn{color:var(--ink)}.rst2.dn i{background:var(--green)}.rsl{width:28px;height:2px;background:#d0d6de}.rsl.dn{background:var(--green)}
+.rban{border-radius:18px;padding:12px 14px;margin-bottom:10px;display:grid;gap:3px;font-weight:600}.rban b{font-size:17px;font-weight:800}
+.rban.am{background:#fff3d6;color:#3d2600;box-shadow:inset 0 0 0 2px var(--amber)}.rban.rd{background:#fdecea;color:#7a1006;box-shadow:inset 0 0 0 2px var(--red)}.rban.gy{background:var(--soft)}
+.rban .row{margin-top:6px}.rtab{padding:0!important;overflow:hidden}.rtab table{margin:0}.rtab table th:first-child,.rtab table td:first-child{padding-left:14px}.rtab table th:last-child,.rtab table td:last-child{padding-right:12px}.rnote{margin:6px 4px 10px;font-size:14px}
+.ract{display:grid;gap:8px;margin:12px 0}.rbig{width:100%;min-height:58px;font-size:18px}.rsec{display:flex;gap:8px;flex-wrap:wrap}.rsec .btn{flex:1 1 auto}
+.btn.amb{background:#fff3d6;color:#3d2600;box-shadow:inset 0 0 0 2px var(--amber)}.btn.ghost{background:none;box-shadow:inset 0 0 0 1px #c9d0da;color:var(--mute)}
+.btn.amb2{background:var(--amber)!important;color:#fff!important}
+.rmore{background:#fff;border-radius:16px;padding:10px 14px;margin:8px 0;box-shadow:var(--sh);border:0}.rmore summary{font-weight:700}
+.rcop{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin:2px 4px 8px}.rcop b{font-size:16px}.rcop span{display:flex;gap:6px;flex-wrap:wrap}
+.ren{display:grid;grid-template-columns:52px 44px minmax(0,1fr) 80px;gap:8px;align-items:center;padding:11px 14px;border-top:1px solid var(--line)}
+.ren.hd{border-top:0;background:#f7f8fa;font:800 11px var(--f);letter-spacing:.6px;text-transform:uppercase;color:var(--mute);padding:9px 14px}
+.ren b{font-size:19px;font-weight:800}.ren.out b{color:var(--red)}.ren>span{font-weight:700}.ren>span:nth-child(2){color:var(--mute)}.ren>span:last-child{text-align:right}
+.ren .rc{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ren .rc small{display:block;color:var(--mute);font-weight:600;white-space:normal}
+.rnext{width:100%;display:flex;align-items:center;gap:10px;background:#fff;border:0;border-radius:16px;padding:12px 14px;box-shadow:var(--sh);font:600 14px var(--f);color:var(--ink);text-align:left;cursor:pointer}
+.rnext span:nth-child(2){flex:1 1 auto}.rnext .mute{font-weight:800;font-size:12px;letter-spacing:.5px}
+.rchips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 12px}.chipb{border:0;border-radius:99px;min-height:40px;padding:0 14px;font:700 14px var(--f);background:var(--soft);color:var(--ink);cursor:pointer}
+.chipb.on{background:var(--ink);color:#fff}
+.rsplit{display:grid;grid-template-columns:400px minmax(0,1fr);gap:20px;align-items:start}.rsplit .rback{visibility:hidden}
+@media (min-width:1100px){.rdet .rtab table td,.rdet .rtab table th{font-size:17px}.ren{grid-template-columns:80px 70px minmax(0,1fr) 120px;font-size:17px}.ren b{font-size:22px}}
+
+/* v1.13: option B for every screen */
+a{color:var(--blue)}a:hover{color:var(--ink)}
+.banner{background:#fff!important;color:var(--ink)!important;position:relative;overflow:hidden;padding-top:24px!important}
+.banner::before{content:"";position:absolute;left:0;right:0;top:0;height:10px;background:var(--bc)}
+.b-idle{--bc:var(--idle)}.b-armed{--bc:var(--amber)}.b-racing{--bc:var(--green)}.b-done{--bc:var(--blue)}.b-off{--bc:var(--red)}
+.banner .big{color:var(--bc);font-weight:900}.b-idle .big{color:var(--ink)}.banner .sub{color:var(--mute);font-weight:600}.banner .clock{color:var(--ink)}
+.lane{border:0!important;box-shadow:var(--sh)}.lane.hit{box-shadow:inset 0 0 0 3px var(--green),var(--sh)}.lane.scr{box-shadow:inset 0 0 0 2px #c9d0da;background:#f4f5f7}
+.lane .t{font-weight:800}
+@media (max-width:699px){
+ #race .grid{grid-template-columns:1fr!important;gap:8px}
+ #race .lane{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;align-items:center;padding:12px 14px;border-radius:16px}
+ #race .lane>*{grid-column:1}#race .lane .n{grid-row:1;font-size:17px}#race .lane .t{grid-column:2;grid-row:1;text-align:right;margin:0;font-size:20px}
+ #race .lane .ps{grid-column:2;grid-row:2;text-align:right;font-size:13px}#race .lane .crew{grid-row:2;-webkit-line-clamp:2;font-weight:600}
+}
+.hbtn{border:0!important;box-shadow:var(--sh);border-radius:20px!important;position:relative;padding-right:44px!important}
+.hbtn::after{content:"›";position:absolute;right:18px;top:50%;transform:translateY(-50%);font-size:30px;color:var(--mute);font-weight:400}
+.hbtn.pri{box-shadow:inset 0 0 0 2px var(--blue),var(--sh)}
+.htitle h1{font-size:30px;letter-spacing:-.5px}
+.tmseg{margin:0 0 10px}
+.chip.prot{background:#fff3d6;color:#3d2600;box-shadow:inset 0 0 0 1px var(--amber)}
+.bd .rr{border:0!important;box-shadow:var(--sh);border-radius:16px!important}.bd .rr.first{box-shadow:inset 0 0 0 3px var(--green),var(--sh)}
+.bd .rr .pl{display:inline-flex;align-items:center;justify-content:center;width:1.6em;height:1.6em;border-radius:50%;background:var(--soft)}
+.bd .rr .pl.m1{background:#e8b730;color:#1a1300}.bd .rr .pl.m2{background:#c3cad3;color:#11151a}.bd .rr .pl.m3{background:#c98a4b;color:#1a0e02}
+.bd .pill.prot{background:#fff3d6;color:#3d2600;box-shadow:inset 0 0 0 2px var(--amber)}
+.bd .ln{border:0!important;box-shadow:var(--sh);border-radius:16px!important}.bd .rc{border:0!important;box-shadow:var(--sh);border-radius:14px!important}
+.bd .rc.prov{box-shadow:inset 0 0 0 2px var(--amber),var(--sh)}.bd .rc.more{box-shadow:inset 0 0 0 2px var(--amber)}
+.bd .card{border:0;box-shadow:var(--sh);border-radius:20px}
 /* v1.10.3: clearer separation – each Setup section is its own card; marshalling heats get a header band and one row per crew */
 .card.slist{background:none;box-shadow:none;padding:0}
 .ssec{background:#fff;border:0!important;border-radius:20px;box-shadow:var(--sh);margin:0 0 14px;padding:0 18px;overflow:hidden}
@@ -4270,10 +4396,9 @@ body.estopped{overflow:hidden}
 </style></head><body>
 <header>
  <button class="tab on" data-t="race">Race</button>
- <button class="tab" data-t="results">Confirm</button>
+ <button class="tab" data-t="history">Results<span id="qbadge"></span></button>
  <button class="tab" data-t="program">Program<span id="pbadge"></span></button>
  <button class="tab" data-t="marshal" hidden>Marshal</button>
- <button class="tab" data-t="history">Results<span id="qbadge"></span></button>
  <button class="tab" data-t="system">System<span id="sbadge"></span></button>
  <button class="qbtn" id="helpbtn" onclick="openHelp()" aria-label="Help for this screen">?</button>
 </header>
@@ -4338,7 +4463,7 @@ function setEvent(id){ evOpen=false; if(st){ st.event=id; lastKey=""; render(); 
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{ tab=b.dataset.t;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("on",x===b));
   ["race","results","program","marshal","history","system"].forEach(s=>$(s).hidden=(s!==tab)); closeSheet(); lastKey=""; render(); });
-const TABS={master:["race","results","program","marshal","history","system"],admin:["race","results","program","history","system"],
+const TABS={master:["race","history","program","marshal","system"],admin:["race","history","program","system"],
   starter:["race","system"],marshal:["marshal","system"],viewer:["race"]};
 let tabRole="";
 let justLogged=false;
@@ -4376,7 +4501,7 @@ function banner(){
   if(s==="ARMED") return `<div class="banner b-armed"><div><div class="big">SET – waiting for GO</div>
     <div class="sub">Race ${r+1}${st.heat?" · "+esc(heatLabel(st.heat)):eventName(chosenEvent())}</div></div></div>`;
   if(s==="DONE") return `<div class="banner b-done"><div><div class="big">Race ${r} finished</div>
-    <div class="sub">${st.confirmed?"Results confirmed. Press SET for the next race.":"Check the result on the Confirm tab, then press Confirm results."}</div></div></div>`;
+    <div class="sub">${st.confirmed?"Results confirmed. Press SET for the next race.":"Check the result on the Results tab, then press Confirm results."}</div></div></div>`;
   return `<div class="banner b-idle"><div><div class="big">Ready – press SET</div>
     <div class="sub">${r?("Last race: "+r):"No races yet"}</div></div></div>`;
 }
@@ -4454,7 +4579,7 @@ function renderRace(){
       const cn=crewOf(ht,l), mv=ht&&(ht.swaps||[]).filter(s=>s.includes(l)).length, ck=checkOf(ht,l);
       h+=`<div class="lane ${hits.length?"hit":""} ${ck==="scratched"?"scr":""}"><div class="n">Lane ${l}</div>${cn?`<div class="crew">${esc(cn)}</div>`:""}${mv?`<div class="p">lane changed</div>`:""}
         ${ck==="scratched"?`<div class="scrt">SCRATCHED</div>`:ck==="present"?`<div class="chk">✓ checked in</div>`:""}
-        <div class="p">${esc(sub)}</div><div class="t">${esc(txt)}</div></div>`;
+        <div class="p ps">${esc(sub)}</div><div class="t">${esc(txt)}</div></div>`;
     }
     h+=`</div>`;
     if(ht){ const extra=Object.keys(ht.crews||{}).map(Number).filter(l=>!st.lanes.includes(l)).sort((a,b)=>a-b);
@@ -4594,7 +4719,7 @@ const TROUBLE=[
   ["Wiring fault on a lane, SET or GO","\"Check wiring: Lane 2\" or a lane open during a race.",[
     "At rest every lane, SET and GO button is closed. A fault means the cable is unplugged or broken, or the button is wired to NO instead of NC.",
     "Plug it in or fix the wire – the warning clears by itself.",
-    "If it happened during a race, check that crew's presses on the Confirm tab."]],
+    "If it happened during a race, check that crew's presses on the Results tab."]],
   ["FINISH acts up","The race finishes by itself, or FINISH shows as pressed.",[
     "FINISH is a normally-open button straight to ground – nothing else on that terminal (GP6, Pico pin 9).",
     "The FINISH button must be held for 1 second. FINISH on the screen asks you to confirm."]],
@@ -4613,7 +4738,7 @@ const TROUBLE=[
     "The last race hasn't been finished – hold FINISH first.",
     "SET ran out after 60 seconds – press SET again."]],
   ["A time or place is wrong","",[
-    "Confirm tab › Edit on that crew: accept a press, move a place, DQ or DNF.",
+    "Results tab › open the race › tap the crew: accept a press, move a place, DQ or DNF.",
     "Edit also shows each finish on the computer's clock, to match against video.",
     "Undo ALL changes (whole race) puts it back exactly as the timing box recorded it."]]]],
  ["Laptop and app",[
@@ -4718,11 +4843,12 @@ function nextStep(){
   if(s==="RACING") return st.can_start?{text:"Racing – press FINISH when every crew is in",tab:"race",btn:"Race"}:{text:"Race in progress",calm:true};
   if(s==="ARMED") return st.can_start?{text:"Armed – press GO to start",tab:"race",btn:"Race"}:{text:"Race about to start",calm:true};
   if(st.test) return (role==="master"||role==="starter")?{text:"Button test running – press every button, then end the test",tab:"system",btn:"Test",act:"sysView='today'"}:null;
-  if(st.official&&s==="DONE"&&st.results&&!st.confirmed&&!st.results.practice) return tab==="history"
-    ?{text:`Race ${st.results.race} finished – confirm it in this list`,tab:"history",btn:"Show",act:`entShow(${st.results.race})`,same:false}
-    :{text:`Race ${st.results.race} finished – check the result, then Confirm results`,tab:"results",btn:"Confirm"};
+  if(st.official&&s==="DONE"&&st.results&&!st.confirmed&&!st.results.practice) return tab==="history"&&rView===st.results.race
+    ?{text:`Race ${st.results.race} finished – check it, then Confirm results`}
+    :{text:`Race ${st.results.race} finished – check the result, then Confirm results`,tab:"results",btn:"Check",same:false};
   if((role==="master"||role==="admin")&&(st.unconfirmed||[]).length&&s!=="ARMED"&&s!=="RACING"){ const u=st.unconfirmed;
-    return {text:`Race ${u[0]} results not confirmed${u.length>1?` (+${u.length-1} more)`:""} – check and confirm`,tab:"history",btn:tab==="history"?"Show":"Catch up",act:`entGo(${u[0]})`,same:false}; }
+    return tab==="history"&&rView===u[0]?{text:`Race ${u[0]} not confirmed yet${u.length>1?` (+${u.length-1} more)`:""}`}
+      :{text:`Race ${u[0]} results not confirmed${u.length>1?` (+${u.length-1} more)`:""} – check and confirm`,tab:"history",btn:tab==="history"?"Show":"Catch up",act:`rView=${u[0]}`,same:false}; }
   if(role==="master"&&!racedToday()&&!dayReady()){ const n=dayChecks().filter(x=>!x.opt&&!x.ok).length; return {text:`Start of day – ${n} check${n===1?"":"s"} to do`,tab:"system",btn:"Checklist",act:"sysView='today'"}; }
   if(st.official&&pg.mode==null) return {text:"Choose how heats are run today",tab:"program",btn:"Program"};
   if(role==="admin"){
@@ -4749,7 +4875,7 @@ function drawNext(){
   b.innerHTML=`<span class="nx">${n.calm?"OK":"NEXT"}</span><span class="nt">${esc(n.text)}</span>${here?"":`<button class="btn sm pri" id="nxgo">${esc(n.btn||"Go")} ›</button>`}`;
   const g=$("nxgo"); if(g) g.onclick=()=>{ if(n.act) (new Function(n.act))(); goTab(n.tab); lastKey=""; render(); };
 }
-function goTab(n){ const b=document.querySelector('.tab[data-t="'+n+'"]'); if(b) b.click(); }
+function goTab(n){ if(n==="results"){ rView=(st&&st.results&&st.state==="DONE")?st.results.race:rView; histAt=0; n="history"; } const b=document.querySelector('.tab[data-t="'+n+'"]'); if(b) b.click(); }
 const ROLE_NAME={master:"Timing desk",admin:"Admin",starter:"Starter",marshal:"Marshal",viewer:"Viewer"};
 function setWarnings(){
   const w=[];
@@ -5582,8 +5708,8 @@ function tmAlerts(){
       <div class="tmals">${esc(u.heat.div)} · ${esc(u.heat.round)}${u.called?` · called ${esc(u.called)}`:u.alert==="late"?" · this heat is being marshalled":u.time?` · races about ${esc(u.time)}`:""}</div></div>`; }).join("");
 }
 function crewPats(ht,l){ try{ return (typeof pats==="function"?pats(ht,l):[]).join(", "); }catch(e){ return ""; } }
-function tmTabs(){ return `<div class="row" style="margin:0 0 4px">${[["club","My club"],["program","Program"],["results","All results"]].map(([k,n])=>
-  `<button class="btn ${tmView===k?"pri":""}" onclick="tmView='${k}';tmAt=0;histAt=0;progAt=0;lastKey='';render();poke()">${n}</button>`).join("")}</div>`; }
+function tmTabs(){ return `<div class="rseg tmseg" role="tablist">${[["club","My club"],["program","Program"],["results","All results"]].map(([k,n])=>
+  `<button role="tab" aria-selected="${tmView===k}" class="${tmView===k?"on":""}" onclick="tmView='${k}';tmAt=0;histAt=0;progAt=0;lastKey='';render();poke()">${n}</button>`).join("")}</div>`; }
 function poke(){ if(tmView==="program") loadProg().then(()=>{lastKey="";render()}); else if(tmView==="results") loadHist().then(()=>{lastKey="";render()}); else loadTeam().then(()=>{lastKey="";render()}); }
 function homeBtn(){ return st&&st.role==="viewer"&&!st.local?`<button class="btn homebtn" onclick="location.hash='';lastKey='';render()">‹ Home</button>`:""; }
 function renderTeamProgram(){
@@ -5601,7 +5727,7 @@ function renderTeamResults(){
   if(!(hist||[]).length) return h+`<p class="mute">No results yet.</p></div>`;
   for(const r of hist){ const pl=r.rows.filter(x=>x.place).sort((a,b)=>a.place-b.place), out=r.rows.filter(x=>!x.place&&x.status);
     h+=`<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(r.heat&&r.heat.div?heatLabel(r.heat):"Race "+r.race)}</b>
-      <span class="chip ${(r.flags||{}).confirmed?"now":"next"}">${(r.flags||{}).confirmed?"Final":"Provisional"}</span></div>
+      ${(r.flags||{}).protest?`<span class="chip prot">Under protest</span>`:`<span class="chip ${(r.flags||{}).confirmed?"now":"next"}">${(r.flags||{}).confirmed?"Final":"Provisional"}</span>`}</div>
       ${pl.map(x=>`<div style="display:flex;gap:10px"><span class="pn">${((r.ties||[]).includes(x.lane)?"=":"")+x.place}</span><span style="flex:1">${esc(crewOf(r.heat,x.lane)||"Lane "+x.lane)}</span><span class="tm2">${ft(x.t_us)}</span></div>`).join("")}
       ${out.length?`<div class="mute">${out.map(x=>esc(crewOf(r.heat,x.lane)||"Lane "+x.lane)+" "+x.status).join(" · ")}</div>`:""}</div>`; }
   return h+`</div>`;
@@ -5612,9 +5738,9 @@ function renderTeam(){
   const typeIt=`<div class="row" style="margin-top:0"><input type="text" id="tmclub" list="tmlist" value="${esc(c)}" placeholder="Your club, e.g. Kurrawa" style="flex:1 1 220px">
     <datalist id="tmlist">${tmClubs.map(x=>`<option value="${esc(x)}">`).join("")}</datalist>
     <button class="btn pri" onclick="try{localStorage.setItem('irb_club',$('tmclub').value.trim())}catch(e){};tmAt=0;loadTeam().then(()=>{lastKey='';render()})">Show</button></div>`;
-  let h=`<div class="tmv">${brandBar()}${tmTabs()}<div class="card" style="margin:0">${c&&tmClubs.length?`<div class="row" style="margin:0;align-items:center;justify-content:space-between"><h2 style="margin:0">${esc(c)}</h2>
+  let h=`<div class="tmv">${brandBar()}${tmTabs()}${!(c&&tmClubs.length)&&tmClubs.length?`<div class="rhead"><h2>Team Manager</h2><span class="mute">Pick your club to see its heats, lanes and results</span></div>`:`<div class="card" style="margin:0">${c&&tmClubs.length?`<div class="row" style="margin:0;align-items:center;justify-content:space-between"><h2 style="margin:0">${esc(c)}</h2>
     <button class="btn sm" onclick="try{localStorage.removeItem('irb_club')}catch(e){};tmData=null;lastKey='';render()">Change club</button></div>`
-    :`<h2>Team Manager</h2>${tmClubs.length?"":typeIt}`}</div>`;
+    :`<h2>Team Manager</h2>${tmClubs.length?"":typeIt}`}</div>`}`;
   const pick=x=>`try{localStorage.setItem('irb_club','${esc(x).replace(/'/g,"")}')}catch(e){};tmAt=0;tmData=null;loadTeam().then(()=>{lastKey='';render()})`;
   if(!c||!tmData){ if(tmClubs.length&&!c) h+=`<div class="card" style="margin:0"><h2>Tap your club</h2><div class="row" style="margin-top:0">${tmClubs.map(x=>
       `<button class="btn" onclick="${pick(x)}">${esc(x)}</button>`).join("")}</div></div>`; }
@@ -5637,7 +5763,7 @@ function renderTeam(){
   if(!tmData.results.length) h+=`<p class="mute">No results yet.</p>`;
   for(const r of tmData.results) h+=`<div class="prow" style="cursor:default"><span class="pn">${r.place?(r.tie?"=":"")+r.place:"–"}</span>
     <div><div class="pl">${esc(r.crew||"Lane "+r.lane)}</div><div class="ps">${esc(r.heat&&r.heat.div?heatLabel(r.heat):"Race "+r.race)}</div></div>
-    <span style="text-align:right"><span class="tm2">${r.place?ft(r.t_us):esc(r.status)}</span><br><span class="chip ${r.final?"now":"next"}">${r.final?"Final":"Provisional"}</span></span></div>`;
+    <span style="text-align:right"><span class="tm2">${r.place?ft(r.t_us):esc(r.status)}</span><br>${r.protest?`<span class="chip prot">Under protest</span>`:`<span class="chip ${r.final?"now":"next"}">${r.final?"Final":"Provisional"}</span>`}</span></div>`;
   $("race").innerHTML=h+`</div></div>`+homeBtn();
 }
 let queue=[];
@@ -5687,25 +5813,170 @@ function entryCard(){
   if(queue.length>1) h+=`<p class="mute" style="margin:8px 0 0;font-size:14px">Oldest first. After each tap the next race shows here.</p>`;
   return h+`</div>`;
 }
-function renderHistory(){
-  const open=new Set(Array.from(document.querySelectorAll("#history details[open]")).map(d=>d.dataset.r));
-  let h="";
-  if(st&&st.official){
-    h+=entryCard();
+// ---------- Results: every finished race goes Finished -> Confirmed -> In LiveHeats, in one list ----------
+let rView=null, rDoneOpen=false, rBy=(()=>{ try{ return localStorage.getItem("irb_entby")||"place"; }catch(e){ return "place"; } })();
+let rFilter=(()=>{ try{ return localStorage.getItem("irb_rfilter")||"all"; }catch(e){ return "all"; } })();
+function rSetFilter(f){ rFilter=f; try{ localStorage.setItem("irb_rfilter",f); }catch(e){} lastKey=""; render(); }
+function rCanAct(){ return st&&(st.role==="master"||st.role==="admin"); }
+function rLive(r){ return st&&st.state==="DONE"&&st.results&&st.results.race===r.race&&!st.results.practice; }
+function rRec(r){ return rLive(r)?Object.assign({},st.results,{flags:Object.assign({},r.flags||{},st.res_flags||{})}):r; }
+function rStatus(r){ const f=(rLive(r)?Object.assign({},r.flags||{},st.res_flags||{}):r.flags)||{};
+  if(f.skip) return "skip"; if(f.entered) return "done"; if(f.protest) return "protest"; if(f.changed) return "changed";
+  return (rLive(r)?st.confirmed:f.confirmed)?"enter":"confirm"; }
+const R_TODO={all:["confirm","protest","enter","changed"],confirm:["confirm","protest"],enter:["enter","changed"]};
+function rAll(){ // hist is newest first; make sure the race just finished is in it
+  let a=(hist||[]).slice();
+  if(st&&st.state==="DONE"&&st.results&&!st.results.practice&&!a.some(x=>x.race===st.results.race)) a.unshift(Object.assign({},st.results,{flags:st.res_flags||{}}));
+  return a; }
+function rTodo(f){ const ok=R_TODO[f||rFilter]||R_TODO.all; return rAll().filter(r=>ok.includes(rStatus(r))).sort((a,b)=>a.race-b.race); }
+function rNext(race){ const t=rTodo().filter(r=>r.race!==race); if(!t.length) return null; return (t.find(r=>r.race>race)||t[0]).race; }
+function rGo(race){ rView=race; lastKey=""; render(); try{ window.scrollTo({top:0}); }catch(e){} }
+function rMoveOn(race,msg){ const n=rNext(race); rView=n; lastKey=""; render(); try{ window.scrollTo({top:0}); }catch(e){}
+  toast(msg+(n?` – next: Race ${n}`:rTodo().length?"":" – nothing else waiting ✓"),3500); }
+function rTime(r){ return (r.saved_at||"").slice(11,16); }
+function rPill(s){ return {confirm:`<span class="rpill bl">To confirm</span>`,protest:`<span class="rpill am"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>Under protest</span>`,
+  enter:`<span class="rpill am">To enter</span>`,changed:`<span class="rpill rd">Update LiveHeats</span>`,done:`<span class="rpill gr">Entered ✓</span>`,skip:`<span class="rpill gy">Not needed</span>`}[s]; }
+function rSub(r,s){ const f=r.flags||{};
+  if(s==="protest"){ const p=f.protest; return `${p.lanes&&p.lanes.length?p.lanes.map(x=>"Lane "+x).join(", "):"Whole race"}${p.reason?" – "+esc(p.reason.toLowerCase()):""} · lodged ${esc(p.at)}`; }
+  if(s==="changed") return `Changed after it was entered (${esc(f.changed)}) – LiveHeats has the old result`;
+  if(s==="enter"){ const by=((f.log||[]).filter(x=>/final/.test(x[2])).pop()||[])[1]; return `Confirmed ${esc((f.confirmed||"").slice(0,5))}${by&&by!=="?"?" by "+esc(by):""}`; }
+  if(s==="skip") return `Not needed${f.skip.why?" – "+esc(f.skip.why):""} · ${esc(f.skip.by)} ${esc(f.skip.at)}`;
+  if(s==="done") return `Entered ${esc((f.entered||"").slice(11))}`;
+  return `Finished ${esc(rTime(r))}${rLive(r)?" · just now":""}`; }
+function rHeat(r){ return r.heat?`Heat ${esc(r.heat.no)} · ${esc(r.heat.div)}`:r.event?esc(r.event):"No heat chosen"; }
+function rRow(r){ const s=rStatus(r), sel=rView===r.race, act=rCanAct();
+  const lab={confirm:act?"Check":"View",protest:"View",enter:act?"Enter":"View",changed:act?"Fix":"View",done:"View",skip:"View"}[s];
+  return `<div class="rrow st-${s} ${sel?"sel":""}" onclick="rGo(${r.race})"><div class="rrm"><div class="rrt"><b>Race ${r.race}</b>${rPill(s)}</div>
+    <div class="rrh">${rHeat(r)}</div><div class="rrs">${rSub(r,s)}</div></div>
+    <button class="btn ${s==="confirm"&&act?"pri":""} sm" onclick="event.stopPropagation();rGo(${r.race})">${lab}</button></div>`; }
+function rList(){
+  const all=rAll(), st0=all.map(rStatus), n=k=>st0.filter(x=>k.includes(x)).length;
+  const nc=n(["confirm","protest"]), ne=n(["enter","changed"]), nd=n(["done","skip"]);
+  let h=`<div class="rhead"><h2>Results</h2><span class="mute">${esc(((st.brand||{}).event)||((st.draw||{}).name)||"")}</span></div>
+    <div class="rtally"><div><b class="c-bl">${nc}</b><span>To confirm</span></div><div><b class="c-am">${ne}</b><span>To enter in LiveHeats</span></div><div><b class="c-gr">${nd}</b><span>Done</span></div></div>`;
+  if(rCanAct()) h+=`<div class="rseg" role="tablist" aria-label="Show">${[["all","Everything"],["confirm","Confirm"],["enter","LiveHeats entry"]].map(([k,t])=>
+    `<button role="tab" aria-selected="${rFilter===k}" class="${rFilter===k?"on":""}" onclick="rSetFilter('${k}')">${t}</button>`).join("")}</div>`;
+  const todo=rTodo();
+  if(rFilter==="enter"&&n(["confirm","protest"])) h+=`<p class="mute rnote">${n(["confirm"])?`${n(["confirm"])} race${n(["confirm"])>1?"s are":" is"} still being confirmed – ${n(["confirm"])>1?"they appear":"it appears"} here as soon as ${n(["confirm"])>1?"they're":"it's"} confirmed. `:""}${n(["protest"])?`${n(["protest"])} under protest – shown once decided.`:""}</p>`;
+  h+=`<div class="rlab">To do · oldest first</div>`;
+  h+=todo.length?todo.map(rRow).join(""):`<div class="card rempty">${all.length?"Nothing to do here ✓":"No races yet – results show here after FINISH."}</div>`;
+  const done=all.filter(r=>["done","skip"].includes(rStatus(r)));
+  h+=`<button class="rdone" onclick="rDoneOpen=!rDoneOpen;lastKey='';render()"><span><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>Done – ${done.length} race${done.length===1?"":"s"}</span><span class="mute">${rDoneOpen?"Hide ▾":"Show ▸"}</span></button>`;
+  if(rDoneOpen){ h+=done.map(rRow).join("");
+    h+=`<div class="row"><a class="btn" href="/history.csv" style="text-decoration:none">Download all results (CSV for Excel)</a></div>`; }
+  return h; }
+function rSteps(s){ const c=s==="confirm"||s==="protest"?1:s==="enter"||s==="changed"?2:3;
+  const dot=(i,t)=>`<span class="rst2 ${c>i?"dn":c===i?"on":""}"><i>${c>i?"✓":i}</i>${t}</span>`;
+  return `<div class="rsteps">${dot(1,"Confirm")}<span class="rsl ${c>1?"dn":""}"></span>${dot(2,"LiveHeats")}</div>`; }
+function rDetail(race){
+  const r0=rAll().find(x=>x.race===race); if(!r0) return `<div class="card"><p class="mute">That race isn't in today's results any more.</p></div>`;
+  const r=rRec(r0), s=rStatus(r0), f=r.flags||{}, live=rLive(r0), act=rCanAct()&&st.official!==false;
+  const todo=rTodo(), pos=todo.findIndex(x=>x.race===race);
+  let h=`<div class="rdh"><div class="rdtop"><button class="rback" onclick="rView=null;lastKey='';render()">‹ Results</button><span class="mute">${pos>=0?`${pos+1} of ${todo.length} to do`:""}</span></div>
+    <h2>Race ${r.race}${r.heat?` · Heat ${esc(r.heat.no)}`:""}</h2><div class="mute">${r.heat?esc(r.heat.div)+" · "+esc(r.heat.round)+" · ":r.event?esc(r.event)+" · ":""}finished ${esc(rTime(r0))||"just now"}</div>${rSteps(s)}</div>`;
+  // why it's waiting
+  if(s==="protest"){ const p=f.protest;
+    h+=`<div class="rban am"><b>Under protest</b><div>${p.lanes&&p.lanes.length?p.lanes.map(x=>"Lane "+x+(crewOf(r.heat,x)?" ("+esc(crewOf(r.heat,x))+")":"")).join(", "):"Whole race"}${p.reason?" – "+esc(p.reason):""}</div>
+      ${p.note?`<div>${esc(p.note)}</div>`:""}<div class="mute">Lodged ${esc(p.at)} · marked by ${esc(p.by)}</div>
+      ${act?`<div class="row"><button class="btn pri" onclick="rProtestEnd(${r.race},'dismissed')">Dismissed – confirm as it is</button><button class="btn" onclick="rProtestEnd(${r.race},'upheld')">Upheld – result changes</button><button class="btn sm" onclick="rProtest(${r.race})">Edit</button></div>`:""}</div>`; }
+  if(s==="changed") h+=`<div class="rban rd"><b>Changed after it was entered</b><div>LiveHeats still has the old result. Update it there, then tap Entered again.</div></div>`;
+  if(s==="skip") h+=`<div class="rban gy"><b>Not needed in LiveHeats</b><div>${f.skip.why?esc(f.skip.why)+" · ":""}${esc(f.skip.by)} ${esc(f.skip.at)}</div>${act?`<div class="row"><button class="btn" onclick="rSkip(${r.race},false)">Put it back on the list</button></div>`:""}</div>`;
+  const later=act&&s!=="done"&&s!=="skip"?`<div class="rsec"><button class="btn" onclick="rMoveOn(${r.race},'Race ${r.race} left for later')">Later</button>${s!=="protest"?`<button class="btn amb" onclick="rProtest(${r.race})">Protest…</button>`:""}<button class="btn ghost" onclick="rSkip(${r.race},true)">Not needed</button></div>`:"";
+  if(s==="confirm"||s==="protest"){
+    const can=live&&act&&!st.confirmed;
+    let w="";
+    if(live&&Object.keys(r.changes||{}).length) w+=`<div class="warn">ADJUSTED BY OFFICIALS</div>`;
+    if(can&&r.event_legs&&r.legs>0&&r.legs!==r.event_legs) w+=`<div class="warn">${esc(r.event)} is normally ${r.event_legs} leg${r.event_legs===1?"":"s"}, but the presses worked out as ${r.legs}.
+      <div class="row"><button class="btn pri" onclick="cmd('legs ${r.event_legs}')">Set race to ${r.event_legs} leg${r.event_legs===1?"":"s"}</button></div></div>`;
+    if(ranked(r).filter(x=>x.tooClose).length) w+=`<div class="warn">Finish under 0.010 s apart – judges to review before confirming places.</div>`;
+    const inc=(r.rows||[]).filter(x=>x.status==="INCOMPLETE").length;
+    if(inc&&can) w+=`<div class="warn">${inc} crew${inc>1?"s":""} incomplete (fewer presses) – tap the crew to accept, place, DQ or DNF them.</div>`;
+    h+=w+`<div class="card rtab">${resultsTable(r,can)}</div>`;
+    h+=can?`<p class="mute rnote">Tap a crew to accept a missed press, change a place, DQ or DNF.</p>`
+      :live?"":`<p class="mute rnote">This race can't be changed here any more (the next race has been SET). If a place is wrong, fix it in LiveHeats and note it.</p>`;
+    if(act&&s==="confirm") h+=`<div class="ract"><button class="btn pri big rbig" onclick="rConfirm(${r.race})">Confirm results</button>${later}</div>`;
+    else if(act) h+=`<div class="ract">${later}</div>`;
+    if(can){ h+=`<details class="rmore"><summary>More – legs, race note, undo all</summary><div class="mute" style="font-size:14px;margin-top:6px">Number of legs (from the presses – change only if most crews missed a press)</div><div class="row">`;
+      for(let n=1;n<=4;n++) h+=`<button class="btn ${n===r.legs?"pri":""}" onclick="cmd('legs ${n}')">${n}</button>`;
+      h+=`</div><div class="row"><button class="btn" onclick="openNote(${r.race})">${f.note?"Edit race note":"Add race note"}</button><button class="btn" onclick="askYes('Undo every change made to this race, including the number of legs?',()=>cmd('clear'),'Yes, undo all')">Undo ALL changes</button></div></details>`; }
+  } else {
+    // enter in LiveHeats (or read it back once done)
+    const ties=r.ties||[], dq=f.dq||{};
+    const rows=(r.rows||[]).slice().sort(rBy==="lane"?(a,b)=>a.lane-b.lane:(a,b)=>(a.place||99)-(b.place||99)||a.lane-b.lane);
+    const out=x=>x.place?(ties.includes(x.lane)?"=":"")+x.place:x.status==="DQ"?"DQ":x.status==="DNF"?"DNF":x.status==="INCOMPLETE"?"DNF?":"–";
+    h+=`<div class="rcop"><b>${s==="done"?"In LiveHeats":"Type these into LiveHeats"}</b><span>${[["place","By place"],["lane","By lane"]].map(([k,t])=>`<button class="btn sm ${rBy===k?"pri":""}" onclick="rBy='${k}';try{localStorage.setItem('irb_entby','${k}')}catch(e){};lastKey='';render()">${t}</button>`).join("")}<button class="btn sm" onclick="rCopy(${r.race})">Copy all</button></span></div>`;
+    h+=`<div class="card rtab rent"><div class="ren hd"><span>Place</span><span>Lane</span><span>Crew</span><span>Time</span></div>${rows.map(x=>`<div class="ren ${x.place?"":"out"}"><b>${esc(out(x))}</b><span>${x.lane}</span><span class="rc">${esc(crewOf(r.heat,x.lane)||"–")}${!x.place&&dq[String(x.lane)]?`<small>${esc(dq[String(x.lane)])}</small>`:""}</span><span>${x.place&&x.t_us!=null?ft(x.t_us):""}</span></div>`).join("")}</div>`;
+    if((r.rows||[]).some(x=>!x.place&&x.status==="INCOMPLETE")) h+=`<p class="mute rnote">"DNF?" = not every leg was recorded. Check with the finish judges before entering.</p>`;
+    if(f.note) h+=`<p class="rnote"><b>Race note:</b> ${esc(f.note)}</p>`;
+    const lh=st.draw?`<a class="btn" href="https://liveheats.com/events/${esc(st.draw.id)}" target="_blank" rel="noopener" style="text-decoration:none">Open LiveHeats</a>`:"";
+    if(act&&(s==="enter"||s==="changed")){
+      const nx=rNext(r.race);
+      h+=`<div class="ract"><button class="btn green big rbig" onclick="rEntered(${r.race})">✓ Entered in LiveHeats</button>${later}<div class="rsec">${lh}${live&&st.confirmed?`<button class="btn ghost" onclick="rReopen(${r.race})">Reopen to change</button>`:""}</div></div>`;
+      if(nx) h+=`<button class="rnext" onclick="rGo(${nx})"><span class="mute">NEXT</span><span>Race ${nx} · ${(()=>{ const z=rAll().find(x=>x.race===nx); return z?rHeat(z)+" – "+({confirm:"to confirm",protest:"under protest",enter:"to enter",changed:"update LiveHeats"}[rStatus(z)]||""):""; })()}</span><span>›</span></button>`;
+    } else if(act&&s==="done") h+=`<div class="ract"><div class="rsec"><button class="btn" onclick="rEnteredUndo(${r.race})">Not entered after all</button>${lh}</div></div>`;
   }
-  let right=`<div class="card"><h2>Race history</h2><p class="mute">Saved on this computer (the Pico keeps its own copy too).
-    Shows the final version of each race.</p><div class="row"><a class="btn pri" href="/history.csv" style="text-decoration:none">Download all (CSV for Excel)</a></div></div>`;
-  if(!hist.length) right+=`<div class="card mute">No races saved yet.</div>`;
-  else{ right+=`<div class="card">`;
-    for(const r of hist){ const top=r.rows.filter(x=>x.place).sort((a,b)=>a.place-b.place).slice(0,3)
-        .map(x=>x.place+". "+(crewOf(r.heat,x.lane)||"Lane "+x.lane)).join("  ·  ");
-      const adj=Object.keys(r.changes||{}).length||r.legs_set;
-      right+=`<details data-r="${r.race}"><summary>Race ${r.race}${r.heat?" · "+esc(heatLabel(r.heat)):r.event?" · "+esc(r.event):""} · ${esc(r.saved_at)} · ${r.legs} leg${r.legs===1?"":"s"}${adj?" · adjusted":""}
-        <div class="mute" style="font-weight:400">${esc(top||"no finishers")}</div><div style="margin-top:4px">${raceStatus(!!(r.flags&&r.flags.confirmed),!!(r.flags&&r.flags.entered))}</div></summary>${resultsTable(r,false)}${
-        r.flags&&r.flags.note?`<p><b>Note:</b> ${esc(r.flags.note)}</p>`:""}${(r.flags&&r.flags.log||[]).map(x=>`<div class="log">${esc(x[0])} ${esc(x[1])}: ${esc(x[2])}</div>`).join("")}</details>`; }
-    right+=`</div>`; }
-  $("history").innerHTML=h?`<div class="cols"><div>${h}</div><div>${right}</div></div>`:right;
-  document.querySelectorAll("#history details").forEach(d=>{ if(open.has(d.dataset.r)) d.open=true; });
+  if((f.log||[]).length) h+=`<details class="rmore"><summary>History of this race (${f.log.length})</summary>${f.log.map(x=>`<div class="log">${esc(x[0])} ${esc(x[1])}: ${esc(x[2])}</div>`).join("")}</details>`;
+  return h; }
+async function rConfirm(race){
+  const r=await post("/api/confirm",{race:race,who:myName()||"?"}); if(r&&r!=="ok"){ toast(r); return; }
+  histAt=0; await loadHist();
+  if(rFilter==="confirm"){ rMoveOn(race,`Race ${race} confirmed`); return; }
+  rView=race; lastKey=""; render(); toast(`Race ${race} confirmed – now enter it in LiveHeats`); }
+async function rReopen(race){ await post("/api/confirm",{race:race,undo:true,who:myName()||"?"}); histAt=0; await loadHist(); rView=race; lastKey=""; render(); }
+async function rEntered(race){ if(entBusy) return; entBusy=true;
+  try{ await post("/api/entered",{race:race}); histAt=0; await loadHist(); } finally{ entBusy=false; }
+  rMoveOn(race,`Race ${race} entered`);
+  showUndo(`Race ${race} ticked off as entered in LiveHeats`,null,()=>rEnteredUndo(race)); }
+async function rEnteredUndo(race){ await post("/api/entered",{race:race,undo:true}); histAt=0; await loadHist(); rView=race; lastKey=""; render(); }
+function rSkip(race,on){
+  if(!on){ post("/api/rflag",{race:race,skip:false,who:myName()||"?"}).then(async()=>{ histAt=0; await loadHist(); rView=race; lastKey=""; render(); }); return; }
+  $("sheetin").innerHTML=`<h2>Race ${race} not needed in LiveHeats?</h2><p class="mute">Takes it off the to-do list – for example a recalled or stopped race that's being re-run, or one someone else has entered. You can put it back from Done.</p>
+    <div class="rchips">${["Re-run","Recalled","Already entered","Practice","Other"].map(x=>`<button class="chipb" onclick="this.parentNode.querySelectorAll('.chipb').forEach(b=>b.classList.remove('on'));this.classList.add('on')">${x}</button>`).join("")}</div>
+    <div class="row"><button class="btn pri" id="skgo">Not needed</button><button class="btn" onclick="closeSheet()">Cancel</button></div>`;
+  $("sheet").classList.add("on");
+  $("skgo").onclick=async()=>{ const c=document.querySelector("#sheetin .chipb.on"); closeSheet();
+    const r=await post("/api/rflag",{race:race,skip:true,why:c?c.textContent:"",who:myName()||"?"}); if(r!=="ok"){ toast(r); return; }
+    histAt=0; await loadHist(); rMoveOn(race,`Race ${race} – not needed`); }; }
+function rProtest(race){
+  const r=rRec(rAll().find(x=>x.race===race)||{}), p=((r.flags||{}).protest)||{lanes:[],reason:"",note:""};
+  const lanes=(r.rows||[]).map(x=>x.lane).sort((a,b)=>a-b);
+  $("sheetin").innerHTML=`<h2>Race ${race} under protest</h2><p class="mute">It stays on the to-do list with an amber PROTEST tag, so everyone knows why it isn't in LiveHeats yet. Team managers see it on their page.</p>
+    <b>Which crew?</b><div class="rchips" id="plns"><button class="chipb ${p.lanes.length?"":"on"}" data-l="0">Whole race</button>${lanes.map(l=>`<button class="chipb ${p.lanes.includes(l)?"on":""}" data-l="${l}">Lane ${l}${crewOf(r.heat,l)?" – "+esc(crewOf(r.heat,l)):""}</button>`).join("")}</div>
+    <b>Reason</b><div class="rchips" id="prsn">${["Crossed course","False start","Patient pick-up","Equipment","Interference","Other"].map(x=>`<button class="chipb ${p.reason===x?"on":""}">${x}</button>`).join("")}</div>
+    <label for="pnote"><b>Note (optional)</b></label><input type="text" id="pnote" value="${esc(p.note||"")}" placeholder="e.g. lodged by Kirra team manager">
+    <div class="row"><button class="btn pri amb2" id="prgo">Mark under protest</button><button class="btn" onclick="closeSheet()">Cancel</button></div>
+    <p class="mute" style="font-size:14px">When it's decided: <b>Dismissed</b> confirms the race as it is. <b>Upheld</b> means the result changes. Both stay in the race's history.</p>`;
+  $("sheet").classList.add("on");
+  $("plns").onclick=e=>{ const b=e.target.closest(".chipb"); if(!b) return; const all=$("plns").querySelector('[data-l="0"]');
+    if(b===all){ $("plns").querySelectorAll(".chipb").forEach(x=>x.classList.remove("on")); all.classList.add("on"); }
+    else { b.classList.toggle("on"); all.classList.toggle("on",!$("plns").querySelector('.chipb.on:not([data-l="0"])')); } };
+  $("prsn").onclick=e=>{ const b=e.target.closest(".chipb"); if(!b) return; $("prsn").querySelectorAll(".chipb").forEach(x=>x.classList.remove("on")); b.classList.add("on"); };
+  $("prgo").onclick=async()=>{ const ls=[...$("plns").querySelectorAll('.chipb.on')].map(b=>+b.dataset.l).filter(Boolean), rs=$("prsn").querySelector(".chipb.on");
+    const res=await post("/api/rflag",{race:race,protest:{lanes:ls,reason:rs?rs.textContent:"",note:$("pnote").value},who:myName()||"?"}); closeSheet();
+    if(res!=="ok"){ toast(res); return; } histAt=0; await loadHist(); rMoveOn(race,`Race ${race} marked under protest`); }; }
+async function rProtestEnd(race,outcome){
+  await post("/api/rflag",{race:race,protest:null,outcome:outcome,who:myName()||"?"});
+  const r0=rAll().find(x=>x.race===race), live=r0&&rLive(r0);
+  if(outcome==="dismissed"){ await post("/api/confirm",{race:race,who:myName()||"?"}); histAt=0; await loadHist(); rView=race; lastKey=""; render(); toast(`Protest dismissed – Race ${race} confirmed`); return; }
+  if(live){ if(st.confirmed) await post("/api/confirm",{race:race,undo:true,who:myName()||"?"}); histAt=0; await loadHist(); rView=race; lastKey=""; render(); toast("Protest upheld – tap the crew to change their result, then Confirm"); return; }
+  await post("/api/note",{race:race,text:"Protest upheld – result changed in LiveHeats",who:myName()||"?"});
+  await post("/api/confirm",{race:race,who:myName()||"?"}); histAt=0; await loadHist(); rView=race; lastKey=""; render();
+  toast("Protest upheld – change the places in LiveHeats when you enter it",5000); }
+function rCopy(race){ const r=rRec(rAll().find(x=>x.race===race)||{}), ties=r.ties||[];
+  const rows=(r.rows||[]).slice().sort((a,b)=>(a.place||99)-(b.place||99)||a.lane-b.lane);
+  const t=`Race ${race}${r.heat?" – "+heatLabel(r.heat):""}\n`+rows.map(x=>`${x.place?(ties.includes(x.lane)?"=":"")+x.place:x.status}\tLane ${x.lane}\t${crewOf(r.heat,x.lane)||""}\t${x.place&&x.t_us!=null?ft(x.t_us):""}`).join("\n");
+  const done=()=>toast("Copied – paste it where you need it");
+  try{ if(navigator.clipboard&&window.isSecureContext){ navigator.clipboard.writeText(t).then(done); return; } }catch(e){}
+  const a=document.createElement("textarea"); a.value=t; a.style.cssText="position:fixed;left:-9999px"; document.body.appendChild(a); a.select();
+  try{ document.execCommand("copy"); done(); }catch(e){ toast("Couldn't copy on this device"); } a.remove(); }
+function renderHistory(){
+  if(!st) return;
+  const wide=innerWidth>=1100;
+  if(rView!=null&&!rAll().some(x=>x.race===rView)) rView=null;
+  if(wide){ const pick=rView!=null?rView:((rTodo()[0]||{}).race);
+    $("history").innerHTML=`<div class="rsplit"><div class="rcol">${rList()}</div><div class="rcol rdet">${pick!=null?rDetail(pick):`<div class="card rempty">Pick a race on the left.</div>`}</div></div>`; }
+  else $("history").innerHTML=rView!=null?`<div class="rdet">${rDetail(rView)}</div>`:rList();
+  if(st.state==="DONE") document.querySelectorAll("#history tr.tap").forEach(tr=>tr.onclick=()=>openSheet(+tr.dataset.lane));
 }
 // ---------- club codes: team managers unlock role changes for their own club ----------
 let ccOpen=false;
@@ -6008,7 +6279,7 @@ const GUIDES=[
     "Officials scan the join card and tap Officials. Their name and a 3-digit code show under System – check the code on their phone, then tap their job.",
     "Team managers: System › Today › Club codes › Print club codes. Hand each club its slip at check-in – it lets their team manager set Driver, Crew and Patient for their own crews.",
     "Watch the blue Next bar at the top. It always shows the next thing to do.",
-    "After each race, check the result on the Confirm tab and press Confirm results (or let the Admin do it).",
+    "After each race, check it on the Results tab and press Confirm results (or let the Admin do it).",
     "End of day: every race ticked on the Results tab, then System › Setup › Start new event. That saves everything.",
     "Something wrong? Press ? on any screen for fixes."]],
   ["Starter","SET, GO and FINISH.",[
@@ -6027,7 +6298,7 @@ const GUIDES=[
     "Patients report 5 races before their heat. The Marshalling screen on the TV shows who is needed."]],
   ["Admin","Results and LiveHeats.",[
     "Scan the join card: 1 for the Wi-Fi, 2 for the app. Tap Officials, type your name and show the code to the timing desk.",
-    "Confirm tab: after each race, check the places and times. Tap Edit on a crew to accept, move, DQ or DNF them.",
+    "Results tab: each finished race is listed oldest first. Check & confirm it (tap a crew to accept, move, DQ or DNF), then type it into LiveHeats and tap Entered. Later, Protest and Not needed are there too.",
     "When the judges agree, press Confirm results. The screens then show the result as Final.",
     "Results tab: type each confirmed race into LiveHeats, then press Entered.",
     "Program tab: change the running order or add heats when needed."]]];
@@ -6039,7 +6310,7 @@ const PI_DESK=["Timing desk","Your phone or tablet. You run the day – the Pi s
     "Follow Get started on the Race tab: timing box, club name, how heats are run, button test, join card.",
     "Officials scan the join card and tap Officials. Their name and a 3-digit code show under System – check the code on their phone, then tap their job.",
     "Team managers: System › Today › Club codes › Print club codes. Hand each club its slip at check-in – it lets their team manager set Driver, Crew and Patient for their own crews.",
-    "Watch the blue Next bar at the top. After each race, check the Confirm tab and press Confirm results (or let the Admin do it).",
+    "Watch the blue Next bar at the top. After each race, check it on the Results tab and press Confirm results (or let the Admin do it).",
     "End of day: every race ticked on the Results tab, System › Setup › Start new event, then System › Setup › Power off. When the green light stops, switch off at the wall."]];
 const PI_PIN=["Timing desk PIN","Getting in – and what to do if it's forgotten.",[
     "The timing desk PIN lets a phone or tablet do everything the Pi's own screen can, so the box never needs opening.",
@@ -6314,7 +6585,7 @@ function pageKey(){
   if(tab==="race") k.push(st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,evOpen,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,finishSent&&Date.now()-finishSent<5000,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
     st.state==="RACING"&&(st.elapsed||0)<5);
   else if(tab==="results") k.push(st.results);
-  else if(tab==="history") k.push(hist,queue,enterAsk);
+  else if(tab==="history") k.push(hist,queue,enterAsk,rView,rFilter,rDoneOpen,st.results,st.res_flags,st.confirmed,st.state,innerWidth>=1100);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
   else k.push(sysView,dayOpen,updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.lanes,st.lanes_use,st.lanes_max,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
@@ -6324,10 +6595,11 @@ function brandBar(){ const b=(st&&st.brand)||{}; if(!b.club&&!b.event&&!b.logo) 
   return `<div class="brand">${b.logo?`<img src="/logo?v=${b.logo}" alt="">`:""}<span><b>${esc(b.club||"IRB Racing")}</b>${b.event?`<small>${esc(b.event)}</small>`:""}</span></div>`; }
 function boardResults(res,title,final){
   // results in finishing order, big enough to read from the marshalling area
-  let h=`<div class="top"><div class="now">${esc(title)}</div><span class="pill ${final?"final":"prov"}">${final?"Final":"Provisional"}</span></div><div class="res">`;
+  const fl=((hist||[]).find(x=>x.race===res.race)||{}).flags||{};
+  let h=`<div class="top"><div class="now">${esc(title)}</div>${fl.protest?`<span class="pill prot">Under protest</span>`:`<span class="pill ${final?"final":"prov"}">${final?"Final":"Provisional"}</span>`}</div><div class="res">`;
   for(const r of ranked(res)){
     const eq=(res.ties||[]).includes(r.lane)?"=":"", cn=crewOf(res.heat,r.lane);
-    h+=`<div class="rr ${r.place===1?"first":""}"><span class="pl">${r.place?eq+r.place:"–"}</span><span class="lnno">L${r.lane}</span>
+    h+=`<div class="rr ${r.place===1?"first":""}"><span class="pl ${r.place&&r.place<=3?"m"+r.place:""}">${r.place?eq+r.place:"–"}</span><span class="lnno">L${r.lane}</span>
       <span>${esc(cn||"Lane "+r.lane)}</span><span class="tm">${r.place?ft(r.t_us):esc(r.status)}</span></div>`;
   }
   return h+`</div>`;
