@@ -1,11 +1,10 @@
 {
- "app": "1.12.0",
- "pico": "3.7",
- "sha256": "b01adeed8d8049347312b021f1655f695a625c06cef3bcf491e1a0c2839e56be",
- "pico_sha256": "3dabe051a358537892a463f67915d8c843c50acb0e1b61274df71f2cb0ff45eb",
+ "app": "1.12.1",
+ "pico": "3.8",
+ "sha256": "b48c7c3529eab71ddf9fb268532be6f60867d0e13c5f2aa5ad2e170104300b59",
+ "pico_sha256": "c1ed1e3251f8e72497342ec6f586506f14d0494e842c587f93c1b8aa67aefb78",
  "notes": [
-  "Patients called: team managers' team page alerts when their patients are due at marshalling (red when the heat is being marshalled)",
-  "Marshal phone: Call button on each crew not checked in - beeps, vibrates and flashes the team page",
-  "Team page: Turn on marshalling alerts (sound, keeps the screen on)"
+  "Code check: E-stop after FINISH now keeps that race's results open for edits (timing box v3.8)",
+  "Safer: oversized requests refused; team page alerts worked out once per check; tidy-ups"
  ]
 }

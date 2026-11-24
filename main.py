@@ -1,7 +1,8 @@
-# IRB Finish Timing - bench test v3.7
+# IRB Finish Timing - bench test v3.8
 # v3.6: wired for up to 10 lanes; the app chooses how many are in use (lanes N). Lanes not in use are
 #       ignored completely - no cable faults, no lights, not in results. Saved in lanes.txt on the Pico.
 # v3.5: lane 3 for the bench test - button GP7 (pin 10), light GP13 (pin 17).
+# v3.8: E-stop after FINISH keeps that race's results open for the officials.
 # v3.7: EMERGENCY STOP on GP28 (latching mushroom button, NC contact to GND). Pressed - or its wire cut -
 #       stops any race (saved as STOPPED, to be re-run), flashes every lane light and pulses the siren
 #       until the button is twisted to release. Off until the app says it's fitted ("estop on").
@@ -371,7 +372,7 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "3.7", "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
+    emit({"ev": "hello", "fw": "3.8", "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
           "clock": True, "beat": True, "batt": BATT_ENABLED, "estop_cmd": True, "estop_fitted": estop_fitted})
     emit({"ev": "estop", "on": estop_on, "fitted": estop_fitted})
@@ -1044,7 +1045,7 @@ def finish_race(reason="Race finished by official."):
 
 def estop_press():
     """Emergency stop pressed (or its wire cut): stop everything, flash and sound until released."""
-    global estop_on, state, race_no, test_mode, last_fault_report, estop_tick, estop_light, estop_siren
+    global estop_on, state, race_no, last_fault_report, estop_tick, estop_light, estop_siren
     estop_on = True
     stopped = None
     if test_mode:
@@ -1060,7 +1061,7 @@ def estop_press():
         print("EMERGENCY STOP pressed.")
     if state in ("RACING", "ARMED"):
         reset_race()
-    state = "IDLE"
+        state = "IDLE"                # a finished race (DONE) keeps its results for the officials
     last_fault_report = None
     led.on()
     now = time.ticks_ms()
@@ -1100,7 +1101,7 @@ def estop_run(now):
 poller = uselect.poll()
 poller.register(sys.stdin, uselect.POLLIN)
 
-print("IRB finish timing - bench test v3.7 (legs, adjustments, history, app link, test, ties, clock)")
+print("IRB finish timing - bench test v3.8 (legs, adjustments, history, app link, test, ties, clock)")
 print("History: last saved race %d. Type log to see files." % race_no)
 emit_all()
 print("Board:", "NPN (hit = pin goes HIGH)" if BOARD_NPN else "PNP (hit = pin goes LOW)")

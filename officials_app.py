@@ -15,7 +15,7 @@ Needs: Python 3.8+ and pyserial   (install once:  pip install pyserial)
 Start:  python officials_app.py
 """
 
-import json, os, re, sys, threading, time, socket, csv, io, urllib.request, urllib.parse, secrets, math, shutil, glob, hashlib, base64, zipfile, platform, subprocess
+import json, os, re, sys, threading, time, socket, csv, io, urllib.request, urllib.parse, secrets, shutil, glob, hashlib, base64, zipfile, platform, subprocess
 from collections import deque
 from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.12.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -2219,6 +2219,7 @@ def team_view(club):
     else:
         order = [h["id"] for dv in all_divisions() for h in dv["heats"] if h["id"] not in raced]
     cur = ((S["race_heat"] if S["state"] == "RACING" else S["heat"]) or {}).get("heat_id")
+    win = marsh_window()
     for pos, hid in enumerate(order):
         dv, h = heat_lookup(hid)
         if not h:
@@ -2236,7 +2237,7 @@ def team_view(club):
                     pat = rt.get("exp") or rt.get("plan") or ""
                 else:
                     pat = ""
-                al = None if (S["state"] == "RACING" and hid == cur) else patient_alert(hid, lane)
+                al = None if (S["state"] == "RACING" and hid == cur) else patient_alert(hid, lane, win)
                 cl = calls.get(hid, {}).get(str(lane))
                 up.append({"heat": hi, "lane": int(lane), "crew": name, "now": hid == cur, "patients": pat,
                            "alert": al, "called": cl and cl["at"], "call_ts": cl and cl["ts"],
@@ -2555,13 +2556,13 @@ def marsh_window():
     return about, W
 
 
-def patient_alert(hid, lane):
-    """call | late | now | None - should this crew's patients be at marshalling?"""
+def patient_alert(hid, lane, win=None):
+    """call | late | now | None - should this crew's patients be at marshalling?  win: marsh_window(), if already worked out"""
     if hid in sent or hid in raced or checkin.get(hid, {}).get(str(lane)):
         return None
     if calls.get(hid, {}).get(str(lane)):
         return "call"
-    about, W = marsh_window()
+    about, W = win or marsh_window()
     if about and about["heat_id"] == hid:
         return "late"
     ids = [h["heat_id"] for h in W[:MARSH_NEED + 1]]
@@ -3319,7 +3320,13 @@ class H(BaseHTTPRequestHandler):
             self.send(404, '{"error":"not found"}')
 
     def do_POST(self):
-        n = int(self.headers.get("Content-Length", 0) or 0)
+        try:
+            n = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            n = -1
+        if not 0 <= n <= 2_000_000:            # nothing the app sends is bigger (a logo is under 400 kB)
+            self.send(413, json.dumps({"result": "Too big"}))
+            return
         try:
             data = json.loads(self.rfile.read(n) or b"{}")
             if not isinstance(data, dict):
@@ -5426,7 +5433,7 @@ function renderMarshal(){
     else if(ms.target) warn=`<div class="mwarn ok"><b>${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} ready ✓</b><span>On top of it${ms.call?` – Heat ${ms.call.no} is next to call when you're ready`:" – no need to call more yet"}.</span></div>`;
     const lvl=ms.late?2:ms.seated<ms.target?1:0; if(lvl>mBuzz&&st.role==="marshal"){ try{ navigator.vibrate&&navigator.vibrate(lvl>1?[250,120,250]:200); }catch(e){} } mBuzz=lvl; }
   // heat picker: one heat on screen at a time
-  let h=warn+`<div class="mpick">${mUp.heats.map((ht,i)=>{ if(false) return ""; const ck=mUp.checkin[ht.heat_id]||{}, ln=mLanes(ht), n=ln.filter(([l])=>ck[l]).length;
+  let h=warn+`<div class="mpick">${mUp.heats.map((ht,i)=>{ const ck=mUp.checkin[ht.heat_id]||{}, ln=mLanes(ht), n=ln.filter(([l])=>ck[l]).length;
     return `<button class="${ht.heat_id===mSel?"on":""} ${n===ln.length||sentOf(ht.heat_id)?"done":""}" onclick="mSel='${ht.heat_id}';mPicked=true;lastKey='';render()">
       <small>${ht.heat_id===onStart?"On the start":i===0||(i===1&&mUp.heats[0].heat_id===onStart)?"Next":"Then"}</small>Heat ${ht.no}<small class="mpd">${esc(ht.div)}</small><b>${sentOf(ht.heat_id)?"Sent ✓":n+"/"+ln.length}</b></button>`; }).join("")}</div>`;
   const ht=mUp.heats.find(x=>x.heat_id===mSel), ck=mUp.checkin[ht.heat_id]||{}, lanes=mLanes(ht);
