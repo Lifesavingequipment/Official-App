@@ -1,10 +1,11 @@
 {
- "app": "1.14.0",
- "pico": "3.8",
- "sha256": "7a971c65f79564fb481bd7c6090b28a759d3d9fba3d79eff06fcdb3eae99ac3d",
- "pico_sha256": "c1ed1e3251f8e72497342ec6f586506f14d0494e842c587f93c1b8aa67aefb78",
+ "app": "1.15.0",
+ "pico": "3.9",
+ "sha256": "25b5cf2891097aec0168702848cf99f87fd376753578a2ef9585ca77d089eaaf",
+ "pico_sha256": "c807f61842c5333dfd322d0de91c2cbe256479233952e5e25d1383d76d5857d7",
  "notes": [
-  "Pi temperature: card on System \u203a Today, row in Setup, warnings on the Race screen when hot (75 \u00b0C) or overheating (80 \u00b0C)",
-  "Also warns if the Pi is slowing down or short of power"
+  "Kit health card: battery (12 V LiFePO4, % and what's good), Pi 5 V supply, Pi temperature, storage \u2013 each explains good / low",
+  "Battery reading turned on and calibrated from the app (timing box v3.9 \u2013 update the app first)",
+  "Warnings for low battery, weak Pi power supply, overheating and full storage"
  ]
 }

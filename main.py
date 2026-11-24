@@ -1,7 +1,9 @@
-# IRB Finish Timing - bench test v3.8
+# IRB Finish Timing - bench test v3.9
 # v3.6: wired for up to 10 lanes; the app chooses how many are in use (lanes N). Lanes not in use are
 #       ignored completely - no cable faults, no lights, not in results. Saved in lanes.txt on the Pico.
 # v3.5: lane 3 for the bench test - button GP7 (pin 10), light GP13 (pin 17).
+# v3.9: battery reading switched on from the app (batt on / batt off) and calibrated to a multimeter
+#       (batt cal 13.28). Saved in batt.txt, so no program edits are needed.
 # v3.8: E-stop after FINISH keeps that race's results open for the officials.
 # v3.7: EMERGENCY STOP on GP28 (latching mushroom button, NC contact to GND). Pressed - or its wire cut -
 #       stops any race (saved as STOPPED, to be re-run), flashes every lane light and pulses the siren
@@ -95,7 +97,8 @@ FAULT_CHECK_MS = 500
 RACE_FAULT_MS = 2000          # lane input held open this long during a race = cable fault
 TEST_TIMEOUT_MS = 300_000     # button test switches itself off after 5 min
 BEAT_MS = 3000                # heartbeat to the app
-BATT_ENABLED = False          # True once the battery divider is wired to GP26
+BATT_ENABLED = False          # default only - the app turns it on (batt on), saved in batt.txt
+BATT_FILE = "batt.txt"        # "on 11.0" / "off 11.0": reading on/off and the divider ratio
 BATT_PIN = 26                 # ADC0
 BATT_DIVIDER = 11.0           # (100k + 10k) / 10k - adjust to match a multimeter
 BATT_MS = 10_000              # read the battery every 10 s (not during a race)
@@ -372,9 +375,9 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "3.8", "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
+    emit({"ev": "hello", "fw": "3.9", "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
-          "clock": True, "beat": True, "batt": BATT_ENABLED, "estop_cmd": True, "estop_fitted": estop_fitted})
+          "clock": True, "beat": True, "batt": batt_on, "batt_cmd": True, "estop_cmd": True, "estop_fitted": estop_fitted})
     emit({"ev": "estop", "on": estop_on, "fitted": estop_fitted})
     emit({"ev": "test", "on": test_mode})
     announce()
@@ -738,7 +741,25 @@ def set_clock(w):
         print("Use: clock 2026 11 10 14 30 00")
 
 
-batt_adc = ADC(BATT_PIN) if BATT_ENABLED else None
+def batt_saved():
+    try:
+        with open(BATT_FILE) as fh:
+            w = fh.read().split()
+        return w[0] == "on", float(w[1])
+    except (OSError, ValueError, IndexError):
+        return BATT_ENABLED, BATT_DIVIDER
+
+
+batt_on, BATT_DIVIDER = batt_saved()
+batt_adc = ADC(BATT_PIN) if batt_on else None
+
+
+def batt_save():
+    try:
+        with open(BATT_FILE, "w") as fh:
+            fh.write("%s %.4f" % ("on" if batt_on else "off", BATT_DIVIDER))
+    except OSError:
+        pass
 
 
 def read_batt():
@@ -750,7 +771,7 @@ def read_batt():
 
 
 def command(line):
-    global adj, legs_set, version, ties, MIN_LEG_US, hits, last_fault_report, estop_fitted
+    global adj, legs_set, version, ties, MIN_LEG_US, hits, last_fault_report, estop_fitted, batt_on, batt_adc, BATT_DIVIDER, last_batt
     w = line.strip().lower().split()
     if not w:
         return
@@ -770,6 +791,29 @@ def command(line):
         n = MIN_LEG_US // 1_000_000
         print("Presses under %d s after a crew's last press are ignored." % n)
         emit({"ev": "minleg", "s": n if MIN_LEG_US >= 1_000_000 else 1})
+        return
+    if c == "batt":                         # batt on | batt off | batt cal 13.28 (what a multimeter reads)
+        if len(w) >= 2 and w[1] in ("on", "off"):
+            batt_on = w[1] == "on"
+            batt_adc = ADC(BATT_PIN) if batt_on else None
+            batt_save()
+            last_batt = time.ticks_ms() - BATT_MS          # read straight away
+            print("Battery reading %s." % ("on (GP26)" if batt_on else "off"))
+        elif len(w) >= 3 and w[1] == "cal" and batt_adc:
+            try:
+                real = float(w[2])
+                now_v = read_batt()
+                if not 5 <= real <= 36 or now_v < 1:
+                    raise ValueError
+                BATT_DIVIDER = BATT_DIVIDER * real / now_v
+                batt_save()
+                last_batt = time.ticks_ms() - BATT_MS
+                print("Battery calibrated: %.2f V" % real)
+            except ValueError:
+                print("Use: batt cal 13.28  (the battery voltage your multimeter shows, with the reading on)")
+        else:
+            print("Battery reading is %s. Use: batt on / batt off / batt cal 13.28" % ("on" if batt_on else "off"))
+        emit({"ev": "batt_cfg", "on": batt_on, "div": round(BATT_DIVIDER, 4)})
         return
     if c == "estop":                        # estop on|off - is an emergency stop button fitted to GP28?
         if len(w) < 2 or w[1] not in ("on", "off"):
@@ -1101,7 +1145,7 @@ def estop_run(now):
 poller = uselect.poll()
 poller.register(sys.stdin, uselect.POLLIN)
 
-print("IRB finish timing - bench test v3.8 (legs, adjustments, history, app link, test, ties, clock)")
+print("IRB finish timing - bench test v3.9 (legs, adjustments, history, app link, test, ties, clock)")
 print("History: last saved race %d. Type log to see files." % race_no)
 emit_all()
 print("Board:", "NPN (hit = pin goes HIGH)" if BOARD_NPN else "PNP (hit = pin goes LOW)")

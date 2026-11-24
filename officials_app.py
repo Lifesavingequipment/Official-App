@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.14.0"
+APP_VERSION = "1.15.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -87,6 +87,7 @@ S = {
     "test": False, "test_seen": [], "last_test": None, "faults_racing": False,
     "test_count": {}, "test_last": None, "test_clash": [],             # every press during the button test
     "beat": False, "batt": None, "batt_at": None,   # Pico v2.8 features
+    "batt_cmd": False, "batt_on": False,             # Pico v3.9: battery reading switched on from the app
     "race_go_wall": None,                            # computer clock time of GO (for video)
     "practice": False, "backup": None,
     "estop": False, "estop_fitted": False, "estop_cmd": False,    # emergency stop (timing box v3.7)
@@ -862,7 +863,8 @@ NMCLI = os.environ.get("IRB_NMCLI") or "nmcli"
 # ---- Pi temperature: a sealed box in the sun gets hot. Pi 5 slows itself down from 80 C and hard-limits at 85 C ----
 TEMP_FILE = os.environ.get("IRB_TEMP_FILE") or "/sys/class/thermal/thermal_zone0/temp"
 TEMP_WARM, TEMP_HOT, TEMP_CRIT = 65.0, 75.0, 80.0
-PITEMP = {"temp": None, "max": None, "max_at": "", "day": "", "throttled": None, "under_volt": None, "hot_since": None}
+VOLT_FILE = os.environ.get("IRB_VOLT_FILE")      # tests: a stand-in for the Pi 5's own 5 V reading
+PITEMP = {"volt": None, "temp": None, "max": None, "max_at": "", "day": "", "throttled": None, "under_volt": None, "hot_since": None}
 
 
 def pi_temp_read():
@@ -879,6 +881,17 @@ def pi_temp_read():
     if PITEMP["max"] is None or t > PITEMP["max"]:
         PITEMP["max"], PITEMP["max_at"] = round(t, 1), now.strftime("%H:%M")
     PITEMP["hot_since"] = (PITEMP["hot_since"] or now.strftime("%H:%M")) if t >= TEMP_HOT else None
+    try:                                         # the Pi 5 measures its own 5 V supply
+        if VOLT_FILE:
+            with open(VOLT_FILE) as fh:
+                PITEMP["volt"] = round(float(fh.read().strip()), 2)
+        elif IS_PI:
+            r = subprocess.run(["vcgencmd", "pmic_read_adc", "EXT5V_V"], capture_output=True, text=True, timeout=5)
+            m = re.search(r"=\s*([0-9.]+)V", r.stdout)
+            if m:
+                PITEMP["volt"] = round(float(m.group(1)), 2)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
     if IS_PI and not os.environ.get("IRB_TEMP_FILE"):
         try:                                     # is it slowing down (heat) or short of power right now?
             r = subprocess.run(["vcgencmd", "get_throttled"], capture_output=True, text=True, timeout=5)
@@ -895,12 +908,20 @@ def temp_loop():
         time.sleep(10)
 
 
+def storage_view():
+    try:
+        u = shutil.disk_usage(DATA)
+        return {"free_gb": round(u.free / 1e9, 1), "total_gb": round(u.total / 1e9, 1)}
+    except OSError:
+        return None
+
+
 def pi_temp_view():
     t = PITEMP["temp"]
     if t is None:
         return None
     lvl = "crit" if t >= TEMP_CRIT or PITEMP["throttled"] else "hot" if t >= TEMP_HOT else "warm" if t >= TEMP_WARM else "ok"
-    return {"temp": t, "max": PITEMP["max"], "max_at": PITEMP["max_at"], "level": lvl, "since": PITEMP["hot_since"],
+    return {"temp": t, "volt": PITEMP["volt"], "max": PITEMP["max"], "max_at": PITEMP["max_at"], "level": lvl, "since": PITEMP["hot_since"],
             "throttled": PITEMP["throttled"], "under_volt": PITEMP["under_volt"], "hot": TEMP_HOT, "crit": TEMP_CRIT}
 POWER = os.environ.get("IRB_POWER")          # tests: a stand-in for systemctl
 IS_LINUX = sys.platform.startswith("linux")
@@ -2864,6 +2885,10 @@ def handle_line(line):
         S["lanes_max"] = int(d.get("lanes_max") or len(S["lanes"]))
         S["lanes_cmd"] = bool(d.get("lanes_cmd"))
         S["estop_cmd"] = bool(d.get("estop_cmd"))
+        S["batt_cmd"] = bool(d.get("batt_cmd"))
+        S["batt_on"] = bool(d.get("batt"))
+        if not S["batt_on"]:
+            S["batt"] = None
         S["estop_fitted"] = bool(d.get("estop_fitted"))
         if not S["estop_cmd"]:
             S["estop"] = False
@@ -2953,6 +2978,10 @@ def handle_line(line):
     elif ev == "batt":
         S["batt"] = d.get("v")
         S["batt_at"] = time.time()
+    elif ev == "batt_cfg":
+        S["batt_on"] = bool(d.get("on"))
+        if not S["batt_on"]:
+            S["batt"] = None
     elif ev == "estop":
         on = bool(d.get("on"))
         S["estop_fitted"] = bool(d.get("fitted", S["estop_fitted"]))
@@ -3239,6 +3268,8 @@ def snapshot(role="master", local=True, tok=None):
             d[k] = S[k]
         d["silent"] = bool(S["connected"] and S["beat"] and time.time() - last_rx > 7)
         d["batt_old"] = bool(S["batt_at"] and time.time() - S["batt_at"] > 60)
+        d["batt_cfg"] = {"cmd": S["batt_cmd"], "on": S["batt_on"]}
+        d["storage"] = storage_view()
         res = S["results"]
         d["res_flags"] = flags.get(str(res.get("race")), {}) if res else {}
         now, nxt = upcoming()
@@ -3508,6 +3539,27 @@ class H(BaseHTTPRequestHandler):
                 COACHES.pop(self.token() or "", None)
                 save_settings()
             self.send(200, json.dumps({"result": "ok"}))
+            return
+        if self.path.startswith("/api/batt"):            # timing desk: battery reading on/off, calibrate to a multimeter
+            if self.role() != "master":
+                r = "Only the timing desk can do that"
+            else:
+                with lock:
+                    if not (ser and S["batt_cmd"]):
+                        r = "The timing box needs program v3.9 or newer (System › Setup › Updates)"
+                    elif "cal" in data:
+                        try:
+                            v = float(data["cal"])
+                            if not 5 <= v <= 36:
+                                raise ValueError
+                            ser.write(("batt cal %.2f\r\n" % v).encode())
+                            r = "ok"
+                        except (TypeError, ValueError):
+                            r = "Type the voltage your multimeter shows, e.g. 13.28"
+                    else:
+                        ser.write(("batt %s\r\n" % ("on" if data.get("on") else "off")).encode())
+                        r = "ok"
+            self.send(200, json.dumps({"result": r}))
             return
         if self.path.startswith("/api/estop"):           # timing desk: is an emergency stop button fitted?
             if self.role() != "master":
@@ -4329,6 +4381,12 @@ details{border-bottom:1px solid var(--line)}
 #estopfs .esrace{font:800 clamp(18px,3.6vw,34px)/1.2 var(--f);background:#fff;color:#8f1308;border-radius:16px;padding:12px 18px}
 #estopfs .eshelp{font:600 clamp(16px,2.6vw,24px)/1.3 var(--f);opacity:.95}
 body.estopped{overflow:hidden}
+.hrow{padding:10px 0;border-top:1px solid var(--line);display:grid;gap:5px}.card .hrow:first-of-type{border-top:0}.hsrow{display:block!important}.hsrow .hrow:first-child{border-top:0}
+.hhd{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}.hn{font-weight:800;font-size:16px}
+.hv{font-weight:800;font-size:18px;display:flex;gap:8px;align-items:baseline}.hv small{font-size:14px;font-weight:800}
+.hv.good small{color:var(--green)}.hv.amb small{color:var(--amber)}.hv.bad small{color:var(--red)}
+.hbar{height:10px;border-radius:99px;background:var(--soft);overflow:hidden}.hbar i{display:block;height:100%;border-radius:99px;background:var(--green)}
+.hbar.amb i{background:var(--amber)}.hbar.bad i{background:var(--red)}.hx{font-size:13px;color:var(--mute);line-height:1.4}
 .tbar{position:relative;height:14px;border-radius:99px;background:var(--soft);overflow:visible;margin-top:4px}
 .tbar i{position:absolute;left:0;top:0;bottom:0;border-radius:99px;background:var(--green)}.tbar.hot i{background:var(--amber)}.tbar.crit i{background:var(--red)}
 .tbar b{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink);opacity:.35}
@@ -4669,7 +4727,6 @@ function raceWarnings(){
   const ms=st.marsh;
   if(ms&&st.official&&st.state!=="RACING"){ if(!ms.late&&ms.seated<ms.target) h+=`<div class="warn">Marshalling behind – ${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} ready${ms.call?` · calling Heat ${ms.call}`:""}</div>`; }
   h+=tempWarn();
-  if(st.batt!=null&&st.batt<24.0) h+=`<div class="${st.batt<23.0?"bad-warn":"warn"}">Battery: ${battWord(st.batt)[0].toLowerCase()} – before the next race.</div>`;
   if(st.faults.length&&st.state==="RACING"&&st.faults_racing)
     h+=`<div class="bad-warn">Cable fault during race: ${esc(st.faults.join(", "))}. That lane may have a false press – check its presses after the race.</div>`;
   else if(st.faults.length&&st.state!=="RACING")
@@ -6270,21 +6327,42 @@ function backAfterRestart(ok){
   return true; }
 const a_ssid=()=>(($("wssid")||{}).value??((st.access||{}).net||{}).ssid)||"", a_pass=()=>(($("wpass")||{}).value??((st.access||{}).net||{}).pass)||"",
   a_addr=()=>(($("waddr")||{}).value??((st.access||{}).net||{}).addr)||"";
-function battWord(v){ return v<23?["Swap the battery now","bad"]:v<24?["Charge now","bad"]:v<24.6?["Charge soon","amb"]:["OK","good"]; }
-function tempWord(p){ return {ok:["Cool","good"],warm:["Warm – fine","good"],hot:["Hot – shade the box","warn"],crit:["Overheating","bad"]}[p.level]; }
-function tempCard(){ const p=st.pi_temp; if(!p) return ""; const w=tempWord(p), pc=Math.max(4,Math.min(100,Math.round((p.temp-30)/(90-30)*100)));
-  return `<div class="card"><h2>Pi temperature</h2><div class="tbar ${p.level}"><i style="width:${pc}%"></i><b style="left:${Math.round((p.hot-30)/60*100)}%"></b><b style="left:${Math.round((p.crit-30)/60*100)}%"></b></div>
-    <p class="${w[1]==="good"?"ok":w[1]==="bad"?"bad":""}" style="margin:6px 0 0;font-size:20px;font-weight:800">${p.temp.toFixed(0)} °C · ${w[0]}</p>
-    <p class="mute" style="margin:2px 0 0;font-size:14px">Hottest today ${p.max!=null?p.max.toFixed(0)+" °C at "+esc(p.max_at):"–"} · slows down from ${p.crit.toFixed(0)} °C${p.throttled?" · <b class='bad'>slowing down now</b>":""}${p.under_volt?" · <b class='bad'>power supply too weak</b>":""}</p></div>`; }
-function tempWarn(){ const p=st.pi_temp; if(!p||!st.official&&st.role!=="starter") return "";
-  if(p.level==="crit") return `<div class="bad-warn">Pi overheating – ${p.temp.toFixed(0)} °C${p.throttled?", slowing down to protect itself":""}. Get the box out of the sun or open it up now. Timing keeps going on the timing box.</div>`;
-  if(p.level==="hot") return `<div class="warn">Pi is hot – ${p.temp.toFixed(0)} °C${p.since?" since "+esc(p.since):""}. Shade the box or give it some air before it reaches ${p.crit.toFixed(0)} °C.</div>`;
-  if(p.under_volt) return `<div class="warn">The Pi isn't getting enough power – check its power supply or battery converter.</div>`;
-  return ""; }
-function battCard(){ const v=st.batt, pc=Math.max(0,Math.min(100,Math.round((v-23)/(26.4-23)*100))), w=battWord(v);
-  return `<div class="card"><h2>Battery</h2><div class="bbar ${w[1]}"><i style="width:${pc}%"></i></div>
-    <p class="${w[1]==="good"?"ok":w[1]==="bad"?"bad":""}" style="margin:6px 0 0;font-size:20px;font-weight:800">${w[0]}</p>
-    <p class="mute" style="margin:2px 0 0;font-size:14px">${v.toFixed(1)} V${st.batt_old?" · over a minute old":""}</p></div>`; }
+// ---------- kit health: battery (12 V LiFePO4), Pi power, Pi temperature, storage – each says what good looks like ----------
+const LFP=[[13.6,100],[13.4,99],[13.3,90],[13.2,70],[13.1,40],[13.0,30],[12.9,20],[12.8,17],[12.5,14],[12.0,9],[11.0,3],[10.0,0]];
+function battPct(v){ if(v>=13.6) return 100; for(let i=1;i<LFP.length;i++){ const [a,pa]=LFP[i-1],[b,pb]=LFP[i]; if(v>=b) return Math.round(pb+(v-b)/(a-b)*(pa-pb)); } return 0; }
+function battWord(v){ return v>=13.8?["Charging","good"]:v>=13.0?["Good","good"]:v>=12.8?["Charge soon","amb"]:v>=12.4?["Charge now","bad"]:["Swap the battery now","bad"]; }
+function voltWord(p){ const v=p.volt; return p.under_volt||v<4.8?["Too low","bad"]:v<4.95?["A bit low – OK","amb"]:["Good","good"]; }
+function tempWord(p){ return {ok:["Cool","good"],warm:["Warm – fine","good"],hot:["Hot – shade the box","amb"],crit:["Overheating","bad"]}[p.level]; }
+function diskWord(d){ return d.free_gb>=2?["Plenty of room","good"]:d.free_gb>=0.5?["Getting full","amb"]:["Nearly full","bad"]; }
+function hRow(name,val,w,pc,explain){ return `<div class="hrow"><div class="hhd"><span class="hn">${name}</span><span class="hv ${w[1]}">${val}<small>${w[0]}</small></span></div>
+  ${pc!=null?`<div class="hbar ${w[1]}"><i style="width:${Math.max(3,Math.min(100,pc))}%"></i></div>`:""}<div class="hx">${explain}</div></div>`; }
+function healthRows(){ const b=st.batt, p=st.pi_temp, d=st.storage, c=st.batt_cfg||{}; let h="";
+  if(b!=null) h+=hRow("Battery",`${b.toFixed(1)} V · about ${battPct(b)}%`,battWord(b),battPct(b),
+    `12 V lithium (LiFePO4). Full 13.3–13.6 V · good 13.0 V or more · charge under 12.8 V · swap under 12.4 V. Reads a little lower while the siren and lights are on.${st.batt_old?" <b>Reading is over a minute old.</b>":""}`);
+  else if(st.role==="master"&&c.cmd&&!c.on) h+=`<div class="hrow"><div class="hhd"><span class="hn">Battery</span><span class="hv">Off</span></div><div class="hx">Not measured yet – wire the battery divider to GP26, then turn it on under Setup › Kit health and power.</div></div>`;
+  if(p&&p.volt!=null) h+=hRow("Pi power supply",`${p.volt.toFixed(2)} V`,voltWord(p),(p.volt-4.5)/(5.25-4.5)*100,
+    "Good: 5.0–5.2 V. Under 4.8 V the Pi can slow down or restart – check the 5 V converter and use a thick USB-C cable rated 5 A.");
+  if(p) h+=hRow("Pi temperature",`${p.temp.toFixed(0)} °C`,tempWord(p),(p.temp-30)/(90-30)*100,
+    `Good: under 65 °C. Shade the box or give it air above ${p.hot.toFixed(0)} °C. The Pi slows down from ${p.crit.toFixed(0)} °C. Hottest today ${p.max!=null?p.max.toFixed(0)+" °C at "+esc(p.max_at):"–"}.`);
+  if(d) h+=hRow("Storage",`${d.free_gb.toFixed(1)} GB free`,diskWord(d),d.total_gb?100-d.free_gb/d.total_gb*100:null,
+    `Of ${d.total_gb.toFixed(0)} GB. A whole carnival's results use less than 5 MB – it's the Pi's own files that fill it.`);
+  return h; }
+function healthCard(){ const h=healthRows(); return h?`<div class="card"><h2>Kit health</h2>${h}</div>`:""; }
+function tempWarn(){ const p=st.pi_temp, b=st.batt; if(!st.official&&st.role!=="starter") return ""; let h="";
+  if(b!=null){ const w=battWord(b); if(w[1]!=="good") h+=`<div class="${b<12.4?"bad-warn":"warn"}">Battery ${b.toFixed(1)} V (about ${battPct(b)}%) – ${w[0].toLowerCase()}${b<12.8?" before the next race":""}.</div>`; }
+  if(p){
+    if(p.level==="crit") h+=`<div class="bad-warn">Pi overheating – ${p.temp.toFixed(0)} °C${p.throttled?", slowing down to protect itself":""}. Get the box out of the sun or open it up now. Timing keeps going on the timing box.</div>`;
+    else if(p.level==="hot") h+=`<div class="warn">Pi is hot – ${p.temp.toFixed(0)} °C${p.since?" since "+esc(p.since):""}. Shade the box or give it some air before it reaches ${p.crit.toFixed(0)} °C.</div>`;
+    if(p.under_volt||(p.volt!=null&&p.volt<4.8)) h+=`<div class="warn">The Pi isn't getting enough power${p.volt!=null?" ("+p.volt.toFixed(2)+" V – should be 5.0–5.2 V)":""}. Check its 5 V converter and USB-C cable.</div>`; }
+  if(st.storage&&st.storage.free_gb<0.5) h+=`<div class="warn">The Pi's storage is nearly full (${st.storage.free_gb.toFixed(1)} GB free).</div>`;
+  return h; }
+function battCalSheet(){ $("sheetin").innerHTML=`<h2>Calibrate the battery reading</h2><p class="mute">Measure the battery with a multimeter at the terminals and type what it shows. The app then reads the same.</p>
+  <input type="number" id="bcal" step="0.01" min="5" max="36" inputmode="decimal" placeholder="e.g. 13.28" value="${st.batt!=null?st.batt.toFixed(2):""}">
+  <div class="row"><button class="btn pri" id="bcalgo">Save</button><button class="btn" onclick="closeSheet()">Cancel</button></div>`;
+  $("sheet").classList.add("on");
+  $("bcalgo").onclick=async()=>{ const r=await post("/api/batt",{cal:$("bcal").value}); closeSheet(); toast(r==="ok"?"Battery calibrated":r,4000); }; }
+function battSet(on){ const go=async()=>{ const r=await post("/api/batt",{on:on}); toast(r==="ok"?(on?"Battery reading on":"Battery reading off"):r,4000); };
+  if(on) askYes("Is the battery divider (100k + 10k) wired to GP26 and the battery − joined to GND?",go,"Yes, turn it on",false); else go(); }
 function sysCols(a,b,c){ return `<div class="syscols"><div>${a}</div><div>${b}</div><div>${c}</div></div>`; }
 let advOpen=false;
 function askNewEvent(){
@@ -6414,7 +6492,7 @@ function renderSystem(){
     <a class="btn" href="/#team" target="_blank" style="text-decoration:none">Team Manager</a>
     ${st.role==="admin"?`<button class="btn" onclick="goTab('marshal')">Marshal screen</button>`:""}
     ${master?`<button class="btn" onclick="printGuides()">Print role guides</button>`:""}<a class="btn" href="#fix">Troubleshooting</a></div></div>`;
-  const batt=(st.batt!=null?battCard():"")+tempCard();
+  const batt=healthCard();
   let h=setupOk?`<div class="sysnav"><button class="btn ${sysView==="today"?"pri":""}" onclick="sysView='today';lastKey='';render()">Today</button>
     <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected))?' <span class="badge">1</span>':""}</button></div>`:"";
   let c="";
@@ -6478,8 +6556,12 @@ function renderSystem(){
         :`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
     if(master) G.event+=row("New event", (st.past_events||[]).length?`<span class="mute">Last saved: ${esc(st.past_events[0])}</span>`:`<span class="mute">Saves today, then clears for a fresh start</span>`,
       `<button class="btn red" ${racing?"disabled":""} onclick="askNewEvent()">Start new event</button>`);
-    if(st.pi_temp){ const p=st.pi_temp, w=tempWord(p);
-      G.system+=row("Pi temperature", `<span class="${w[1]==="good"?"ok":w[1]==="bad"?"bad":""}">${p.temp.toFixed(0)} °C · ${w[0]}</span> <span class="mute">· hottest today ${p.max!=null?p.max.toFixed(0)+" °C at "+esc(p.max_at):"–"} · warns at ${p.hot.toFixed(0)} °C, slows down from ${p.crit.toFixed(0)} °C</span>`, ""); }
+    { const c=st.batt_cfg||{}, hr=healthRows();
+      if(hr) G.system+=`<div class="srow hsrow">${hr}</div>`;
+      if(master&&st.connected) G.system+=row("Battery reading", !c.cmd?`<span class="mute">Needs timing box program v3.9 – update it above</span>`
+        :c.on?`<span class="ok">On</span> <span class="mute">· GP26 through a 100k/10k divider · calibrate it to a multimeter so it reads exactly</span>`
+        :`<span class="mute">Off – wire a 100k and a 10k resistor in series from battery + to GND, the middle to GP26 (pin 31), battery − to the Pico's GND, then turn it on</span>`,
+        c.cmd?(c.on?`<button class="btn" onclick="battCalSheet()">Calibrate</button><button class="btn" onclick="battSet(false)">Turn off</button>`:`<button class="btn pri" onclick="battSet(true)">Turn on</button>`):""); }
     if(master&&st.power&&st.power.on) G.system+=row("Power", `<span class="mute">Turn the timing ${st.power.pi?"Pi":"computer"} off safely – no need to open the case</span>`,
       `<button class="btn" ${racing?"disabled":""} onclick="powerAsk('restart')">Restart</button><button class="btn red" ${racing?"disabled":""} onclick="powerAsk('off')">Power off</button>`);
     {
@@ -6507,13 +6589,14 @@ function renderSystem(){
     }
     { const b=st.brand||{}, u=st.update||{}, w=st.wifi||{}, i=st.inet||{}, pu=st.pico_upd||{};
       const updBad=u.newer||(pu.newer&&st.connected)||!!pu.busy;
-      const sysBad=(st.power&&st.power.pi&&st.access&&!st.access.master_pin)||!!(st.pi_temp&&(st.pi_temp.level==="hot"||st.pi_temp.level==="crit"));
+      const sysBad=(st.power&&st.power.pi&&st.access&&!st.access.master_pin)||!!(st.pi_temp&&(st.pi_temp.level==="hot"||st.pi_temp.level==="crit"))
+        ||(st.batt!=null&&battWord(st.batt)[1]!=="good")||!!(st.pi_temp&&st.pi_temp.volt!=null&&voltWord(st.pi_temp)[1]==="bad")||!!(st.storage&&st.storage.free_gb<0.5);
       L=sec("event","Today's event",[b.club||"Club not set",st.lanes.length&&st.fw?st.lanes.length+" lanes":"",st.draw?st.draw.name:"no LiveHeats draw",st.practice?"PRACTICE MODE ON":""].filter(Boolean).join(" · "),G.event,st.practice)
        +sec("box","Timing box",!st.connected?"Not connected":st.faults.length?"Wiring fault: "+st.faults.length:"Connected · wiring OK"+(st.fw?" · v"+st.fw:""),G.box,!st.connected||st.faults.length)
        +sec("upd","Updates",pu.busy?"Updating the timing box…":["App v"+st.app+(u.newer?" → v"+u.latest+" available":" up to date"),st.connected&&pu.current?"Timing box v"+pu.current+(pu.newer?" → v"+pu.latest+" available":" up to date"):"Timing box not connected"].join(" · "),G.upd,updBad)
        +(G.net?sec("net","Wi-Fi and phones",w.on?[w.mode==="hotspot"?"On the timing hotspot":w.mode==="wifi"?"Home Wi-Fi: "+w.name:"No Wi-Fi",w.hs_ssid?"hotspot "+w.hs_ssid:"",i.two?(i.name?"internet via "+i.name:"no internet Wi-Fi"):""].filter(Boolean).join(" · "):"Join card Wi-Fi and phones",G.net,false):"")
        +sec("results","Results and backup",st.backup?(st.backup.ok?"Backed up "+st.backup.at:"Backup problem"):"Results zip, USB backup, problem report",G.results,st.backup&&!st.backup.ok)
-       +sec("system","Pi, owner lock and power",[st.owner&&st.owner.set?(st.owner.open?"Owner lock unlocked":"Owner lock on"):"Owner lock off","power off or restart"].concat(st.pi_temp?["Pi "+st.pi_temp.temp.toFixed(0)+" °C"]:[]).join(" · "),G.system,sysBad)
+       +sec("system","Kit health and power",[].concat(st.batt!=null?["Battery "+st.batt.toFixed(1)+" V"]:[],st.pi_temp?["Pi "+st.pi_temp.temp.toFixed(0)+" °C"]:[],st.pi_temp&&st.pi_temp.volt!=null?["5 V supply "+st.pi_temp.volt.toFixed(2)+" V"]:[],[st.owner&&st.owner.set?(st.owner.open?"owner lock unlocked":"owner lock on"):"owner lock off"]).join(" · "),G.system,sysBad)
        +sec("adv","Advanced","App address, timing desk PIN, your name, timing box messages, versions",G.adv,false); }
     c=`<div class="card slist">${L}</div>`;
   }
@@ -6651,7 +6734,7 @@ let lastKey="";
 function pageKey(){
   // redraw only when something shown has changed, so taps and open sections aren't lost
   if(!st) return JSON.stringify([tab,linkDown,tab==="history"?hist:0]);
-  const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes,st.pi_temp&&[st.pi_temp.level,Math.round(st.pi_temp.temp),st.pi_temp.max,st.pi_temp.throttled,st.pi_temp.under_volt]];
+  const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes,st.pi_temp&&[st.pi_temp.level,Math.round(st.pi_temp.temp),st.pi_temp.max,st.pi_temp.throttled,st.pi_temp.under_volt,st.pi_temp.volt],st.batt,st.batt_cfg,st.storage];
   k.push(st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags,st.unconfirmed);
   if(tab==="race") k.push(st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,evOpen,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,finishSent&&Date.now()-finishSent<5000,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
     st.state==="RACING"&&(st.elapsed||0)<5);
