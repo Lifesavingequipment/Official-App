@@ -1,7 +1,8 @@
-# IRB Finish Timing - bench test v3.9
+# IRB Finish Timing - bench test v3.10
 # v3.6: wired for up to 10 lanes; the app chooses how many are in use (lanes N). Lanes not in use are
 #       ignored completely - no cable faults, no lights, not in results. Saved in lanes.txt on the Pico.
 # v3.5: lane 3 for the bench test - button GP7 (pin 10), light GP13 (pin 17).
+# v3.10: box temperature from the Pico's own sensor (ADC 4), sent every 10 s - no wiring.
 # v3.9: battery reading switched on from the app (batt on / batt off) and calibrated to a multimeter
 #       (batt cal 13.28). Saved in batt.txt, so no program edits are needed.
 # v3.8: E-stop after FINISH keeps that race's results open for the officials.
@@ -375,9 +376,9 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "3.9", "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
+    emit({"ev": "hello", "fw": "3.10", "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
-          "clock": True, "beat": True, "batt": batt_on, "batt_cmd": True, "estop_cmd": True, "estop_fitted": estop_fitted})
+          "clock": True, "beat": True, "batt": batt_on, "batt_cmd": True, "box_temp": True, "estop_cmd": True, "estop_fitted": estop_fitted})
     emit({"ev": "estop", "on": estop_on, "fitted": estop_fitted})
     emit({"ev": "test", "on": test_mode})
     announce()
@@ -752,6 +753,17 @@ def batt_saved():
 
 batt_on, BATT_DIVIDER = batt_saved()
 batt_adc = ADC(BATT_PIN) if batt_on else None
+
+
+temp_adc = ADC(4)                 # the RP2040's own temperature sensor
+
+
+def read_box_temp():
+    tot = 0
+    for _ in range(8):
+        tot += temp_adc.read_u16()
+    v = tot / 8 / 65535 * 3.3
+    return round(27 - (v - 0.706) / 0.001721, 1)
 
 
 def batt_save():
@@ -1328,9 +1340,11 @@ while True:
     if time.ticks_diff(now, last_beat) >= BEAT_MS:
         last_beat = now
         print('@{"ev":"beat"}')
-    if batt_adc and state != "RACING" and time.ticks_diff(now, last_batt) >= BATT_MS:
+    if state != "RACING" and time.ticks_diff(now, last_batt) >= BATT_MS:
         last_batt = now
-        emit({"ev": "batt", "v": read_batt()})
+        if batt_adc:
+            emit({"ev": "batt", "v": read_batt()})
+        emit({"ev": "box_temp", "c": read_box_temp()})
 
     # 6c. say (at most every 10 s) when spikes were ignored - a sign of noisy wiring
     if spikes and time.ticks_diff(now, last_spike_report) >= 10_000:

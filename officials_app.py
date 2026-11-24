@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.15.0"
+APP_VERSION = "1.16.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -88,6 +88,7 @@ S = {
     "test_count": {}, "test_last": None, "test_clash": [],             # every press during the button test
     "beat": False, "batt": None, "batt_at": None,   # Pico v2.8 features
     "batt_cmd": False, "batt_on": False,             # Pico v3.9: battery reading switched on from the app
+    "box_temp": None, "box_temp_at": None, "box_max": None, "box_max_at": "",   # Pico v3.10: inside-box temperature
     "race_go_wall": None,                            # computer clock time of GO (for video)
     "practice": False, "backup": None,
     "estop": False, "estop_fitted": False, "estop_cmd": False,    # emergency stop (timing box v3.7)
@@ -905,7 +906,115 @@ def pi_temp_read():
 def temp_loop():
     while not STOPPING.is_set():
         pi_temp_read()
+        stations_read()
         time.sleep(10)
+
+
+BATTLOG = {"day": "", "start": None, "samples": []}     # (time, volts) through the day, for "used today" and "hours left"
+
+
+def batt_log(v):
+    if not isinstance(v, (int, float)) or v < 5:
+        return
+    now, day = time.time(), datetime.now().strftime("%Y-%m-%d")
+    if BATTLOG["day"] != day:
+        BATTLOG.update(day=day, start=(now, v), samples=[])
+    sm = BATTLOG["samples"]
+    if not sm or now - sm[-1][0] >= 300:                  # one sample every 5 minutes is plenty
+        sm.append((now, v))
+        del sm[:-200]
+
+
+LFP = [(13.6, 100), (13.4, 99), (13.3, 90), (13.2, 70), (13.1, 40), (13.0, 30), (12.9, 20), (12.8, 17), (12.5, 14), (12.0, 9), (11.0, 3), (10.0, 0)]
+
+
+def batt_pct(v):
+    if v >= LFP[0][0]:
+        return 100
+    for (a, pa), (b, pb) in zip(LFP, LFP[1:]):
+        if v >= b:
+            return round(pb + (v - b) / (a - b) * (pa - pb))
+    return 0
+
+
+def batt_usage():
+    st0, v = BATTLOG["start"], S["batt"]
+    if not st0 or v is None or BATTLOG["day"] != datetime.now().strftime("%Y-%m-%d"):
+        return None
+    out = {"start_v": st0[1], "start_at": datetime.fromtimestamp(st0[0]).strftime("%H:%M"),
+           "start_pct": batt_pct(st0[1]), "pct": batt_pct(v), "hours_left": None, "per_hour": None}
+    # rough rate from the last 2 hours of samples (at least 45 minutes' worth)
+    now = time.time()
+    sm = [x for x in BATTLOG["samples"] if now - x[0] <= 7200] or BATTLOG["samples"][-1:]
+    if sm and now - sm[0][0] >= 2700:
+        used = batt_pct(sm[0][1]) - out["pct"]
+        hrs = (now - sm[0][0]) / 3600
+        if used > 0:
+            rate = used / hrs
+            out["per_hour"] = round(rate)
+            out["hours_left"] = round(max(0, out["pct"] - 10) / rate, 1)     # down to a 10 % reserve
+    return out
+
+
+SEEN = {}                     # phone / laptop address -> last time it asked for the app's state
+
+
+def app_devices():
+    now = time.time()
+    for k in [k for k, t in SEEN.items() if now - t > 600]:
+        SEEN.pop(k, None)
+    return sum(1 for t in SEEN.values() if now - t <= 60)
+
+
+STATIONS = {"n": None}        # phones joined to the Pi's hotspot (Wi-Fi level)
+STATIONS_FILE = os.environ.get("IRB_STATIONS_FILE")
+
+
+def stations_read():
+    try:
+        if STATIONS_FILE:
+            with open(STATIONS_FILE) as fh:
+                STATIONS["n"] = int(fh.read().strip())
+            return
+        if not IS_LINUX or not shutil.which("iw"):
+            return
+        dev = INET.get("hs_dev") or ("wlan0" if WIFI.get("mode") == "hotspot" else "")
+        if not dev:
+            STATIONS["n"] = None
+            return
+        r = subprocess.run(["iw", "dev", dev, "station", "dump"], capture_output=True, text=True, timeout=5)
+        STATIONS["n"] = r.stdout.count("Station ") if r.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
+
+def clock_set(ms):
+    """set the Pi's clock from an official's phone (phones get the time from the mobile network)"""
+    try:
+        sec = int(ms) / 1000
+        if not 1.7e9 < sec < 4.1e9:
+            raise ValueError
+    except (TypeError, ValueError):
+        return "That time doesn't look right"
+    cmd = os.environ.get("IRB_DATE")
+    try:
+        if cmd:
+            subprocess.run([cmd, "@%d" % sec], timeout=10, check=True)
+        elif IS_LINUX:
+            subprocess.run(as_root(["date", "-s", "@%d" % sec]), capture_output=True, timeout=10, check=True)
+            subprocess.run(as_root(["hwclock", "--systohc"]), capture_output=True, timeout=10)   # save to the RTC (if fitted)
+        else:
+            return "Set the clock on this computer in its own settings"
+    except (OSError, subprocess.SubprocessError):
+        return "Couldn't set the Pi's clock"
+    with lock:
+        if ser:
+            try:
+                ser.write(("clock %s\r\n" % datetime.now().strftime("%Y %m %d %H %M %S")).encode())
+            except (serial.SerialException, OSError):
+                pass
+    note("Pi clock set from a phone: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    return "ok"
 
 
 def storage_view():
@@ -2978,6 +3087,13 @@ def handle_line(line):
     elif ev == "batt":
         S["batt"] = d.get("v")
         S["batt_at"] = time.time()
+        batt_log(S["batt"])
+    elif ev == "box_temp":
+        c = d.get("c")
+        if isinstance(c, (int, float)) and -20 < c < 110:
+            S["box_temp"], S["box_temp_at"] = round(c, 1), time.time()
+            if S["box_max"] is None or c > S["box_max"] or S.get("box_day") != datetime.now().strftime("%Y-%m-%d"):
+                S["box_max"], S["box_max_at"], S["box_day"] = round(c, 1), datetime.now().strftime("%H:%M"), datetime.now().strftime("%Y-%m-%d")
     elif ev == "batt_cfg":
         S["batt_on"] = bool(d.get("on"))
         if not S["batt_on"]:
@@ -3270,6 +3386,11 @@ def snapshot(role="master", local=True, tok=None):
         d["batt_old"] = bool(S["batt_at"] and time.time() - S["batt_at"] > 60)
         d["batt_cfg"] = {"cmd": S["batt_cmd"], "on": S["batt_on"]}
         d["storage"] = storage_view()
+        d["box"] = {"temp": S["box_temp"], "max": S["box_max"], "max_at": S["box_max_at"],
+                    "old": bool(S["box_temp_at"] and time.time() - S["box_temp_at"] > 60)} if S["box_temp"] is not None else None
+        d["batt_use"] = batt_usage()
+        d["phones"] = {"wifi": STATIONS["n"], "app": app_devices()}
+        d["now_ms"] = int(time.time() * 1000)
         res = S["results"]
         d["res_flags"] = flags.get(str(res.get("race")), {}) if res else {}
         now, nxt = upcoming()
@@ -3375,6 +3496,7 @@ class H(BaseHTTPRequestHandler):
         elif self.path == "/inter.woff2":      # the app's font, served from the Pi so it works with no internet
             self.send(200, INTER_WOFF2, "font/woff2", {"Cache-Control": "public, max-age=31536000"})
         elif self.path.startswith("/api/state"):
+            SEEN[self.client_address[0]] = time.time()
             self.send(200, snapshot(self.role(), self.is_local(), self.token()))
         elif self.path.startswith("/api/queue"):
             with lock:
@@ -3539,6 +3661,10 @@ class H(BaseHTTPRequestHandler):
                 COACHES.pop(self.token() or "", None)
                 save_settings()
             self.send(200, json.dumps({"result": "ok"}))
+            return
+        if self.path.startswith("/api/clock_set"):       # timing desk / Admin: set the Pi's clock from this phone
+            r = clock_set(data.get("ms")) if self.role() in ("master", "admin") else "Only the timing desk or Admin can do that"
+            self.send(200, json.dumps({"result": r}))
             return
         if self.path.startswith("/api/batt"):            # timing desk: battery reading on/off, calibrate to a multimeter
             if self.role() != "master":
@@ -4385,6 +4511,7 @@ body.estopped{overflow:hidden}
 .hhd{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}.hn{font-weight:800;font-size:16px}
 .hv{font-weight:800;font-size:18px;display:flex;gap:8px;align-items:baseline}.hv small{font-size:14px;font-weight:800}
 .hv.good small{color:var(--green)}.hv.amb small{color:var(--amber)}.hv.bad small{color:var(--red)}
+.hu{display:block;color:var(--ink);font-weight:700;margin-bottom:2px}.hx .btn{margin-top:6px}
 .hbar{height:10px;border-radius:99px;background:var(--soft);overflow:hidden}.hbar i{display:block;height:100%;border-radius:99px;background:var(--green)}
 .hbar.amb i{background:var(--amber)}.hbar.bad i{background:var(--red)}.hx{font-size:13px;color:var(--mute);line-height:1.4}
 .tbar{position:relative;height:14px;border-radius:99px;background:var(--soft);overflow:visible;margin-top:4px}
@@ -6328,6 +6455,12 @@ function backAfterRestart(ok){
 const a_ssid=()=>(($("wssid")||{}).value??((st.access||{}).net||{}).ssid)||"", a_pass=()=>(($("wpass")||{}).value??((st.access||{}).net||{}).pass)||"",
   a_addr=()=>(($("waddr")||{}).value??((st.access||{}).net||{}).addr)||"";
 // ---------- kit health: battery (12 V LiFePO4), Pi power, Pi temperature, storage – each says what good looks like ----------
+let clockOff=null;      // seconds the Pi's clock is ahead (+) or behind (-) this phone
+function clockBad(){ return st&&st.now_ms&&(new Date(st.now_ms).getFullYear()<2025||(clockOff!=null&&Math.abs(clockOff)>120)); }
+function offWords(sec){ const a=Math.abs(sec); return (a>=172800?Math.round(a/86400)+" days":a>=5400?Math.round(a/3600)+" hours":Math.round(a/60)+" min")+(sec>0?" fast":" slow"); }
+function boxWord(c){ return c>=65?["Too hot","bad"]:c>=55?["Hot – shade the box","amb"]:c>=45?["Warm – OK","good"]:["Good","good"]; }
+function phoneWord(n){ return n>25?["Crowded","bad"]:n>15?["Busy","amb"]:["Fine","good"]; }
+async function clockFix(){ const r=await post("/api/clock_set",{ms:Date.now()}); toast(r==="ok"?"Pi clock set from this phone ✓":r,4000); }
 const LFP=[[13.6,100],[13.4,99],[13.3,90],[13.2,70],[13.1,40],[13.0,30],[12.9,20],[12.8,17],[12.5,14],[12.0,9],[11.0,3],[10.0,0]];
 function battPct(v){ if(v>=13.6) return 100; for(let i=1;i<LFP.length;i++){ const [a,pa]=LFP[i-1],[b,pb]=LFP[i]; if(v>=b) return Math.round(pb+(v-b)/(a-b)*(pa-pb)); } return 0; }
 function battWord(v){ return v>=13.8?["Charging","good"]:v>=13.0?["Good","good"]:v>=12.8?["Charge soon","amb"]:v>=12.4?["Charge now","bad"]:["Swap the battery now","bad"]; }
@@ -6338,15 +6471,25 @@ function hRow(name,val,w,pc,explain){ return `<div class="hrow"><div class="hhd"
   ${pc!=null?`<div class="hbar ${w[1]}"><i style="width:${Math.max(3,Math.min(100,pc))}%"></i></div>`:""}<div class="hx">${explain}</div></div>`; }
 function healthRows(){ const b=st.batt, p=st.pi_temp, d=st.storage, c=st.batt_cfg||{}; let h="";
   if(b!=null) h+=hRow("Battery",`${b.toFixed(1)} V · about ${battPct(b)}%`,battWord(b),battPct(b),
-    `12 V lithium (LiFePO4). Full 13.3–13.6 V · good 13.0 V or more · charge under 12.8 V · swap under 12.4 V. Reads a little lower while the siren and lights are on.${st.batt_old?" <b>Reading is over a minute old.</b>":""}`);
+    `${battUse()}12 V lithium (LiFePO4). Full 13.3–13.6 V · good 13.0 V or more · charge under 12.8 V · swap under 12.4 V. Reads a little lower while the siren and lights are on.${st.batt_old?" <b>Reading is over a minute old.</b>":""}`);
   else if(st.role==="master"&&c.cmd&&!c.on) h+=`<div class="hrow"><div class="hhd"><span class="hn">Battery</span><span class="hv">Off</span></div><div class="hx">Not measured yet – wire the battery divider to GP26, then turn it on under Setup › Kit health and power.</div></div>`;
   if(p&&p.volt!=null) h+=hRow("Pi power supply",`${p.volt.toFixed(2)} V`,voltWord(p),(p.volt-4.5)/(5.25-4.5)*100,
     "Good: 5.0–5.2 V. Under 4.8 V the Pi can slow down or restart – check the 5 V converter and use a thick USB-C cable rated 5 A.");
   if(p) h+=hRow("Pi temperature",`${p.temp.toFixed(0)} °C`,tempWord(p),(p.temp-30)/(90-30)*100,
     `Good: under 65 °C. Shade the box or give it air above ${p.hot.toFixed(0)} °C. The Pi slows down from ${p.crit.toFixed(0)} °C. Hottest today ${p.max!=null?p.max.toFixed(0)+" °C at "+esc(p.max_at):"–"}.`);
+  const bx=st.box; if(bx&&bx.temp!=null) h+=hRow("Inside the box",`${bx.temp.toFixed(0)} °C`,boxWord(bx.temp),(bx.temp-15)/(75-15)*100,
+    `Measured by the timing box itself (it reads a few degrees above the air). Good under 45 °C. Above 55 °C shade the box – batteries and electronics don't like the heat. Hottest today ${bx.max!=null?bx.max.toFixed(0)+" °C at "+esc(bx.max_at):"–"}.${bx.old?" <b>Reading is over a minute old.</b>":""}`);
+  const ph=st.phones; if(ph){ const n=ph.wifi!=null?ph.wifi:ph.app;
+    h+=hRow("Phones connected",`${ph.wifi!=null?ph.wifi+" on the hotspot · ":""}${ph.app} using the app`,phoneWord(n),n/30*100,
+      "The Pi's built-in hotspot is comfortable with about 15 phones and slows down past 25. If it gets crowded, put the results on a TV instead, or add a USB Wi-Fi adapter or router."); }
+  if(st.now_ms){ const bad=clockBad();
+    h+=hRow("Clock",new Date(st.now_ms).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})+(bad?` · ${clockOff!=null&&Math.abs(clockOff)>120?offWords(clockOff):"wrong date"}`:""),bad?["Wrong","bad"]:["Correct","good"],null,
+      `Checked against this ${/Mobi|Android|iPhone/.test(navigator.userAgent)?"phone":"device"} (phones get the time from the mobile network). If the Pi is more than 2 minutes out, race times and dates in the history will be wrong – usually the Pi's clock battery is flat.${bad&&rCanAct()?` <button class="btn sm pri" onclick="clockFix()">Set the Pi's clock from this phone</button>`:""}`); }
   if(d) h+=hRow("Storage",`${d.free_gb.toFixed(1)} GB free`,diskWord(d),d.total_gb?100-d.free_gb/d.total_gb*100:null,
     `Of ${d.total_gb.toFixed(0)} GB. A whole carnival's results use less than 5 MB – it's the Pi's own files that fill it.`);
   return h; }
+function battUse(){ const u=st.batt_use; if(!u) return "";
+  return `<b class="hu">Today: ${u.start_v.toFixed(1)} V (${u.start_pct}%) at ${esc(u.start_at)} → ${st.batt.toFixed(1)} V (${u.pct}%)${u.hours_left!=null?` · about ${u.hours_left<1?Math.round(u.hours_left*60)+" min":u.hours_left.toFixed(1)+" hours"} left at this rate (using about ${u.per_hour}% an hour)`:" · time left shows after about 45 minutes of use"}.</b> `; }
 function healthCard(){ const h=healthRows(); return h?`<div class="card"><h2>Kit health</h2>${h}</div>`:""; }
 function tempWarn(){ const p=st.pi_temp, b=st.batt; if(!st.official&&st.role!=="starter") return ""; let h="";
   if(b!=null){ const w=battWord(b); if(w[1]!=="good") h+=`<div class="${b<12.4?"bad-warn":"warn"}">Battery ${b.toFixed(1)} V (about ${battPct(b)}%) – ${w[0].toLowerCase()}${b<12.8?" before the next race":""}.</div>`; }
@@ -6354,6 +6497,10 @@ function tempWarn(){ const p=st.pi_temp, b=st.batt; if(!st.official&&st.role!=="
     if(p.level==="crit") h+=`<div class="bad-warn">Pi overheating – ${p.temp.toFixed(0)} °C${p.throttled?", slowing down to protect itself":""}. Get the box out of the sun or open it up now. Timing keeps going on the timing box.</div>`;
     else if(p.level==="hot") h+=`<div class="warn">Pi is hot – ${p.temp.toFixed(0)} °C${p.since?" since "+esc(p.since):""}. Shade the box or give it some air before it reaches ${p.crit.toFixed(0)} °C.</div>`;
     if(p.under_volt||(p.volt!=null&&p.volt<4.8)) h+=`<div class="warn">The Pi isn't getting enough power${p.volt!=null?" ("+p.volt.toFixed(2)+" V – should be 5.0–5.2 V)":""}. Check its 5 V converter and USB-C cable.</div>`; }
+  if(st.box&&st.box.temp>=55) h+=`<div class="${st.box.temp>=65?"bad-warn":"warn"}">Inside the timing box is ${st.box.temp.toFixed(0)} °C – shade the box or open it for some air.</div>`;
+  if(st.batt_use&&st.batt_use.hours_left!=null&&st.batt_use.hours_left<1.5) h+=`<div class="warn">Battery: about ${st.batt_use.hours_left<1?Math.round(st.batt_use.hours_left*60)+" minutes":st.batt_use.hours_left.toFixed(1)+" hours"} left at this rate – have a charged one ready.</div>`;
+  if(st.phones&&(st.phones.wifi!=null?st.phones.wifi:st.phones.app)>25) h+=`<div class="warn">The hotspot is crowded (${st.phones.wifi!=null?st.phones.wifi:st.phones.app} phones) – it may get slow. Put results on a TV or ask spectators to leave the Wi-Fi.</div>`;
+  if(clockBad()) h+=`<div class="bad-warn">The Pi's clock is wrong (${clockOff!=null&&Math.abs(clockOff)>120?offWords(clockOff):"wrong date"}) – race times and dates will be off.${rCanAct()?` <button class="btn sm" onclick="clockFix()">Set it from this phone</button>`:""}</div>`;
   if(st.storage&&st.storage.free_gb<0.5) h+=`<div class="warn">The Pi's storage is nearly full (${st.storage.free_gb.toFixed(1)} GB free).</div>`;
   return h; }
 function battCalSheet(){ $("sheetin").innerHTML=`<h2>Calibrate the battery reading</h2><p class="mute">Measure the battery with a multimeter at the terminals and type what it shows. The app then reads the same.</p>
@@ -6590,7 +6737,7 @@ function renderSystem(){
     { const b=st.brand||{}, u=st.update||{}, w=st.wifi||{}, i=st.inet||{}, pu=st.pico_upd||{};
       const updBad=u.newer||(pu.newer&&st.connected)||!!pu.busy;
       const sysBad=(st.power&&st.power.pi&&st.access&&!st.access.master_pin)||!!(st.pi_temp&&(st.pi_temp.level==="hot"||st.pi_temp.level==="crit"))
-        ||(st.batt!=null&&battWord(st.batt)[1]!=="good")||!!(st.pi_temp&&st.pi_temp.volt!=null&&voltWord(st.pi_temp)[1]==="bad")||!!(st.storage&&st.storage.free_gb<0.5);
+        ||(st.batt!=null&&battWord(st.batt)[1]!=="good")||!!(st.box&&st.box.temp>=55)||clockBad()||!!(st.pi_temp&&st.pi_temp.volt!=null&&voltWord(st.pi_temp)[1]==="bad")||!!(st.storage&&st.storage.free_gb<0.5);
       L=sec("event","Today's event",[b.club||"Club not set",st.lanes.length&&st.fw?st.lanes.length+" lanes":"",st.draw?st.draw.name:"no LiveHeats draw",st.practice?"PRACTICE MODE ON":""].filter(Boolean).join(" · "),G.event,st.practice)
        +sec("box","Timing box",!st.connected?"Not connected":st.faults.length?"Wiring fault: "+st.faults.length:"Connected · wiring OK"+(st.fw?" · v"+st.fw:""),G.box,!st.connected||st.faults.length)
        +sec("upd","Updates",pu.busy?"Updating the timing box…":["App v"+st.app+(u.newer?" → v"+u.latest+" available":" up to date"),st.connected&&pu.current?"Timing box v"+pu.current+(pu.newer?" → v"+pu.latest+" available":" up to date"):"Timing box not connected"].join(" · "),G.upd,updBad)
@@ -6734,7 +6881,7 @@ let lastKey="";
 function pageKey(){
   // redraw only when something shown has changed, so taps and open sections aren't lost
   if(!st) return JSON.stringify([tab,linkDown,tab==="history"?hist:0]);
-  const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes,st.pi_temp&&[st.pi_temp.level,Math.round(st.pi_temp.temp),st.pi_temp.max,st.pi_temp.throttled,st.pi_temp.under_volt,st.pi_temp.volt],st.batt,st.batt_cfg,st.storage];
+  const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes,st.pi_temp&&[st.pi_temp.level,Math.round(st.pi_temp.temp),st.pi_temp.max,st.pi_temp.throttled,st.pi_temp.under_volt,st.pi_temp.volt],st.batt,st.batt_cfg,st.storage,st.box&&Math.round(st.box.temp),st.batt_use,st.phones,clockBad()];
   k.push(st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags,st.unconfirmed);
   if(tab==="race") k.push(st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,evOpen,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,finishSent&&Date.now()-finishSent<5000,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
     st.state==="RACING"&&(st.elapsed||0)<5);
@@ -6871,7 +7018,8 @@ function render(){
 }
 async function poll(){
   const stop=new AbortController(), t=setTimeout(()=>stop.abort(),3000);
-  try{ const r=await fetch("/api/state",{signal:stop.signal}); st=await r.json(); linkDown=false; }
+  try{ const t0=Date.now(), r=await fetch("/api/state",{signal:stop.signal}); st=await r.json(); linkDown=false;
+    if(st.now_ms) clockOff=Math.round((st.now_ms-(t0+Date.now())/2)/1000); }
   catch(e){ linkDown=true; }
   clearTimeout(t);
   if((tab==="history"||location.hash==="#board")&&Date.now()-histAt>3000) await loadHist();
