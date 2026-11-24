@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.12.3"
+APP_VERSION = "1.12.4"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -4914,6 +4914,12 @@ let holdT=null, holding=false;
 (function(){ const vv=window.visualViewport; if(!vv) return;
   const fit=()=>{ const kb=Math.max(0,Math.round(innerHeight-vv.height-vv.offsetTop)); document.documentElement.style.setProperty("--kb",(kb>60?kb:0)+"px"); };
   vv.addEventListener("resize",fit); vv.addEventListener("scroll",fit); })();
+// Enter / Go on the phone keyboard presses the panel's main button (Unlock, Save, Join...)
+document.addEventListener("keydown",e=>{
+  const t=e.target; if(e.key!=="Enter"||e.defaultPrevented||!t||!t.matches||!t.matches("input")||t.onkeydown) return;
+  if(/^(checkbox|radio|button|submit|file|range|color)$/i.test(t.type)) return;
+  const box=t.closest(".sheet,.card,.req,.hbox,main"); const b=box&&[...box.querySelectorAll(".btn.pri,.btn.green")].find(x=>!x.disabled&&x.offsetParent);
+  if(b){ e.preventDefault(); t.blur(); b.click(); } });
 document.addEventListener("focusin",e=>{ const t=e.target; if(!t||!t.matches||!t.matches("input,textarea,select")) return;
   setTimeout(()=>{ try{ t.scrollIntoView({block:"center",behavior:"smooth"}); }catch(x){} },320); });
 function wireHold(){ const b=$("hold"); if(!b) return; const bar=b.querySelector("i");

@@ -1,10 +1,9 @@
 {
- "app": "1.12.3",
+ "app": "1.12.4",
  "pico": "3.8",
- "sha256": "3774aca3ae640bed3a84a6cdf89a7a67fceba882ec86604fb74abf3203a1e228",
+ "sha256": "43600961231d084f6df76d0a75818bdf1437d151e450754ed9f399a6451d2720",
  "pico_sha256": "c1ed1e3251f8e72497342ec6f586506f14d0494e842c587f93c1b8aa67aefb78",
  "notes": [
-  "Hold buttons: dark with a moving yellow bar and countdown while held, green \u2713 Finished when done",
-  "Keyboard no longer covers text boxes in pop-up panels (owner PIN, names, codes)"
+  "Go / Enter on the phone keyboard now presses the main button (Unlock, Save, Join...)"
  ]
 }
