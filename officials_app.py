@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.13.2"
+APP_VERSION = "1.14.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -859,6 +859,49 @@ def firewall_allow():
 WIFI = {"on": False, "mode": "", "name": "", "ip": "", "hotspot": "", "hs_ssid": "", "hs_pass": "", "hs_ip": "",
         "saved": [], "busy": "", "msg": ""}
 NMCLI = os.environ.get("IRB_NMCLI") or "nmcli"
+# ---- Pi temperature: a sealed box in the sun gets hot. Pi 5 slows itself down from 80 C and hard-limits at 85 C ----
+TEMP_FILE = os.environ.get("IRB_TEMP_FILE") or "/sys/class/thermal/thermal_zone0/temp"
+TEMP_WARM, TEMP_HOT, TEMP_CRIT = 65.0, 75.0, 80.0
+PITEMP = {"temp": None, "max": None, "max_at": "", "day": "", "throttled": None, "under_volt": None, "hot_since": None}
+
+
+def pi_temp_read():
+    try:
+        with open(TEMP_FILE) as fh:
+            t = int(fh.read().strip()) / 1000.0
+    except (OSError, ValueError):
+        return
+    now = datetime.now()
+    PITEMP["temp"] = round(t, 1)
+    day = now.strftime("%Y-%m-%d")
+    if PITEMP["day"] != day:
+        PITEMP.update(day=day, max=None, max_at="")
+    if PITEMP["max"] is None or t > PITEMP["max"]:
+        PITEMP["max"], PITEMP["max_at"] = round(t, 1), now.strftime("%H:%M")
+    PITEMP["hot_since"] = (PITEMP["hot_since"] or now.strftime("%H:%M")) if t >= TEMP_HOT else None
+    if IS_PI and not os.environ.get("IRB_TEMP_FILE"):
+        try:                                     # is it slowing down (heat) or short of power right now?
+            r = subprocess.run(["vcgencmd", "get_throttled"], capture_output=True, text=True, timeout=5)
+            v = int(r.stdout.strip().split("=")[-1], 16)
+            PITEMP["throttled"] = bool(v & 0x4 or v & 0x2 or v & 0x8)
+            PITEMP["under_volt"] = bool(v & 0x1)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+
+
+def temp_loop():
+    while not STOPPING.is_set():
+        pi_temp_read()
+        time.sleep(10)
+
+
+def pi_temp_view():
+    t = PITEMP["temp"]
+    if t is None:
+        return None
+    lvl = "crit" if t >= TEMP_CRIT or PITEMP["throttled"] else "hot" if t >= TEMP_HOT else "warm" if t >= TEMP_WARM else "ok"
+    return {"temp": t, "max": PITEMP["max"], "max_at": PITEMP["max_at"], "level": lvl, "since": PITEMP["hot_since"],
+            "throttled": PITEMP["throttled"], "under_volt": PITEMP["under_volt"], "hot": TEMP_HOT, "crit": TEMP_CRIT}
 POWER = os.environ.get("IRB_POWER")          # tests: a stand-in for systemctl
 IS_LINUX = sys.platform.startswith("linux")
 try:
@@ -3233,6 +3276,7 @@ def snapshot(role="master", local=True, tok=None):
         d["sent"] = {x["heat_id"]: sent[x["heat_id"]] for x in hs if x.get("heat_id") in sent}
         d["next_break"] = next_break()
         d["marsh"] = marsh_status()
+        d["pi_temp"] = pi_temp_view() if official or role in ("starter",) else None
         d["elapsed"] = (time.time() - S["go_at"]) if (S["state"] == "RACING" and S["go_at"]) else None
         d["messages"] = list(messages)[-20:]
         d["app"] = APP_VERSION
@@ -4285,6 +4329,9 @@ details{border-bottom:1px solid var(--line)}
 #estopfs .esrace{font:800 clamp(18px,3.6vw,34px)/1.2 var(--f);background:#fff;color:#8f1308;border-radius:16px;padding:12px 18px}
 #estopfs .eshelp{font:600 clamp(16px,2.6vw,24px)/1.3 var(--f);opacity:.95}
 body.estopped{overflow:hidden}
+.tbar{position:relative;height:14px;border-radius:99px;background:var(--soft);overflow:visible;margin-top:4px}
+.tbar i{position:absolute;left:0;top:0;bottom:0;border-radius:99px;background:var(--green)}.tbar.hot i{background:var(--amber)}.tbar.crit i{background:var(--red)}
+.tbar b{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink);opacity:.35}
 .tmon{display:grid;gap:2px;text-align:left;width:100%;border-radius:16px!important;padding:12px 16px;background:#e8f0fe;color:#0a3ea8;margin:0 0 10px}
 .tmon span{font-weight:600;font-size:14px}
 .tmal{border-radius:18px;padding:14px 16px;margin:0 0 10px;box-shadow:var(--sh);display:grid;gap:3px}
@@ -4621,6 +4668,7 @@ function raceWarnings(){
   if(st.estop&&st.estop.stopped&&!st.estop.on&&st.state!=="RACING"&&st.official) h+=`<div class="bad-warn">Race ${st.estop.stopped} was stopped by the emergency stop – re-run this heat.</div>`;
   const ms=st.marsh;
   if(ms&&st.official&&st.state!=="RACING"){ if(!ms.late&&ms.seated<ms.target) h+=`<div class="warn">Marshalling behind – ${ms.seated} of ${ms.target} heat${ms.target>1?"s":""} ready${ms.call?` · calling Heat ${ms.call}`:""}</div>`; }
+  h+=tempWarn();
   if(st.batt!=null&&st.batt<24.0) h+=`<div class="${st.batt<23.0?"bad-warn":"warn"}">Battery: ${battWord(st.batt)[0].toLowerCase()} – before the next race.</div>`;
   if(st.faults.length&&st.state==="RACING"&&st.faults_racing)
     h+=`<div class="bad-warn">Cable fault during race: ${esc(st.faults.join(", "))}. That lane may have a false press – check its presses after the race.</div>`;
@@ -6223,6 +6271,16 @@ function backAfterRestart(ok){
 const a_ssid=()=>(($("wssid")||{}).value??((st.access||{}).net||{}).ssid)||"", a_pass=()=>(($("wpass")||{}).value??((st.access||{}).net||{}).pass)||"",
   a_addr=()=>(($("waddr")||{}).value??((st.access||{}).net||{}).addr)||"";
 function battWord(v){ return v<23?["Swap the battery now","bad"]:v<24?["Charge now","bad"]:v<24.6?["Charge soon","amb"]:["OK","good"]; }
+function tempWord(p){ return {ok:["Cool","good"],warm:["Warm – fine","good"],hot:["Hot – shade the box","warn"],crit:["Overheating","bad"]}[p.level]; }
+function tempCard(){ const p=st.pi_temp; if(!p) return ""; const w=tempWord(p), pc=Math.max(4,Math.min(100,Math.round((p.temp-30)/(90-30)*100)));
+  return `<div class="card"><h2>Pi temperature</h2><div class="tbar ${p.level}"><i style="width:${pc}%"></i><b style="left:${Math.round((p.hot-30)/60*100)}%"></b><b style="left:${Math.round((p.crit-30)/60*100)}%"></b></div>
+    <p class="${w[1]==="good"?"ok":w[1]==="bad"?"bad":""}" style="margin:6px 0 0;font-size:20px;font-weight:800">${p.temp.toFixed(0)} °C · ${w[0]}</p>
+    <p class="mute" style="margin:2px 0 0;font-size:14px">Hottest today ${p.max!=null?p.max.toFixed(0)+" °C at "+esc(p.max_at):"–"} · slows down from ${p.crit.toFixed(0)} °C${p.throttled?" · <b class='bad'>slowing down now</b>":""}${p.under_volt?" · <b class='bad'>power supply too weak</b>":""}</p></div>`; }
+function tempWarn(){ const p=st.pi_temp; if(!p||!st.official&&st.role!=="starter") return "";
+  if(p.level==="crit") return `<div class="bad-warn">Pi overheating – ${p.temp.toFixed(0)} °C${p.throttled?", slowing down to protect itself":""}. Get the box out of the sun or open it up now. Timing keeps going on the timing box.</div>`;
+  if(p.level==="hot") return `<div class="warn">Pi is hot – ${p.temp.toFixed(0)} °C${p.since?" since "+esc(p.since):""}. Shade the box or give it some air before it reaches ${p.crit.toFixed(0)} °C.</div>`;
+  if(p.under_volt) return `<div class="warn">The Pi isn't getting enough power – check its power supply or battery converter.</div>`;
+  return ""; }
 function battCard(){ const v=st.batt, pc=Math.max(0,Math.min(100,Math.round((v-23)/(26.4-23)*100))), w=battWord(v);
   return `<div class="card"><h2>Battery</h2><div class="bbar ${w[1]}"><i style="width:${pc}%"></i></div>
     <p class="${w[1]==="good"?"ok":w[1]==="bad"?"bad":""}" style="margin:6px 0 0;font-size:20px;font-weight:800">${w[0]}</p>
@@ -6356,7 +6414,7 @@ function renderSystem(){
     <a class="btn" href="/#team" target="_blank" style="text-decoration:none">Team Manager</a>
     ${st.role==="admin"?`<button class="btn" onclick="goTab('marshal')">Marshal screen</button>`:""}
     ${master?`<button class="btn" onclick="printGuides()">Print role guides</button>`:""}<a class="btn" href="#fix">Troubleshooting</a></div></div>`;
-  const batt=st.batt!=null?battCard():"";
+  const batt=(st.batt!=null?battCard():"")+tempCard();
   let h=setupOk?`<div class="sysnav"><button class="btn ${sysView==="today"?"pri":""}" onclick="sysView='today';lastKey='';render()">Today</button>
     <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected))?' <span class="badge">1</span>':""}</button></div>`:"";
   let c="";
@@ -6420,6 +6478,8 @@ function renderSystem(){
         :`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
     if(master) G.event+=row("New event", (st.past_events||[]).length?`<span class="mute">Last saved: ${esc(st.past_events[0])}</span>`:`<span class="mute">Saves today, then clears for a fresh start</span>`,
       `<button class="btn red" ${racing?"disabled":""} onclick="askNewEvent()">Start new event</button>`);
+    if(st.pi_temp){ const p=st.pi_temp, w=tempWord(p);
+      G.system+=row("Pi temperature", `<span class="${w[1]==="good"?"ok":w[1]==="bad"?"bad":""}">${p.temp.toFixed(0)} °C · ${w[0]}</span> <span class="mute">· hottest today ${p.max!=null?p.max.toFixed(0)+" °C at "+esc(p.max_at):"–"} · warns at ${p.hot.toFixed(0)} °C, slows down from ${p.crit.toFixed(0)} °C</span>`, ""); }
     if(master&&st.power&&st.power.on) G.system+=row("Power", `<span class="mute">Turn the timing ${st.power.pi?"Pi":"computer"} off safely – no need to open the case</span>`,
       `<button class="btn" ${racing?"disabled":""} onclick="powerAsk('restart')">Restart</button><button class="btn red" ${racing?"disabled":""} onclick="powerAsk('off')">Power off</button>`);
     {
@@ -6447,13 +6507,13 @@ function renderSystem(){
     }
     { const b=st.brand||{}, u=st.update||{}, w=st.wifi||{}, i=st.inet||{}, pu=st.pico_upd||{};
       const updBad=u.newer||(pu.newer&&st.connected)||!!pu.busy;
-      const sysBad=(st.power&&st.power.pi&&st.access&&!st.access.master_pin);
+      const sysBad=(st.power&&st.power.pi&&st.access&&!st.access.master_pin)||!!(st.pi_temp&&(st.pi_temp.level==="hot"||st.pi_temp.level==="crit"));
       L=sec("event","Today's event",[b.club||"Club not set",st.lanes.length&&st.fw?st.lanes.length+" lanes":"",st.draw?st.draw.name:"no LiveHeats draw",st.practice?"PRACTICE MODE ON":""].filter(Boolean).join(" · "),G.event,st.practice)
        +sec("box","Timing box",!st.connected?"Not connected":st.faults.length?"Wiring fault: "+st.faults.length:"Connected · wiring OK"+(st.fw?" · v"+st.fw:""),G.box,!st.connected||st.faults.length)
        +sec("upd","Updates",pu.busy?"Updating the timing box…":["App v"+st.app+(u.newer?" → v"+u.latest+" available":" up to date"),st.connected&&pu.current?"Timing box v"+pu.current+(pu.newer?" → v"+pu.latest+" available":" up to date"):"Timing box not connected"].join(" · "),G.upd,updBad)
        +(G.net?sec("net","Wi-Fi and phones",w.on?[w.mode==="hotspot"?"On the timing hotspot":w.mode==="wifi"?"Home Wi-Fi: "+w.name:"No Wi-Fi",w.hs_ssid?"hotspot "+w.hs_ssid:"",i.two?(i.name?"internet via "+i.name:"no internet Wi-Fi"):""].filter(Boolean).join(" · "):"Join card Wi-Fi and phones",G.net,false):"")
        +sec("results","Results and backup",st.backup?(st.backup.ok?"Backed up "+st.backup.at:"Backup problem"):"Results zip, USB backup, problem report",G.results,st.backup&&!st.backup.ok)
-       +sec("system","Owner lock and power",[st.owner&&st.owner.set?(st.owner.open?"Owner lock unlocked":"Owner lock on"):"Owner lock off","power off or restart"].join(" · "),G.system,sysBad)
+       +sec("system","Pi, owner lock and power",[st.owner&&st.owner.set?(st.owner.open?"Owner lock unlocked":"Owner lock on"):"Owner lock off","power off or restart"].concat(st.pi_temp?["Pi "+st.pi_temp.temp.toFixed(0)+" °C"]:[]).join(" · "),G.system,sysBad)
        +sec("adv","Advanced","App address, timing desk PIN, your name, timing box messages, versions",G.adv,false); }
     c=`<div class="card slist">${L}</div>`;
   }
@@ -6591,7 +6651,7 @@ let lastKey="";
 function pageKey(){
   // redraw only when something shown has changed, so taps and open sections aren't lost
   if(!st) return JSON.stringify([tab,linkDown,tab==="history"?hist:0]);
-  const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes];
+  const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes,st.pi_temp&&[st.pi_temp.level,Math.round(st.pi_temp.temp),st.pi_temp.max,st.pi_temp.throttled,st.pi_temp.under_volt]];
   k.push(st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags,st.unconfirmed);
   if(tab==="race") k.push(st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,evOpen,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,finishSent&&Date.now()-finishSent<5000,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
     st.state==="RACING"&&(st.elapsed||0)<5);
@@ -6792,6 +6852,7 @@ def main():
         sys.exit(1)
     threading.Thread(target=update_check, daemon=True).start()       # quietly see if there's a newer version
     threading.Thread(target=firewall_check, daemon=True).start()     # Windows: can phones get in?
+    threading.Thread(target=temp_loop, daemon=True).start()          # Pi temperature (box in the sun)
     if IS_LINUX:
         wifi_refresh()                                                 # Pi: which Wi-Fi / hotspot is it on?
         threading.Thread(target=wifi_loop, daemon=True).start()
