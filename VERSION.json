@@ -1,12 +1,9 @@
 {
- "app": "1.13.0",
+ "app": "1.13.1",
  "pico": "3.8",
- "sha256": "b6a468514c1620c35149578ca0d9a8433e9a2ad10b69ba986053d35058bde7ea",
+ "sha256": "ae5133a7f61213850699acf1da5d77c8191f5909d77143bab89d8d4f0e83916a",
  "pico_sha256": "c1ed1e3251f8e72497342ec6f586506f14d0494e842c587f93c1b8aa67aefb78",
  "notes": [
-  "One Results tab replaces Confirm + LiveHeats: tally, oldest-first to-do list, Check & confirm then Enter in LiveHeats, moves on by itself",
-  "Later, Under protest (crew, reason, note; dismissed/upheld) and Not needed; races changed after entering come back as Update LiveHeats",
-  "Two-person events: Confirm / LiveHeats entry filter (remembered); laptop shows list and race side by side",
-  "Option B look on the Race screen, TV results (medal places), home and team pages; protests shown to team managers and on the results screen"
+  "Refreshing the page stays on the tab you were on (and the race or Setup view you had open)"
  ]
 }

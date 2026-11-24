@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.13.0"
+APP_VERSION = "1.13.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -4462,10 +4462,11 @@ let evOpen=false;
 function setEvent(id){ evOpen=false; if(st){ st.event=id; lastKey=""; render(); } post("/api/event",{id:id}); }
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{ tab=b.dataset.t;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("on",x===b));
-  ["race","results","program","marshal","history","system"].forEach(s=>$(s).hidden=(s!==tab)); closeSheet(); lastKey=""; render(); });
+  ["race","results","program","marshal","history","system"].forEach(s=>$(s).hidden=(s!==tab)); closeSheet(); lastKey=""; render(); rememberTab(); });
+function rememberTab(){ if(!location.hash&&tabRestored) try{ sessionStorage.setItem("irb_tab",JSON.stringify({tab:tab,sys:sysView,rv:rView})); }catch(e){} }
 const TABS={master:["race","history","program","marshal","system"],admin:["race","history","program","system"],
   starter:["race","system"],marshal:["marshal","system"],viewer:["race"]};
-let tabRole="";
+let tabRole="", tabRestored=false;
 let justLogged=false;
 function applyTabs(){
   // each access level sees only its own tabs; Master and Admin reach the Marshal screen from System
@@ -4475,6 +4476,11 @@ function applyTabs(){
   document.querySelector("header").classList.toggle("six",ok.length>4);
   if(backAfterRestart(ok)) return;
   if(justLogged){ justLogged=false; goTab(ok[0]); return; }
+  if(!tabRestored){ tabRestored=true;      // a refresh stays on the page you were on
+    let b=null; try{ b=JSON.parse(sessionStorage.getItem("irb_tab")||"null"); }catch(e){}
+    if(b&&b.tab&&b.tab!==tab&&(ok.includes(b.tab)||(b.tab==="marshal"&&(role==="master"||role==="admin")))){
+      if(b.sys) sysView=b.sys; if(b.rv!=null) rView=b.rv; goTab(b.tab); return; }
+    if(b&&b.sys) sysView=b.sys; }
   if(!ok.includes(tab)&&!(tab==="marshal"&&(role==="master"||role==="admin"))) goTab(ok[0]);
 }
 
@@ -6682,7 +6688,7 @@ function drawEstop(){
     ${off?`<div class="eshelp">When it's safe, twist the red emergency stop button on the timing box to release it. Timing can't start until it's released.</div>`:""}</div>`;
 }
 function render(){
-  drawEstop();
+  drawEstop(); rememberTab();
   if(location.hash==="#fix"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
     const k=JSON.stringify(["fix",st&&st.brand]); if(k!==lastKey){ lastKey=k; renderFix(); } return; }
   if(location.hash==="#team"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
