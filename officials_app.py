@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.18.0"
+APP_VERSION = "1.19.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -4061,7 +4061,7 @@ textarea{font:500 16px var(--f);padding:10px;border-radius:10px;border:2px solid
 .practice{background:#5b3fa0;color:#fff;border-radius:10px;padding:10px 12px;font-weight:700}
 .log{font-size:14px;color:var(--mute);margin-top:6px}
 /* Results screen (#board) for a TV or a tablet in the marshalling area */
-body.board header,body.board #nextbar{display:none}
+body.board header,body.board #nextbar,body.board #racewarn{display:none}
 .qbtn{flex:0 0 auto;width:38px;height:38px;align-self:center;border-radius:50%;border:2px solid var(--line);background:#fff;color:var(--blue);font:900 20px var(--f);cursor:pointer}
 #nextbar{display:flex;align-items:center;gap:10px;max-width:980px;margin:10px auto 0;padding:10px 14px;background:#e3edf9;border:2px solid var(--blue);border-radius:12px;font-weight:700}
 #nextbar[hidden]{display:none}
@@ -4073,6 +4073,7 @@ body.board header,body.board #nextbar{display:none}
 .rst i{font:800 normal 12px var(--f);border-radius:99px;padding:2px 9px;border:2px solid var(--line);color:var(--mute);background:#fff;white-space:nowrap}
 .rst i.on{background:var(--green);border-color:var(--green);color:#fff}
 .sysnav{display:flex;gap:8px;margin-bottom:10px}.sysnav .btn{flex:1;padding:8px 12px}
+.sysnav.quiet{align-items:center;justify-content:space-between;max-width:none}.sysnav.quiet .btn{flex:0 1 auto}.sysnav.quiet>.mute{font-weight:700;font-size:18px;color:var(--ink,#111)}
 .syscols>div>.card:first-child{margin-top:0}
 @media (min-width:900px){.syscols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start}
   .syscols>div{display:grid;gap:12px;align-content:start}.syscols .card{margin:0}}
@@ -4493,6 +4494,11 @@ th,td{border-bottom:1px solid var(--line)}
 tr.tap:hover{background:#f6f7f9}
 .sheet{border-top:0;border-radius:24px 24px 0 0;box-shadow:0 -10px 40px rgba(16,24,40,.18)}
 #nextbar{background:#fff;border:0;border-radius:16px;box-shadow:var(--sh)}
+#racewarn{display:flex;flex-direction:column;gap:6px;max-width:980px;margin:0 auto;padding:4px 14px 12px;background:#fff;border-radius:0 0 16px 16px;box-shadow:var(--sh)}
+#racewarn[hidden]{display:none}#racewarn>*{margin:0}#racewarn .morew{align-self:flex-start}
+#msgstrip:has(#racewarn:not([hidden])) #nextbar:not([hidden]){border-radius:16px 16px 0 0;box-shadow:none}
+#nextbar[hidden]+#racewarn{margin-top:10px;padding-top:12px;border-radius:16px}
+@media (max-width:1010px){#racewarn{margin:0 12px}}
 .toast,.undo{border-radius:14px}
 details{border-bottom:1px solid var(--line)}
 .ssec{border-bottom:1px solid var(--line)}
@@ -4658,7 +4664,7 @@ a{color:var(--blue)}a:hover{color:var(--ink)}
  <button class="tab" data-t="system">System<span id="sbadge"></span></button>
  <button class="qbtn" id="helpbtn" onclick="openHelp()" aria-label="Help for this screen">?</button>
 </header>
-<div id="nextbar" hidden></div>
+<div id="msgstrip"><div id="nextbar" hidden></div><div id="racewarn" hidden></div></div>
 <main>
  <section id="race"></section>
  <section id="results" hidden></section>
@@ -4720,7 +4726,7 @@ document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{ tab=b.dataset.t;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("on",x===b));
   ["race","results","program","marshal","history","system"].forEach(s=>$(s).hidden=(s!==tab)); closeSheet(); lastKey=""; render(); rememberTab(); });
 function rememberTab(){ if(!location.hash&&tabRestored) try{ sessionStorage.setItem("irb_tab",JSON.stringify({tab:tab,sys:sysView,rv:rView})); }catch(e){} }
-const TABS={master:["race","history","program","marshal","system"],admin:["race","history","program","system"],
+const TABS={master:["race","history","program","marshal","system"],admin:["history","program","system"],
   starter:["race","system"],marshal:["marshal","system"],viewer:["race"]};
 let tabRole="", tabRestored=false;
 let justLogged=false;
@@ -4827,7 +4833,7 @@ function logoPick(inp){ const f=inp.files&&inp.files[0]; if(!f) return; const im
 function renderRace(){
   if(st&&st.role==="master"&&st.setup_done===false&&st.state!=="ARMED"&&st.state!=="RACING"&&!st.test){ $("race").innerHTML=`<div class="wizwrap">${wizard()}</div>`; return; }
   let h=banner(), right="";
-  if(st&&st.connected) h+=raceWarnings();
+  warnHtml=st&&st.connected?raceWarnings():""; drawWarn();     // warnings sit in the strip under the Next bar
   h=`<div class="top" style="display:flex;flex-direction:column;gap:12px">${h}</div>`;
   if(st&&st.connected){
     const ht=shownHeat(), n=st.lanes.length;
@@ -4909,7 +4915,7 @@ const HELP={
   history:["Top card: races still to be typed into LiveHeats, one at a time. Press Entered when done.","Below: every race saved today. Tap one to see its full result."],
   marshal:["Pick a heat along the top.","Tap a crew when its patients arrive. Tap again to undo. Scratch is the button on the right.",
     "Press Patients sent when that heat's patients go out on the water."],
-  system:["Today: the start-of-day checks, who has access, the button test, the screens and the join card.","Setup: things you set once per carnival – Wi-Fi, LiveHeats draw, backup, practice mode."]};
+  system:["Today: the start-of-day checks (including the button test), officials, kit health and the join card.","Setup: things you set once per carnival – Wi-Fi, lanes, updates, backup, practice mode. Once racing starts it tucks away.","The Results and Marshalling screens and the role guides are below."]};
 // ---------- Troubleshooting: every known problem and its fix (page #fix, the ? sheet, and printed with the guides) ----------
 // each item: [title, what you see (or ""), [steps], quick?]  quick = also listed in the ? sheet
 const TROUBLE=[
@@ -5034,10 +5040,16 @@ function troublePages(top){ return `<div class="guide">${top||""}<h1>Troubleshoo
 function printTrouble(){ let p=$("printcard"); if(!p){ p=document.createElement("div"); p.id="printcard"; document.body.appendChild(p); }
   const b=(st&&st.brand)||{}; p.innerHTML=troublePages(`<div class="gtop">${b.logo?`<img src="/logo?v=${b.logo}" alt="">`:""}<span>${esc(b.club||"IRB Racing")}${b.event?" · "+esc(b.event):""}</span></div>`);
   try{ window.print(); }catch(e){ toast("Printing isn't available here"); } }
+function screensHtml(){ if(!st||!st.official) return "";
+  const a=(href,t)=>`<a class="btn sm" href="${href}" target="_blank" style="text-decoration:none" onclick="closeSheet()">${t}</a>`;
+  return `<h2 style="margin-top:14px">Screens and printouts</h2><p class="mute" style="margin:0 0 6px">Read-only screens – open them on a TV, laptop or tablet. No login needed.</p>
+    <div class="row" style="margin-top:0">${a("/#board","Results screen")}${a("/#marshalling","Marshalling screen")}${a("/#team","Team Manager")}
+    ${st.role==="admin"?`<button class="btn sm" onclick="closeSheet();goTab('marshal')">Marshal screen</button>`:""}
+    ${st.role==="master"?`<button class="btn sm" onclick="closeSheet();printGuides()">Print role guides</button>`:""}</div>`; }
 function openHelp(){
   const names={race:"Race",results:"Confirm",program:"Program",history:"Results",marshal:"Marshal",system:"System"};
   $("sheetin").innerHTML=`<h2>${names[tab]||"Help"} – what this screen is for</h2><ul class="helpl">${(HELP[tab]||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
-    <p class="mute">The blue <b>Next</b> bar at the top always shows the next thing to do.</p>
+    <p class="mute">The <b>Next</b> bar at the top always shows the next thing to do.</p>${screensHtml()}
     <h2 style="margin-top:14px">Something not working?</h2>${FIXES.map(([q,a])=>`<details class="fix"><summary>${esc(q)}</summary><p>${esc(hsFix(a))}</p></details>`).join("")}
     <div class="row"><button class="btn pri" onclick="closeSheet()">OK</button><button class="btn" onclick="closeSheet();location.hash='#fix'">All troubleshooting ›</button></div>`;
   $("sheet").classList.add("on");
@@ -5116,7 +5128,11 @@ function nextStep(){
   return {text:`Ready – press SET${st.heat?" for "+heatLabel(st.heat):""}${q}`,tab:"race",btn:"Race",dup:!q};
 }
 let nextKey="";
+let warnHtml="";
+function drawWarn(){ const w=$("racewarn"); if(!w) return; const on=tab==="race"&&!!warnHtml&&!!st&&!(st.role==="master"&&st.setup_done===false&&st.state!=="ARMED"&&st.state!=="RACING"&&!st.test);
+  if(!on){ if(!w.hidden){ w.hidden=true; w.innerHTML=""; } return; } if(w.innerHTML!==warnHtml) w.innerHTML=warnHtml; w.hidden=false; }
 function drawNext(){
+  drawWarn();
   const b=$("nextbar"), n=nextStep(); if(!b) return;
   const k=JSON.stringify([n,tab]); if(k===nextKey) return; nextKey=k;
   if(!n||(n.dup&&tab==="race")){ b.hidden=true; return; }      // the race screen already says it
@@ -6303,11 +6319,14 @@ function wifiText(j){ const e=s=>String(s).replace(/([\\;,:"])/g,"\\$1"); return
 function joinCodes(px){ const j=st.join||{}; let h=`<div class="qrs">`;
   if(j.ssid) h+=`<div>1. Wi-Fi${qrSvg(wifiText(j),px)}<div class="mute">${esc(j.ssid)}</div></div>`;
   return h+`<div>${j.ssid?"2. ":""}IRB Racing App${qrSvg(j.url,px)}<div class="mute">${esc(j.url)}</div></div></div>`; }
+let joinOpen=false;
 function joinCard(){
   const j=st.join||{};
+  if(racedToday()&&!joinOpen) return `<div class="card"><div class="row" style="margin:0;align-items:center;justify-content:space-between"><h2 style="margin:0">Join card</h2>
+    <button class="btn sm" onclick="joinOpen=true;lastKey='';render()">Show QR codes</button></div></div>`;
   return `<div class="card"><h2>Join card</h2>
     ${j.ssid||st.role==="master"?"":`<p class="warn" style="margin-top:0">Ask the timing desk to add the Wi-Fi for the Wi-Fi code.</p>`}
-    ${joinCodes(st.role==="master"?130:180)}<div class="row"><button class="btn pri" onclick="downloadCard()">Download</button><button class="btn" onclick="printCard()">Print</button></div></div>`; }
+    ${joinCodes(st.role==="master"?130:180)}<div class="row"><button class="btn pri" onclick="downloadCard()">Download</button><button class="btn" onclick="printCard()">Print</button>${racedToday()?`<button class="btn" onclick="joinOpen=false;lastKey='';render()">Hide</button>`:""}</div></div>`; }
 function cardCanvas(){
   const j=st.join||{}, codes=(j.ssid?[["1. Wi-Fi",wifiText(j),j.ssid]]:[]).concat([[(j.ssid?"2. ":"")+"IRB Racing App",j.url,j.url]]);
   const W=codes.length*560+80, c=document.createElement("canvas"); c.width=W; c.height=760; const x=c.getContext("2d");
@@ -6646,18 +6665,15 @@ function renderSystem(){
         :`<p class="mute" style="margin:4px 0 0">Wiring OK: ${items.join(", ")}${st.state==="RACING"?" (checked again after the race)":""}. FINISH is checked by the button test.</p>`}`
       :`<p class="bad" style="margin:0">Not connected – plug the timing box's USB cable into this computer and close Thonny.</p>`}</div>`;
   const test=st.connected&&st.has_test&&(master||st.role==="starter")?testCard():"";
-  const screens=`<div class="card"><h2>Screens <span class="mute" style="font-weight:500;font-size:14px">– read-only, no login</span></h2><div class="row" style="margin-top:0"><a class="btn" href="/#board" target="_blank" style="text-decoration:none">Results screen</a>
-    <a class="btn" href="/#marshalling" target="_blank" style="text-decoration:none">Marshalling screen</a>
-    <a class="btn" href="/#team" target="_blank" style="text-decoration:none">Team Manager</a>
-    ${st.role==="admin"?`<button class="btn" onclick="goTab('marshal')">Marshal screen</button>`:""}
-    ${master?`<button class="btn" onclick="printGuides()">Print role guides</button>`:""}<a class="btn" href="#fix">Troubleshooting</a></div></div>`;
   const batt=healthCard();
-  let h=setupOk?`<div class="sysnav"><button class="btn ${sysView==="today"?"pri":""}" onclick="sysView='today';lastKey='';render()">Today</button>
+  const quiet=master&&sysView==="today"&&racedToday()&&!((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected));
+  let h=quiet?`<div class="sysnav quiet"><span class="mute">Today</span><button class="btn sm" onclick="sysView='setup';lastKey='';render()">Setup <span style="font-weight:500">(not needed during racing)</span> ›</button></div>`
+    :setupOk?`<div class="sysnav"><button class="btn ${sysView==="today"?"pri":""}" onclick="sysView='today';lastKey='';render()">Today</button>
     <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected))?' <span class="badge">1</span>':""}</button></div>`:"";
   let c="";
   if(sysView==="today"){
-    if(master&&st.access) c=sysCols((st.test?test:"")+dayCard(), officialsCard()+clubCard()+batt, joinCard()+screens);   // the button test lives in the checklist
-    else c=sysCols(box+test, pinCard()+(st.role==="admin"?clubCard():""), (st.official?screens:"")+batt);
+    if(master&&st.access) c=sysCols((st.test?test:"")+dayCard(), officialsCard()+clubCard()+batt, joinCard());   // the button test lives in the checklist; screens are under ?
+    else c=sysCols(box+test, pinCard()+(st.role==="admin"?clubCard():""), batt);
   } else {
     // Setup: one tidy list – a line per item, status in the middle, button on the right
     const a=st.access||{net:{ssid:"",pass:"",addr:""},auto_url:"",master_pin:"",regulars:[]};
@@ -6897,7 +6913,7 @@ function pageKey(){
   else if(tab==="history") k.push(hist,queue,enterAsk,rView,rFilter,rDoneOpen,st.results,st.res_flags,st.confirmed,st.state,innerWidth>=1100);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
-  else k.push(sysView,dayOpen,hxOpen,updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.lanes,st.lanes_use,st.lanes_max,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
+  else k.push(sysView,dayOpen,hxOpen,joinOpen,racedToday(),updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.lanes,st.lanes_use,st.lanes_max,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
   return JSON.stringify(k);
 }
 function brandBar(){ const b=(st&&st.brand)||{}; if(!b.club&&!b.event&&!b.logo) return "";
