@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.12.2"
+APP_VERSION = "1.12.3"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -3589,7 +3589,7 @@ def lan_ip():
 
 PAGE = r"""<!doctype html>
 <html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,interactive-widget=resizes-content">
 <title>Race Officials</title>
 <style>
 :root{
@@ -4175,8 +4175,15 @@ header{background:rgba(255,255,255,.94);-webkit-backdrop-filter:saturate(1.6) bl
 .btn.pri,.btn.red,.btn.green,.btn.amber,.btn.allin{border-color:transparent}
 .start .btn,.hold,.btn.big{border-radius:18px}
 .btn.hold{background:var(--red);border-color:transparent;color:#fff;touch-action:none;-webkit-user-select:none;user-select:none}
-.btn.hold i{background:rgba(0,0,0,.32)}
-.btn.hold.held{box-shadow:0 0 0 4px rgba(196,43,23,.3)}
+.btn.hold i{background:repeating-linear-gradient(-45deg,#ffd24a 0 16px,#ffbf1f 16px 32px);background-size:45px 45px;animation:holdstripe .5s linear infinite}
+@keyframes holdstripe{to{background-position:45px 0}}
+.btn.hold.held{background:#3a0b05;box-shadow:0 0 0 5px rgba(255,191,31,.45);transform:scale(.985)}
+.btn.hold.held span{color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.85),0 0 10px rgba(0,0,0,.6)}
+.btn.hold.done{background:var(--green)!important;box-shadow:0 0 0 5px rgba(11,122,75,.35)}
+.btn.hold.done i{display:none}.btn.hold.done:disabled{opacity:1;cursor:default}
+.btn.hold b.hpct{position:relative;margin-left:10px;font-variant-numeric:tabular-nums;opacity:.95}
+/* the keyboard never covers a sheet's text box */
+.sheet{bottom:var(--kb,0px)!important;max-height:min(85vh,calc(100dvh - var(--kb,0px) - 12px))}
 .btn:focus-visible,.tab:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
 select,input[type=text],input[type=password],input[type=number],textarea{border:1px solid #c9d0da;border-radius:12px;background:#fff}
 select:focus,input:focus,textarea:focus{outline:0;border-color:var(--blue);box-shadow:0 0 0 3px rgba(10,87,230,.18)}
@@ -4289,7 +4296,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 qrcode.stringToBytes=qrcode.stringToBytesFuncs["UTF-8"];
 </script>
 <script>
-let finishAsk=0, startBusy=false, drawData=null;
+let finishAsk=0, finishSent=0, startBusy=false, drawData=null;
 let wakeMsg="Keeping the screen on…", wake=null;
 async function keepAwake(){
   if(!("wakeLock" in navigator)){ wakeMsg="This browser can't keep the screen on here – set the tablet's screen timeout to Never (or the longest) in its settings."; return; }
@@ -4785,7 +4792,9 @@ function controls(){
   }
   // RACING
   if(app&&(st.elapsed||0)<5) h+=`<div class="start"><button class="btn red" id="brecall">RECALL</button></div>`;
-  if(finishAsk&&Date.now()-finishAsk<10000){
+  if(finishSent&&Date.now()-finishSent<5000){
+    h+=`<div class="card confirm"><button class="btn hold done" disabled><span>✓ Finished – saving…</span></button></div>`;
+  } else if(finishAsk&&Date.now()-finishAsk<10000){
     const n=st.lanes.filter(l=>(st.live[String(l)]||[]).length).length;
     h+=`<div class="card confirm"><h2>Finish race ${st.race+1}?</h2>
       <p>${n} of ${st.lanes.length} crews have pressed. Crews still racing will show as incomplete.</p>
@@ -4901,12 +4910,22 @@ function wireControls(){
   wireHold();
 }
 let holdT=null, holding=false;
+// on-screen keyboard: lift bottom sheets above it, and keep the box being typed in visible
+(function(){ const vv=window.visualViewport; if(!vv) return;
+  const fit=()=>{ const kb=Math.max(0,Math.round(innerHeight-vv.height-vv.offsetTop)); document.documentElement.style.setProperty("--kb",(kb>60?kb:0)+"px"); };
+  vv.addEventListener("resize",fit); vv.addEventListener("scroll",fit); })();
+document.addEventListener("focusin",e=>{ const t=e.target; if(!t||!t.matches||!t.matches("input,textarea,select")) return;
+  setTimeout(()=>{ try{ t.scrollIntoView({block:"center",behavior:"smooth"}); }catch(x){} },320); });
 function wireHold(){ const b=$("hold"); if(!b) return; const bar=b.querySelector("i");
-  const lab=b.querySelector("span"), txt=lab.textContent;
-  const start=e=>{ e.preventDefault(); const want=st.state; holding=true; b.classList.add("held"); lab.textContent="Keep holding…";
+  const lab=b.querySelector("span"), txt=lab.textContent, fin=/CONFIRM/.test(txt);
+  let tick=0, t0=0;
+  const start=e=>{ e.preventDefault(); if(b.classList.contains("done")) return; const want=st.state; holding=true; t0=Date.now(); b.classList.add("held");
     bar.style.transition="width 1s linear"; bar.style.width="100%"; try{ navigator.vibrate&&navigator.vibrate(30); }catch(x){}
-    holdT=setTimeout(()=>{ holding=false; finishAsk=0; try{ navigator.vibrate&&navigator.vibrate(120); }catch(x){} cmd("f",want); bar.style.transition="none"; bar.style.width="0"; b.classList.remove("held"); lab.textContent=txt; },1000); };
-  const stop=()=>{ holding=false; clearTimeout(holdT); bar.style.transition="none"; bar.style.width="0"; b.classList.remove("held"); lab.textContent=txt; };
+    const show=()=>{ const left=Math.max(0,1-(Date.now()-t0)/1000); lab.innerHTML=`Keep holding…<b class="hpct">${left.toFixed(1)} s</b>`; };
+    show(); tick=setInterval(show,100);
+    holdT=setTimeout(()=>{ holding=false; finishAsk=0; if(fin) finishSent=Date.now(); clearInterval(tick); try{ navigator.vibrate&&navigator.vibrate(150); }catch(x){}
+      b.classList.remove("held"); b.classList.add("done"); lab.textContent=fin?"✓ Finished":"✓ Cancelled"; cmd("f",want); },1000); };
+  const stop=()=>{ if(b.classList.contains("done")) return; holding=false; clearTimeout(holdT); clearInterval(tick); bar.style.transition="none"; bar.style.width="0"; b.classList.remove("held"); lab.textContent=txt; };
   b.onpointerdown=start; b.onpointerup=stop; b.onpointerleave=stop; b.onpointercancel=stop; b.oncontextmenu=e=>e.preventDefault(); }
 
 function wall(go,us){ const d=new Date(go*1000+us/1000), p=(n,w)=>String(n).padStart(w||2,"0");
@@ -6286,7 +6305,7 @@ function pageKey(){
   if(!st) return JSON.stringify([tab,linkDown,tab==="history"?hist:0]);
   const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes];
   k.push(st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags,st.unconfirmed);
-  if(tab==="race") k.push(st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,evOpen,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
+  if(tab==="race") k.push(st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,evOpen,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,finishSent&&Date.now()-finishSent<5000,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
     st.state==="RACING"&&(st.elapsed||0)<5);
   else if(tab==="results") k.push(st.results);
   else if(tab==="history") k.push(hist,queue,enterAsk);

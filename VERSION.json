@@ -1,9 +1,10 @@
 {
- "app": "1.12.2",
+ "app": "1.12.3",
  "pico": "3.8",
- "sha256": "6095aeac94ac12087cbfa9a6159a836f4319f7822de2fd1609aae2fb6405111e",
+ "sha256": "3774aca3ae640bed3a84a6cdf89a7a67fceba882ec86604fb74abf3203a1e228",
  "pico_sha256": "c1ed1e3251f8e72497342ec6f586506f14d0494e842c587f93c1b8aa67aefb78",
  "notes": [
-  "Hold to CONFIRM finish / CANCEL is red again and fills dark while held (says Keep holding\u2026, small buzz)"
+  "Hold buttons: dark with a moving yellow bar and countdown while held, green \u2713 Finished when done",
+  "Keyboard no longer covers text boxes in pop-up panels (owner PIN, names, codes)"
  ]
 }
