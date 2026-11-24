@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.12.1"
+APP_VERSION = "1.12.2"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -4174,6 +4174,9 @@ header{background:rgba(255,255,255,.94);-webkit-backdrop-filter:saturate(1.6) bl
 .btn:hover:not(:disabled){filter:brightness(.97)}.btn:active:not(:disabled){transform:scale(.98)}
 .btn.pri,.btn.red,.btn.green,.btn.amber,.btn.allin{border-color:transparent}
 .start .btn,.hold,.btn.big{border-radius:18px}
+.btn.hold{background:var(--red);border-color:transparent;color:#fff;touch-action:none;-webkit-user-select:none;user-select:none}
+.btn.hold i{background:rgba(0,0,0,.32)}
+.btn.hold.held{box-shadow:0 0 0 4px rgba(196,43,23,.3)}
 .btn:focus-visible,.tab:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
 select,input[type=text],input[type=password],input[type=number],textarea{border:1px solid #c9d0da;border-radius:12px;background:#fff}
 select:focus,input:focus,textarea:focus{outline:0;border-color:var(--blue);box-shadow:0 0 0 3px rgba(10,87,230,.18)}
@@ -4899,9 +4902,11 @@ function wireControls(){
 }
 let holdT=null, holding=false;
 function wireHold(){ const b=$("hold"); if(!b) return; const bar=b.querySelector("i");
-  const start=e=>{ e.preventDefault(); const want=st.state; holding=true; bar.style.transition="width 1s linear"; bar.style.width="100%";
-    holdT=setTimeout(()=>{ holding=false; finishAsk=0; cmd("f",want); bar.style.transition="none"; bar.style.width="0"; },1000); };
-  const stop=()=>{ holding=false; clearTimeout(holdT); bar.style.transition="none"; bar.style.width="0"; };
+  const lab=b.querySelector("span"), txt=lab.textContent;
+  const start=e=>{ e.preventDefault(); const want=st.state; holding=true; b.classList.add("held"); lab.textContent="Keep holding…";
+    bar.style.transition="width 1s linear"; bar.style.width="100%"; try{ navigator.vibrate&&navigator.vibrate(30); }catch(x){}
+    holdT=setTimeout(()=>{ holding=false; finishAsk=0; try{ navigator.vibrate&&navigator.vibrate(120); }catch(x){} cmd("f",want); bar.style.transition="none"; bar.style.width="0"; b.classList.remove("held"); lab.textContent=txt; },1000); };
+  const stop=()=>{ holding=false; clearTimeout(holdT); bar.style.transition="none"; bar.style.width="0"; b.classList.remove("held"); lab.textContent=txt; };
   b.onpointerdown=start; b.onpointerup=stop; b.onpointerleave=stop; b.onpointercancel=stop; b.oncontextmenu=e=>e.preventDefault(); }
 
 function wall(go,us){ const d=new Date(go*1000+us/1000), p=(n,w)=>String(n).padStart(w||2,"0");

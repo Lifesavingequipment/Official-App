@@ -1,10 +1,9 @@
 {
- "app": "1.12.1",
+ "app": "1.12.2",
  "pico": "3.8",
- "sha256": "b48c7c3529eab71ddf9fb268532be6f60867d0e13c5f2aa5ad2e170104300b59",
+ "sha256": "6095aeac94ac12087cbfa9a6159a836f4319f7822de2fd1609aae2fb6405111e",
  "pico_sha256": "c1ed1e3251f8e72497342ec6f586506f14d0494e842c587f93c1b8aa67aefb78",
  "notes": [
-  "Code check: E-stop after FINISH now keeps that race's results open for edits (timing box v3.8)",
-  "Safer: oversized requests refused; team page alerts worked out once per check; tidy-ups"
+  "Hold to CONFIRM finish / CANCEL is red again and fills dark while held (says Keep holding\u2026, small buzz)"
  ]
 }
