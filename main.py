@@ -1,4 +1,5 @@
-# IRB Finish Timing - bench test v3.10
+# IRB Finish Timing - bench test v3.11
+# v3.11: the button test listens to every wired lane, so the app can see which lanes are racing today.
 # v3.6: wired for up to 10 lanes; the app chooses how many are in use (lanes N). Lanes not in use are
 #       ignored completely - no cable faults, no lights, not in results. Saved in lanes.txt on the Pico.
 # v3.5: lane 3 for the bench test - button GP7 (pin 10), light GP13 (pin 17).
@@ -376,7 +377,7 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "3.10", "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
+    emit({"ev": "hello", "fw": "3.11", "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
           "clock": True, "beat": True, "batt": batt_on, "batt_cmd": True, "box_temp": True, "estop_cmd": True, "estop_fitted": estop_fitted})
     emit({"ev": "estop", "on": estop_on, "fitted": estop_fitted})
@@ -703,6 +704,12 @@ def set_test(on):
         return
     test_mode = on
     test_until = time.ticks_add(time.ticks_ms(), TEST_TIMEOUT_MS)
+    for lane, p in lane_all.items():       # the test hears every wired lane; afterwards only the lanes in use
+        if lane not in lane_in:
+            if on:
+                p.irq(handler=make_irq(lane), trigger=TRIG, hard=True)
+            else:
+                p.irq(handler=None)
     set_lights(1 if on else 0)
     print("BUTTON TEST ON - press each button once. Nothing will start." if on else "Button test off.")
     emit({"ev": "test", "on": on})
@@ -1217,7 +1224,7 @@ while True:
         now_us = time.ticks_us()
         for e in pending:
             if e[2] == 0:
-                p = set_in if e[0] == CODE_SET else go_in if e[0] == CODE_GO else lane_in.get(e[0])
+                p = set_in if e[0] == CODE_SET else go_in if e[0] == CODE_GO else (lane_all if test_mode else lane_in).get(e[0])
                 age = time.ticks_diff(now_us, e[1])
                 if p is None or (age >= CONFIRM_US and p.value() == HIT):
                     e[2] = 1
@@ -1228,7 +1235,7 @@ while True:
         if ok == 2:
             spikes[code] = spikes.get(code, 0) + 1
             continue
-        if code not in (CODE_SET, CODE_GO) and code not in lane_in:
+        if code not in (CODE_SET, CODE_GO) and code not in lane_in and not (test_mode and code in lane_all):
             continue                                    # a lane that isn't in use
         t = to_ext(raw)
         if test_mode:

@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.19.0"
+APP_VERSION = "1.20.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -1737,6 +1737,17 @@ def rflag_action(d):
                 if f.pop("protest", None):
                     f.setdefault("protests", []).append({"at": now[:5], "by": who, "outcome": out})
                     log.append([now, who, "protest %s" % out])
+        elif "call" in d:                    # presses didn't match: the judges' answer after the next SET
+            c = d.get("call") or {}
+            lane, what = str(c.get("lane") or ""), str(c.get("what") or "")
+            if not lane.isdigit() or what not in ("dnf", "dq", "fine", ""):
+                return "Choose DNF, DQ or It's fine"
+            calls = f.setdefault("calls", {})
+            if what:
+                calls[lane] = what
+            else:
+                calls.pop(lane, None)
+            log.append([now, who, "lane %s: %s (presses didn't match)" % (lane, {"dnf": "DNF", "dq": "DQ", "fine": "judges say OK", "": "answer cleared"}[what])])
         elif "skip" in d:
             if d["skip"]:
                 f["skip"] = {"at": now[:5], "by": who, "why": str(d.get("why") or "")[:80]}
@@ -3064,8 +3075,14 @@ def handle_line(line):
             S["test_last"] = None
             S["test_clash"] = []
         if S["test"] and not on:
-            need = ["Lane %d" % l for l in S["lanes"]] + ["SET", "GO", "FINISH"]
+            # the lanes pressed in the test say which lanes are racing today: the top one pressed is the count.
+            # Lanes in use above it aren't "missing" - the desk is asked whether they're racing (lanes_ask).
+            pressed = [int(x[5:]) for x in S["test_seen"] if x.startswith("Lane ") and x[5:].isdigit()]
+            top = max(pressed) if pressed else 0
+            upto = top or max(S["lanes"] or [0])
+            need = ["Lane %d" % l for l in range(1, upto + 1)] + ["SET", "GO", "FINISH"]
             S["last_test"] = {"date": datetime.now().strftime("%Y-%m-%d"), "at": datetime.now().strftime("%H:%M"),
+                              "top": top, "lanes_was": len(S["lanes"]),
                               "seen": list(S["test_seen"]), "missing": [x for x in need if x not in S["test_seen"]],
                               "clash": ["%s + %s%s" % (c["a"], c["b"], "" if c["status"] == "fault" else " (not re-checked)")
                                         for c in S["test_clash"]]}
@@ -3289,6 +3306,11 @@ def pico_lanes():
 
 
 def lanes_action(d):
+    if d.get("keep"):                       # the test suggested a different number - keep what's set
+        if S.get("last_test"):
+            S["last_test"]["lanes_ok"] = True
+            save_settings()
+        return "ok"
     try:
         n = int(d.get("n"))
     except (TypeError, ValueError):
@@ -4754,7 +4776,7 @@ function shownHeat(){
 }
 function crewOf(h,l){ return h&&h.crews?h.crews[String(l)]||"":""; }
 function checkOf(h,l){ return h&&st&&st.checkin&&st.checkin[h.heat_id]?st.checkin[h.heat_id][String(l)]||"":""; }
-function eventName(e){ return e&&e.legs?" · "+e.name:""; }
+function eventName(e){ return ""; }      // events aren't chosen any more – legs come from the presses
 function chosenEvent(){ return st.events.find(e=>e.id===st.event); }
 function banner(){
   if(linkDown||!st) return `<div class="banner b-off"><div><div class="big">No link to the timing computer</div>
@@ -4774,14 +4796,15 @@ function banner(){
     <div class="sub">${r?("Last race: "+r):"No races yet"}</div></div></div>`;
 }
 let wizOpen=null, joinDone=false;
-function wizSteps(){
+function wizSteps(){ return wizStepsAll().filter(x=>!x.skip); }
+function wizStepsAll(){
   const pg=st.program||{}, lt=st.last_test, b=st.brand||{}, j=st.join||{}, fw=(st.firewall||{}).state;
   return [
     {k:"box",title:"Timing box",ok:st.connected&&!st.faults.length,
      status:!st.connected?"Not connected":st.faults.length?"Check wiring: "+st.faults.join(", "):"Connected · wiring OK",
      body:()=>!st.connected?`<p>Plug the timing box's USB cable into this computer. If Thonny is open, close it. The app finds the box by itself.</p>`
        :st.faults.length?`<p>These look unplugged or held down: <b>${esc(st.faults.join(", "))}</b>. Check those cables.</p>`:`<p class="ok">All good – nothing to do.</p>`},
-    {k:"lanes",title:"Lanes",ok:!!st.lanes_use&&(!st.connected||!st.lanes_cmd||st.lanes.length===st.lanes_use),
+    {k:"lanes",skip:true,title:"Lanes",ok:!!st.lanes_use&&(!st.connected||!st.lanes_cmd||st.lanes.length===st.lanes_use),
      status:st.lanes_use?st.lanes_use+" lane"+(st.lanes_use>1?"s":"")+" in use":"How many lanes are you racing?",
      body:()=>`<p class="mute" style="margin-top:0">Pick how many lanes you're using today. The others are ignored, so they won't show cable warnings.</p>${lanesButtons()}`},
     {k:"club",opt:true,title:"Club and event",ok:!!b.club,status:b.club?b.club+(b.event?" · "+b.event:""):"Shown on the screens and join card",
@@ -4798,10 +4821,10 @@ function wizSteps(){
      body:()=>`<p class="mute" style="margin-top:0">The Wi-Fi officials join – it goes on the join card as a QR code.</p>
        <div class="wform"><input type="text" id="wssid" value="${esc(((st.access||{}).net||{}).ssid||"")}" placeholder="Wi-Fi name"><input type="text" id="wpass" value="${esc(((st.access||{}).net||{}).pass||"")}" placeholder="Wi-Fi password"></div>
        <div class="row"><button class="btn pri" onclick="offDo({net:{ssid:$('wssid').value,pass:$('wpass').value,addr:a_addr()}},'Saved')">Save Wi-Fi</button></div>${fwBlock()}`},
-    {k:"test",title:"Button test",ok:!!(lt&&lt.date===st.today&&!lt.missing.length&&!(lt.clash||[]).length),
+    {k:"test",title:"Button test",ok:!!(lt&&lt.date===st.today&&!lt.missing.length&&!(lt.clash||[]).length&&!lanesAsk()),
      status:st.test?"Running now":lt&&lt.date===st.today?((lt.missing.length||(lt.clash||[]).length)?testProblems()+" – fix and test again":"All buttons worked"):"Not done today",
      body:()=>st.test?`<p>Press every button – each lane, SET, GO, and hold FINISH for 1 second. Then end the test.</p><div class="row"><button class="btn pri" onclick="sysView='today';goTab('system')">Show the test</button></div>`
-       :`<p>Someone at the water presses every button while you watch the screen. It's the only way to find a broken FINISH cable.</p>
+       :`${lanesAskHtml()}<p>Someone at the water presses every button while you watch the screen. It's the only way to find a broken FINISH cable. The lanes pressed become today's lanes.</p>
        <div class="row"><button class="btn pri" ${st.connected&&(st.state==="IDLE"||st.state==="DONE")?"":"disabled"} onclick="cmd('test on').then(()=>{sysView='today';goTab('system')})">Start button test</button></div>`},
     {k:"card",opt:true,title:"Join card",ok:joinDone,status:joinDone?"Done":"Print it, or save the picture to share",
      body:()=>`${joinCodes(110)}<div class="row"><button class="btn pri" onclick="joinDone=true;printCard();lastKey='';render()">Print</button><button class="btn" onclick="joinDone=true;downloadCard();lastKey='';render()">Download</button></div>`}];
@@ -4869,6 +4892,8 @@ function raceWarnings(){
     h+=`<div class="bad-warn">Cable fault during race: ${esc(st.faults.join(", "))}. That lane may have a false press – check its presses after the race.</div>`;
   else if(st.faults.length&&st.state!=="RACING")
     h+=`<div class="warn">Check wiring: ${esc(st.faults.join(", "))} (open circuit or button held)${st.role==="master"&&st.lanes_cmd&&st.faults.some(f=>/^Lane/.test(f))?` · not using ${st.faults.filter(f=>/^Lane/.test(f)).length>1?"those lanes":"that lane"} today? <a href="#" onclick="lanesSheet();return false">Set the lanes in use</a>`:""}</div>`;
+  if(st.state==="DONE"&&st.results&&!st.results.practice&&(st.official||st.role==="starter")){
+    const onBox=rCanAct()&&!st.confirmed; h+=oddHtml(st.results,st.res_flags,onBox,rCanAct()); }
   const ht=shownHeat();
   if(ht&&(st.state==="RACING"||st.state==="DONE")){
     const empty=st.lanes.filter(l=>!crewOf(ht,l)&&(st.live[String(l)]||[]).length);
@@ -4888,6 +4913,7 @@ function raceWarnings(){
     h+=`<div class="warn">How are heats being run today? <a href="#" onclick="goTab('program');return false">Set up the program</a> (or choose No program).</div>`;
   if(pg.lh_changed&&st.official&&st.state!=="RACING")
     h+=`<div class="warn">The LiveHeats schedule has changed. <a href="#" onclick="goTab('program');return false">Review it on the Program tab</a>.</div>`;
+  if(st.state!=="RACING") pre+=lanesAskHtml();      // a question – never folded away
   if(st.test) h+=`<div class="warn">Button test running – see the System tab. SET and GO are off until the test ends.</div>`;
   else if(st.has_test&&st.state!=="RACING"&&(!st.last_test||st.last_test.date!==st.today))
     h+=`<div class="warn">Button test not done today. <a href="#" onclick="goTab('system');return false">Do it on the System tab</a>.</div>`;
@@ -5063,6 +5089,8 @@ function dayChecks(){
   c.push({ok:pg.mode!=null,label:"Heats for today",hint:pg.mode==="on"?"Program on":pg.mode==="off"?"No program – heats chosen by hand":"Choose the program, or No program",btn:"Program",act:"goTab('program')"});
   if(st.has_test){ const today=lt&&lt.date===st.today, bad=today&&(lt.missing.length||(lt.clash||[]).length);
     const can=st.connected&&(st.state==="IDLE"||st.state==="DONE")&&!st.test;
+    const la=lanesAsk();
+    if(la&&!st.test) c.push({ok:false,label:"Lanes for today",hint:la.top<la.n?`Only lanes 1–${la.top} responded in the button test`:`Lanes up to ${la.top} were pressed in the button test`,btn:`Use ${la.top} lanes`,act:`setLanes(${la.top})`});
     c.push({ok:today&&!bad,label:"Button test",hint:st.test?"Running now – press every button, then end the test":!today?"Every morning – the only way to find a broken FINISH cable"
       :bad?"Found "+lt.missing.map(x=>x+" – no press").concat((lt.clash||[]).map(x=>x+" – went off together")).join(" · ")+". Fix and test again":"Done today at "+lt.at+", all buttons working",
       btn:can?(today?"Test again":"Start button test"):"",act:"cmd('test on')"}); }
@@ -5147,14 +5175,10 @@ function setWarnings(){
   const w=[];
   const ph=st.program&&st.program.mode==="on";
   if(st.state==="DONE"&&st.results&&!st.confirmed) w.push(`Race ${st.results.race} results aren't confirmed yet.`);
+  if(st.state==="DONE"&&st.results){ const odd=oddLanes(st.results,st.res_flags); if(odd.length) w.push(`Lane ${odd.map(o=>o.lane).join(", ")}: presses don't match the other crews – answer DNF, DQ or It's fine first.`); }
   if((st.draw||ph)&&!st.heat) w.push("No heat chosen – lanes will show without crew names.");
   if(st.heat&&st.raced[st.heat.heat_id]!=null) w.push(`${heatLabel(st.heat)} was already raced (race ${st.raced[st.heat.heat_id]}).`);
   return w;
-}
-function allIn(){
-  const legs=(st.race_event&&st.race_event.legs)||0, ht=st.race_heat;
-  const crews=ht?st.lanes.filter(l=>crewOf(ht,l)):st.lanes;
-  return legs>0&&crews.length>0&&crews.every(l=>(st.live[String(l)]||[]).length>=legs);
 }
 let setAsk=0;
 function controls(){
@@ -5170,7 +5194,7 @@ function controls(){
   }
   if(s==="IDLE"||s==="DONE"){
     if(st.faults.length) return h+`<div class="start"><button class="btn amber" disabled>SET – fix wiring first</button></div>`;
-    const what=st.heat?heatLabel(st.heat):(chosenEvent()&&chosenEvent().legs?chosenEvent().name:"No heat or event chosen");
+    const what=st.heat?heatLabel(st.heat):"Race "+(st.race+1);
     const w=setWarnings();
     if(setAsk&&Date.now()-setAsk<15000&&w.length)
       return h+`<div class="card confirm"><h2>Check before SET</h2>${w.map(x=>`<p style="margin:6px 0">• ${esc(x)}</p>`).join("")}
@@ -5194,9 +5218,8 @@ function controls(){
       <div class="row"><button class="btn" id="bkeep">Keep racing</button></div></div>`;
   } else {
     finishAsk=0;
-    const all=allIn();
-    h+=`<div class="card"><button class="btn ${all?"allin":"pri"}" id="bfin" style="width:100%;font-size:22px;min-height:64px">${all?"All crews in – FINISH race…":"FINISH race…"}</button>
-      <div class="mute" style="margin-top:8px">${all?"Every crew has done the expected legs. ":""}Asks again before it finishes. The FINISH button on the beach still works.</div></div>`;
+    h+=`<div class="card"><button class="btn pri" id="bfin" style="width:100%;font-size:22px;min-height:64px">FINISH race…</button>
+      <div class="mute" style="margin-top:8px">Asks again before it finishes. The FINISH button on the beach still works.</div></div>`;
   }
   return h;
 }
@@ -5214,15 +5237,6 @@ function heatInner(){
 }
 function nextRaceCard(){
   let h=`<div class="card nrc"><h2>Next race</h2>${heatInner()}`;
-  if(st.official){
-    if(st.heat&&!evOpen){ const ce=chosenEvent();     // a chosen heat already sets the event, so just show it
-      h+=`<div class="nrev"><span>Event: <b>${esc(ce&&ce.legs?ce.name:"Not set")}</b>${ce&&ce.legs?` · ${ce.legs} leg${ce.legs===1?"":"s"}`:""}</span>
-        <button class="btn sm" onclick="evOpen=true;lastKey='';render()">Change</button></div>`; }
-    else { h+=`<div class="nrev col"><span class="mute">Event</span><div class="row" style="margin-top:4px">`;
-      for(const e of st.events) h+=`<button class="btn ev ${e.id===st.event?"pri":""}" onclick="setEvent('${e.id}')">${esc(e.name)}${
-        e.legs?`<small>${e.legs} leg${e.legs===1?"":"s"}</small>`:""}</button>`;
-      h+=`</div></div>`; }
-  }
   return h+`</div>`;
 }
 async function reloadDraw(){
@@ -5328,6 +5342,26 @@ function wireHold(){ const b=$("hold"); if(!b) return; const bar=b.querySelector
 
 function wall(go,us){ const d=new Date(go*1000+us/1000), p=(n,w)=>String(n).padStart(w||2,"0");
   return p(d.getHours())+":"+p(d.getMinutes())+":"+p(d.getSeconds())+"."+p(d.getMilliseconds(),3); }
+// a lane whose press count differs from the most common one (the race's legs) – fewer or more.
+// It stays flagged until the judges answer: DNF, DQ or It's fine (before SET on the timing box; after SET as a call)
+function oddLanes(r,f){
+  if(!r||!r.legs||!r.rows) return [];
+  const ch=r.changes||{}, calls=((f||r.flags||{}).calls)||{};
+  return r.rows.filter(x=>{ const n=(x.presses_us||[]).length;
+    return n>0&&n!==r.legs&&!(String(x.lane) in ch)&&!calls[String(x.lane)]&&!["DQ","DNF","PLACED"].includes(x.status); })
+    .map(x=>({lane:x.lane,n:x.presses_us.length,row:x}));
+}
+function pressWord(n){ return n===1?"once":n===2?"twice":n+" times"; }
+function oddHtml(r,f,onBox,act){
+  const odd=oddLanes(r,f); if(!odd.length) return "";
+  return odd.map(o=>{ const cn=crewOf(r.heat,o.lane), fewer=o.n<r.legs, x=o.row;
+    const how=fewer?"Not placed yet.":`Timed at press ${r.legs}${x.t_us!=null?" ("+ft(x.t_us)+")":""}; its last press was ${ft(x.presses_us[x.presses_us.length-1])}.`;
+    const b=(what,lab)=>`<button class="btn sm" onclick="${onBox?`cmd('${what==="fine"?"ok":what} ${o.lane}')`:`rCall(${r.race},${o.lane},'${what}')`}">${lab}</button>`;
+    return `<div class="bad-warn oddl">Lane ${o.lane}${cn?" ("+esc(cn)+")":""} pressed ${pressWord(o.n)} – the others pressed ${pressWord(r.legs)}. ${how}
+      ${act?`<div class="row">${b("dnf","DNF")}${b("dq","DQ")}${b("fine","It's fine")}</div>`:`<div>Judges to check.</div>`}</div>`; }).join("");
+}
+async function rCall(race,lane,what){ const r=await post("/api/rflag",{race:race,call:{lane:lane,what:what},who:myName()||"?"});
+  if(r&&r!=="ok"){ toast(r); return; } toast(`Lane ${lane}: ${what==="fine"?"OK":what.toUpperCase()}`); histAt=0; await loadHist(); lastKey=""; render(); }
 function ranked(res){
   // same rule as the Pico: gaps run between timed crews; a crew placed by officials breaks the chain
   let prev=null;
@@ -5344,7 +5378,7 @@ function resultsTable(res, tappable){
     let splits=""; if(res.legs>1&&r.presses_us.length>=res.legs&&r.status==="TIMED"){ let last=0;
       splits=r.presses_us.slice(0,res.legs).map((t,i)=>{const x="Leg\u00a0"+(i+1)+"\u00a0"+ft(t-last); last=t; return x;}).join(" · "); }
     const ch=res.changes[String(r.lane)];
-    const extra=r.presses_us.length>res.legs&&res.legs>0&&(r.status==="TIMED"||r.status==="ACCEPTED")?`<div class="split">CHECK: ${r.presses_us.length} presses, ${res.legs} used</div>`:"";
+    const extra="";      // a lane with extra presses is flagged above the table instead
     const vid=res.go_wall&&r.t_us!=null&&r.tooClose?`<div class="vid">video ${wall(res.go_wall,r.t_us)}</div>`:"";
     const dqc=r.status==="DQ"&&res.flags&&(res.flags.dq||{})[String(r.lane)]?` · ${esc(res.flags.dq[String(r.lane)])}`:"";
     h+=`<tr class="${tappable?"tap":""}" data-lane="${r.lane}"><td><b>${r.place?((res.ties||[]).includes(r.lane)?"=":"")+r.place:""}</b></td><td class="cr"><span style="white-space:nowrap">Lane ${r.lane}</span>${crewOf(res.heat,r.lane)?`<div class="crew">${esc(crewOf(res.heat,r.lane))}</div>`:""}</td>
@@ -5374,9 +5408,6 @@ function renderResults(){
     ${res.practice?`<div class="practice" style="margin-bottom:8px">Practice race – not saved</div>`:""}
 `;
   if(adj) w+=`<div class="warn">ADJUSTED BY OFFICIALS</div>`;
-  if(can&&res.event_legs&&res.legs>0&&res.legs!==res.event_legs)
-    w+=`<div class="warn">${esc(res.event)} is normally ${res.event_legs} leg${res.event_legs===1?"":"s"}, but the presses worked out as ${res.legs}.
-      <div class="row"><button class="btn pri" onclick="cmd('legs ${res.event_legs}')">Set race to ${res.event_legs} leg${res.event_legs===1?"":"s"}</button></div></div>`;
   const close=ranked(res).filter(r=>r.tooClose).length;
   if(close) w+=`<div class="warn">Finish under 0.010 s apart – judges to review before confirming places.</div>`;
   const counts=res.rows.map(r=>r.presses_us.length).filter(n=>n>0);
@@ -6152,11 +6183,8 @@ function rDetail(race){
     const can=live&&act&&!st.confirmed;
     let w="";
     if(live&&Object.keys(r.changes||{}).length) w+=`<div class="warn">ADJUSTED BY OFFICIALS</div>`;
-    if(can&&r.event_legs&&r.legs>0&&r.legs!==r.event_legs) w+=`<div class="warn">${esc(r.event)} is normally ${r.event_legs} leg${r.event_legs===1?"":"s"}, but the presses worked out as ${r.legs}.
-      <div class="row"><button class="btn pri" onclick="cmd('legs ${r.event_legs}')">Set race to ${r.event_legs} leg${r.event_legs===1?"":"s"}</button></div></div>`;
     if(ranked(r).filter(x=>x.tooClose).length) w+=`<div class="warn">Finish under 0.010 s apart – judges to review before confirming places.</div>`;
-    const inc=(r.rows||[]).filter(x=>x.status==="INCOMPLETE").length;
-    if(inc&&can) w+=`<div class="warn">${inc} crew${inc>1?"s":""} incomplete (fewer presses) – tap the crew to accept, place, DQ or DNF them.</div>`;
+    w=oddHtml(r,f,can,act)+w;
     h+=w+`<div class="card rtab">${resultsTable(r,can)}</div>`;
     h+=can?`<p class="mute rnote">Tap a crew to accept a missed press, change a place, DQ or DNF.</p>`
       :live?"":`<p class="mute rnote">This race can't be changed here any more (the next race has been SET). If a place is wrong, fix it in LiveHeats and note it.</p>`;
@@ -6169,7 +6197,9 @@ function rDetail(race){
     // enter in LiveHeats (or read it back once done)
     const ties=r.ties||[], dq=f.dq||{};
     const rows=(r.rows||[]).slice().sort(rBy==="lane"?(a,b)=>a.lane-b.lane:(a,b)=>(a.place||99)-(b.place||99)||a.lane-b.lane);
-    const out=x=>x.place?(ties.includes(x.lane)?"=":"")+x.place:x.status==="DQ"?"DQ":x.status==="DNF"?"DNF":x.status==="INCOMPLETE"?"DNF?":"–";
+    const calls=f.calls||{};
+    const out=x=>{ const c=calls[String(x.lane)]; if(c==="dnf") return "DNF"; if(c==="dq") return "DQ";
+      return x.place?(ties.includes(x.lane)?"=":"")+x.place:x.status==="DQ"?"DQ":x.status==="DNF"?"DNF":x.status==="INCOMPLETE"?(c==="fine"?"Judges: OK":"DNF?"):"–"; };
     h+=`<div class="rcop"><b>${s==="done"?"In LiveHeats":"Type these into LiveHeats"}</b><span>${[["place","By place"],["lane","By lane"]].map(([k,t])=>`<button class="btn sm ${rBy===k?"pri":""}" onclick="rBy='${k}';try{localStorage.setItem('irb_entby','${k}')}catch(e){};lastKey='';render()">${t}</button>`).join("")}<button class="btn sm" onclick="rCopy(${r.race})">Copy all</button></span></div>`;
     h+=`<div class="card rtab rent"><div class="ren hd"><span>Place</span><span>Lane</span><span>Crew</span><span>Time</span></div>${rows.map(x=>`<div class="ren ${x.place?"":"out"}"><b>${esc(out(x))}</b><span>${x.lane}</span><span class="rc">${esc(crewOf(r.heat,x.lane)||"–")}${!x.place&&dq[String(x.lane)]?`<small>${esc(dq[String(x.lane)])}</small>`:""}</span><span>${x.place&&x.t_us!=null?ft(x.t_us):""}</span></div>`).join("")}</div>`;
     if((r.rows||[]).some(x=>!x.place&&x.status==="INCOMPLETE")) h+=`<p class="mute rnote">"DNF?" = not every leg was recorded. Check with the finish judges before entering.</p>`;
@@ -6183,7 +6213,9 @@ function rDetail(race){
   }
   if((f.log||[]).length) h+=`<details class="rmore"><summary>History of this race (${f.log.length})</summary>${f.log.map(x=>`<div class="log">${esc(x[0])} ${esc(x[1])}: ${esc(x[2])}</div>`).join("")}</details>`;
   return h; }
-async function rConfirm(race){
+async function rConfirm(race,sure){
+  const z=rAll().find(x=>x.race===race), zr=z&&rRec(z), odd=zr?oddLanes(zr,zr.flags):[];
+  if(odd.length&&!sure){ askYes(`Lane ${odd.map(o=>o.lane).join(", ")} ${odd.length>1?"aren't":"isn't"} answered yet (presses don't match). Confirm anyway?`,()=>rConfirm(race,true),"Confirm anyway"); return; }
   const r=await post("/api/confirm",{race:race,who:myName()||"?"}); if(r&&r!=="ok"){ toast(r); return; }
   histAt=0; await loadHist();
   if(rFilter==="confirm"){ rMoveOn(race,`Race ${race} confirmed`); return; }
@@ -6395,6 +6427,16 @@ function openUnlock(){
     if(j.result==="ok"){ closeSheet(); toast("Logged in as "+ROLE_NAME[j.role]); tabRole=""; justLogged=true; } else $("pinmsg").textContent=j.result; }catch(e){ $("pinmsg").textContent="No link to the timing computer"; } };
 }
 async function lockDevice(){ await post("/api/lock",{}); wasWaiting=false; if(st) st.me=null; toast(st&&st.role!=="viewer"?"Logged out":"Request cancelled"); tabRole=""; location.hash=""; lastKey=""; render(); }
+// the button test says which lanes are racing: ask when that differs from the lanes in use
+function lanesAsk(){ const lt=st&&st.last_test;
+  if(!lt||lt.date!==st.today||!lt.top||lt.lanes_ok||st.test||!st.lanes_cmd||st.role!=="master") return null;
+  const n=st.lanes.length; return lt.top===n?null:{top:lt.top,n:n}; }
+function lanesAskHtml(){ const a=lanesAsk(); if(!a) return "";
+  const rng=(x,y)=>x===y?"Lane "+x:"Lanes "+x+"–"+y, busy=st.state==="ARMED"||st.state==="RACING";
+  return a.top<a.n?`<div class="warn">${rng(a.top+1,a.n)} didn't respond in the button test – not racing today, or a broken button?
+      <div class="row"><button class="btn sm pri" ${busy?"disabled":""} onclick="setLanes(${a.top})">Not racing – use ${a.top} lane${a.top>1?"s":""}</button><button class="btn sm" ${busy?"disabled":""} onclick="cmd('test on')">Test again</button><button class="btn sm" onclick="post('/api/lanes',{keep:true})">Keep ${a.n}</button></div></div>`
+    :`<div class="warn">${rng(a.n+1,a.top)} ${a.top-a.n>1?"were":"was"} pressed in the button test – race ${a.top} lanes today?
+      <div class="row"><button class="btn sm pri" ${busy?"disabled":""} onclick="setLanes(${a.top})">Yes, use ${a.top} lanes</button><button class="btn sm" onclick="post('/api/lanes',{keep:true})">No, keep ${a.n}</button></div></div>`; }
 function testProblems(){ const lt=st.last_test||{missing:[],clash:[]}, n=lt.missing.length+(lt.clash||[]).length; return n+" problem"+(n===1?"":"s"); }
 let ltOpen=false;
 // ---------- button test: full screen while it runs, so the tiles are big enough to see from the box ----------
@@ -6413,7 +6455,8 @@ function drawTestFS(){
   fsCounts=Object.assign({},cnt);
 }
 function testCard(fs){
-  const need=st.lanes.map(l=>"Lane "+l).concat(["SET","GO","FINISH"]);
+  const xtra=(st.test_seen||[]).filter(x=>/^Lane \d+$/.test(x)&&!st.lanes.includes(+x.slice(5))).sort((a,b)=>a.slice(5)-b.slice(5));
+  const need=st.lanes.map(l=>"Lane "+l).concat(xtra,["SET","GO","FINISH"]);
   if(st.test){
     const seen=st.test_seen||[], left=need.filter(x=>!seen.includes(x));
     const cnt=st.test_count||{}, cl=st.test_clash||[];
@@ -6600,7 +6643,7 @@ function eventsSheet(){ const ev=st.events.filter(e=>e.id);
 const GUIDES=[
   ["Timing desk","This laptop. You run the day.",[
     "Turn on the Wi-Fi router. Plug the timing box into this laptop. The app opens by itself.",
-    "Follow Get started on the Race tab: timing box, club name, how heats are run, Wi-Fi, button test, join card.",
+    "Follow Get started on the Race tab: timing box, club name, how heats are run, Wi-Fi, button test (it sets today's lanes), join card.",
     "Officials scan the join card and tap Officials. Their name and a 3-digit code show under System – check the code on their phone, then tap their job.",
     "Team managers: System › Today › Club codes › Print club codes. Hand each club its slip at check-in – it lets their team manager set Driver, Crew and Patient for their own crews.",
     "Watch the blue Next bar at the top. It always shows the next thing to do.",
@@ -6632,7 +6675,7 @@ const PI_DESK=["Timing desk","Your phone or tablet. You run the day – the Pi s
     "On your phone or tablet: join the IRB Timing Wi-Fi, then open {HS} (or scan the join card).",
     "New kit, or the PIN was cleared: tap Set up the timing desk and choose a 4–8 digit PIN. Write it down – any other timing desk phone needs it.",
     "Otherwise: tap Officials › Use the timing desk PIN. You stay logged in until Start new event.",
-    "Follow Get started on the Race tab: timing box, club name, how heats are run, button test, join card.",
+    "Follow Get started on the Race tab: timing box, club name, how heats are run, button test (it sets today's lanes), join card.",
     "Officials scan the join card and tap Officials. Their name and a 3-digit code show under System – check the code on their phone, then tap their job.",
     "Team managers: System › Today › Club codes › Print club codes. Hand each club its slip at check-in – it lets their team manager set Driver, Crew and Patient for their own crews.",
     "Watch the blue Next bar at the top. After each race, check it on the Results tab and press Confirm results (or let the Admin do it).",
@@ -6718,7 +6761,6 @@ function renderSystem(){
     if(master&&st.pico_upd) G.upd+=picoRow(row,racing,ownLocked);
     if(master&&st.firewall&&st.firewall.state!=null) G.net+=row("Phones", st.firewall.state?`<span class="ok">Windows lets phones connect</span>`:`<span class="bad">Windows is blocking phones${st.firewall.busy?" – answer Yes on the Windows prompt":""}</span>`,
       st.firewall.state||st.firewall.busy?"":`<button class="btn pri" onclick="post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))">Allow phones</button>`);
-    G.event+=row("Events", `<span class="mute">${st.events.filter(e=>e.id).map(e=>esc(e.name)+" "+e.legs).join(" · ")}</span>`, master?`<button class="btn" onclick="eventsSheet()">Edit</button>`:"");
     if(master) G.results+=row("Results to take home", `<span class="mute">Results spreadsheet, program and race log as a zip file</span>`,
       `<a class="btn" href="/event_pack.zip" download>Today</a>${(st.past_events||[]).length?`<button class="btn" onclick="packSheet()">Saved events</button>`:""}`);
     if(master) G.results+=row("Problem report", `<span class="mute">If something went wrong, send this file to the kit owner – no passwords in it</span>`,
