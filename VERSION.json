@@ -1,11 +1,12 @@
 {
- "app": "1.21.0",
- "pico": "3.11",
- "sha256": "27bdbb388be4c442ac1fa01efeb4ea133d29b08dace09c16a3ecc853cb53b38b",
- "pico_sha256": "93472188502f0c81a81ea7926fbd02697427af52d36a057da8983ac93fe7124a",
+ "app": "1.22.0",
+ "pico": "3.12",
+ "sha256": "7557c0cf60d15354266a2c5bead1f794d70849dd35c553a350d6d9ac5c1e9913",
+ "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "Hire-out reset (owner PIN): saves today, then clears results, officials, the timing desk PIN, join-card Wi-Fi and club name for the next hirer",
-  "Lane tiles say Check presses instead of INCOMPLETE",
-  "Removed the Number of legs buttons and the old Events list \u2013 the press-count flag covers them"
+  "The emergency stop is now required: always on, and the timing box won't race unless it's connected and released",
+  "The button test includes the emergency stop \u2013 press it and twist to release; no alarm during the test",
+  "Start of day checklist has an Emergency stop row",
+  "Timing box program v3.12"
  ]
 }

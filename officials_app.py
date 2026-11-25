@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.21.0"
+APP_VERSION = "1.22.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -91,7 +91,7 @@ S = {
     "box_temp": None, "box_temp_at": None, "box_max": None, "box_max_at": "",   # Pico v3.10: inside-box temperature
     "race_go_wall": None,                            # computer clock time of GO (for video)
     "practice": False, "backup": None,
-    "estop": False, "estop_fitted": False, "estop_cmd": False,    # emergency stop (timing box v3.7)
+    "estop": False, "estop_fitted": False, "estop_cmd": False, "estop_req": False,    # emergency stop (timing box v3.7)
     "estop_at": None, "estop_stopped": None,
 }
 last_rx = 0.0             # when the Pico last sent anything
@@ -3026,6 +3026,7 @@ def handle_line(line):
         if not S["batt_on"]:
             S["batt"] = None
         S["estop_fitted"] = bool(d.get("estop_fitted"))
+        S["estop_req"] = bool(d.get("estop_req"))       # v3.12: always on, required to race
         if not S["estop_cmd"]:
             S["estop"] = False
         if d.get("clock") and ser:
@@ -3081,7 +3082,7 @@ def handle_line(line):
             pressed = [int(x[5:]) for x in S["test_seen"] if x.startswith("Lane ") and x[5:].isdigit()]
             top = max(pressed) if pressed else 0
             upto = top or max(S["lanes"] or [0])
-            need = ["Lane %d" % l for l in range(1, upto + 1)] + ["SET", "GO", "FINISH"]
+            need = ["Lane %d" % l for l in range(1, upto + 1)] + ["SET", "GO", "FINISH"] + (["E-STOP"] if S["estop_req"] else [])
             S["last_test"] = {"date": datetime.now().strftime("%Y-%m-%d"), "at": datetime.now().strftime("%H:%M"),
                               "top": top, "lanes_was": len(S["lanes"]),
                               "seen": list(S["test_seen"]), "missing": [x for x in need if x not in S["test_seen"]],
@@ -3407,7 +3408,7 @@ def snapshot(role="master", local=True, tok=None):
         for k in ("ties", "has_test", "test", "test_seen", "last_test", "faults_racing"):
             d[k] = S[k]
         d["raced"] = raced
-        d["estop"] = {"on": S["estop"], "fitted": S["estop_fitted"], "cmd": S["estop_cmd"],
+        d["estop"] = {"on": S["estop"], "fitted": S["estop_fitted"], "cmd": S["estop_cmd"], "req": S["estop_req"],
                       "since": int(time.time() - S["estop_at"]) if S["estop"] and S["estop_at"] else None,
                       "stopped": S["estop_stopped"]}
         d["confirmed"] = bool(S["results"] and is_confirmed(S["results"].get("race")))
@@ -3738,6 +3739,8 @@ class H(BaseHTTPRequestHandler):
                 with lock:
                     if not (ser and S["estop_cmd"]):
                         r = "The timing box needs program v3.7 or newer for the emergency stop (System › Setup › Updates)"
+                    elif S["estop_req"] and not data.get("fitted"):
+                        r = "The emergency stop is always on – it can't be switched off"
                     elif S["state"] in ("ARMED", "RACING"):
                         r = "Change this between races"
                     else:
@@ -4821,7 +4824,7 @@ function wizStepsAll(){
        <div class="row"><button class="btn pri" onclick="offDo({net:{ssid:$('wssid').value,pass:$('wpass').value,addr:a_addr()}},'Saved')">Save Wi-Fi</button></div>${fwBlock()}`},
     {k:"test",title:"Button test",ok:!!(lt&&lt.date===st.today&&!lt.missing.length&&!(lt.clash||[]).length&&!lanesAsk()),
      status:st.test?"Running now":lt&&lt.date===st.today?((lt.missing.length||(lt.clash||[]).length)?testProblems()+" – fix and test again":"All buttons worked"):"Not done today",
-     body:()=>st.test?`<p>Press every button – each lane, SET, GO, and hold FINISH for 1 second. Then end the test.</p><div class="row"><button class="btn pri" onclick="sysView='today';goTab('system')">Show the test</button></div>`
+     body:()=>st.test?`<p>Press every button – each lane, SET, GO, hold FINISH for 1 second, then press the emergency stop and twist it to release. Then end the test.</p><div class="row"><button class="btn pri" onclick="sysView='today';goTab('system')">Show the test</button></div>`
        :`${lanesAskHtml()}<p>Someone at the water presses every button while you watch the screen. It's the only way to find a broken FINISH cable. The lanes pressed become today's lanes.</p>
        <div class="row"><button class="btn pri" ${st.connected&&(st.state==="IDLE"||st.state==="DONE")?"":"disabled"} onclick="cmd('test on').then(()=>{sysView='today';goTab('system')})">Start button test</button></div>`},
     {k:"card",opt:true,title:"Join card",ok:joinDone,status:joinDone?"Done":"Print it, or save the picture to share",
@@ -4979,6 +4982,11 @@ const TROUBLE=[
     "Set the screen timeout to Never (or the longest) in that device's settings.",
     "Keep the app page open in front – it asks the device to stay awake while it's showing."],true]]],
  ["Timing box and buttons",[
+  ["Every screen says STOP but nobody pressed the emergency stop","The emergency stop is required – the box stops if its circuit is open.",[
+    "Check the red button is twisted out (released).",
+    "Check its two wires: GP28 (pin 34) and GND (pin 38) on the Pico, on the button's normally-closed contact (usually marked 1-2).",
+    "A cut or loose wire looks the same as a press – that's on purpose, so a damaged cable can't leave racing unprotected.",
+    "Once the circuit is closed again, STOP clears by itself within a second."],1],
   ["Timing box not connected","\"Timing box not connected\" at the top of the Race tab.",[
     "Check the USB cable at both ends.",
     "Close Thonny if it's open – only one program can use the timing box at a time.",
@@ -5084,6 +5092,9 @@ function raceStatus(conf,ent){ return `<span class="rst"><i class="on">Raced ✓
 function dayChecks(){
   const pg=st.program||{}, lt=st.last_test, a=st.access||{officials:[]}, c=[];
   c.push({ok:st.connected&&!st.faults.length,label:"Timing box connected",hint:!st.connected?"Plug the timing box's USB cable into this computer":st.faults.length?"Check wiring: "+st.faults.join(", "):"Wiring OK"});
+  { const e=st.estop||{};
+    if(st.connected) c.push({ok:!!(e.req&&!e.on),label:"Emergency stop",hint:!e.req?"Update the timing box program to v3.12 – the emergency stop is required to race"
+      :e.on?"STOP – pressed or not connected. Twist to release, or check GP28 (pin 34) to GND":"Connected and released",btn:!e.req?"Updates":"",act:"sysView='setup';lastKey='';render()"}); }
   c.push({ok:pg.mode!=null,label:"Heats for today",hint:pg.mode==="on"?"Program on":pg.mode==="off"?"No program – heats chosen by hand":"Choose the program, or No program",btn:"Program",act:"goTab('program')"});
   if(st.has_test){ const today=lt&&lt.date===st.today, bad=today&&(lt.missing.length||(lt.clash||[]).length);
     const can=st.connected&&(st.state==="IDLE"||st.state==="DONE")&&!st.test;
@@ -6450,7 +6461,7 @@ function drawTestFS(){
 }
 function testCard(fs){
   const xtra=(st.test_seen||[]).filter(x=>/^Lane \d+$/.test(x)&&!st.lanes.includes(+x.slice(5))).sort((a,b)=>a.slice(5)-b.slice(5));
-  const need=st.lanes.map(l=>"Lane "+l).concat(xtra,["SET","GO","FINISH"]);
+  const need=st.lanes.map(l=>"Lane "+l).concat(xtra,["SET","GO","FINISH"],(st.estop||{}).req?["E-STOP"]:[]);
   if(st.test){
     const seen=st.test_seen||[], left=need.filter(x=>!seen.includes(x));
     const cnt=st.test_count||{}, cl=st.test_clash||[];
@@ -6466,7 +6477,7 @@ function testCard(fs){
       clashTxt+=`<div class="warn">Check: ${esc(c.a)} and ${esc(c.b)} went off together (${ms(c)}). It may have been two people pressing at once.
         Press ${left.map(esc).join(" and ")} on ${left.length>1?"their":"its"} own – if ${left.length>1?"both work":"it works"} separately, this clears.</div>`;
     }
-    return `<div class="card confirm ${fs?"tfs":""}"><div class="tfh"><h2>Button test running</h2>${fs?`<button class="btn" onclick="testMin=true;fsKey='';drawTestFS()">Minimise</button>`:""}</div>${clashTxt}${!st.connected?`<div class="bad-warn">Timing box not connected</div>`:""}<p class="mute">Press each button (hold FINISH for 1 second). A box flashes every time its button is pressed, so you can check each button is wired to the right lane. Nothing will start.</p>
+    return `<div class="card confirm ${fs?"tfs":""}"><div class="tfh"><h2>Button test running</h2>${fs?`<button class="btn" onclick="testMin=true;fsKey='';drawTestFS()">Minimise</button>`:""}</div>${clashTxt}${!st.connected?`<div class="bad-warn">Timing box not connected</div>`:""}<p class="mute">Press each button (hold FINISH for 1 second)${(st.estop||{}).req?", then press the emergency stop and twist it to release":""}. A box flashes every time its button is pressed, so you can check each button is wired to the right lane. Nothing will start.</p>
       <div class="lastpress">${st.test_last?"Last pressed: "+esc(st.test_last):"Press a button…"}</div>
       <div class="tests">${need.map(x=>`<div data-t="${esc(x)}" class="${bad.has(x)?"clash":sus.has(x)?"sus":seen.includes(x)?"ok":""}">${seen.includes(x)?"✓ ":""}${esc(x)}${cnt[x]?`<small>×${cnt[x]}</small>`:""}</div>`).join("")}</div>
       <p>${left.length?left.length+" still to press.":bad.size?"All buttons respond, but there is a wiring fault above.":sus.size?"All buttons respond – finish the check above.":"All buttons work."}</p>
@@ -6654,7 +6665,7 @@ const GUIDES=[
     "Something wrong? Press ? on any screen for fixes."]],
   ["Starter","SET, GO and FINISH.",[
     "Scan the join card: 1 for the Wi-Fi, 2 for the app. Tap Officials, type your name and show the code to the timing desk.",
-    "Every morning, do the button test with the timing desk: press every lane, SET, GO, and hold FINISH for 1 second.",
+    "Every morning, do the button test with the timing desk: press every lane, SET, GO, hold FINISH for 1 second, then press the emergency stop and twist it to release.",
     "Check the heat on your screen matches the crews on the start.",
     "SET arms the race. GO starts the clock. The handheld buttons do the same.",
     "Red messages must be checked before SET.",
@@ -6754,11 +6765,13 @@ function renderSystem(){
     G.box+=row("Timing box", st.connected?(st.faults.length?`<span class="bad">Wiring fault: ${esc(st.faults.join(", "))}</span>`
         :`<span class="ok">Connected · wiring OK</span>`):`<span class="bad">Not connected – plug its USB cable into this computer</span>`, "");
     if(master&&st.connected){ const e=st.estop||{};
-      G.box+=row("Emergency stop", !e.cmd?`<span class="mute">Needs timing box program v3.7 – update it under Updates</span>`
+      G.box+=row("Emergency stop", e.req?(e.on?`<span class="bad">STOP – pressed or not connected. Twist the button to release, or check its wiring: GP28 (pin 34) to GND, normally-closed contact</span>`
+          :`<span class="ok">Always on · all clear</span> <span class="mute">– required to race. Pressing it stops every race, flashes every light and sounds the siren</span>`)
+        :!e.cmd?`<span class="mute">Needs timing box program v3.12 – update it under Updates</span>`
         :e.on?`<span class="bad">PRESSED – twist the button on the box to release</span>`
         :e.fitted?`<span class="ok">Fitted · all clear</span> <span class="mute">– pressing it stops every race, flashes every light and sounds the siren</span>`
         :`<span class="mute">Not fitted – turn on once a latching E-stop is wired to GP28 (normally-closed contact to GND)</span>`,
-        e.cmd&&!e.on?`<button class="btn" ${racing?"disabled":""} onclick="estopFit(${!e.fitted})">${e.fitted?"Not fitted":"It's fitted"}</button>`:""); }
+        e.cmd&&!e.on&&!e.req?`<button class="btn" ${racing?"disabled":""} onclick="estopFit(${!e.fitted})">${e.fitted?"Not fitted":"It's fitted"}</button>`:""); }
     if(master) G.event+=row("Lanes", lanesWord(), `<button class="btn" ${racing||st.test?"disabled":""} onclick="lanesSheet()">Change</button>`);
     if(master&&st.pico_upd) G.upd+=picoRow(row,racing,ownLocked);
     if(master&&st.firewall&&st.firewall.state!=null) G.net+=row("Phones", st.firewall.state?`<span class="ok">Windows lets phones connect</span>`:`<span class="bad">Windows is blocking phones${st.firewall.busy?" – answer Yes on the Windows prompt":""}</span>`,
@@ -7051,7 +7064,7 @@ function drawEstop(){
   el.className="on";
   el.innerHTML=`<div class="esbox"><div class="esword">STOP</div><div class="essub">Emergency stop – all crews stop racing now</div>
     ${e.stopped?`<div class="esrace">Race ${e.stopped} has been stopped. It will be re-run.</div>`:""}
-    ${off?`<div class="eshelp">When it's safe, twist the red emergency stop button on the timing box to release it. Timing can't start until it's released.</div>`:""}</div>`;
+    ${off?`<div class="eshelp">When it's safe, twist the red emergency stop button on the timing box to release it. Timing can't start until it's released.${e.req&&!e.stopped?" If nobody pressed it, check its wiring – GP28 (pin 34) to GND.":""}</div>`:""}</div>`;
 }
 function render(){
   drawEstop(); rememberTab();

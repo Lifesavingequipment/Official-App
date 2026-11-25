@@ -1,4 +1,6 @@
-# IRB Finish Timing - bench test v3.11
+# IRB Finish Timing - bench test v3.12
+# v3.12: the EMERGENCY STOP is required - always on, no racing unless GP28 is closed to GND. In the button
+#        test, pressing it is just ticked off (no alarm) so it can be checked every morning.
 # v3.11: the button test listens to every wired lane, so the app can see which lanes are racing today.
 # v3.6: wired for up to 10 lanes; the app chooses how many are in use (lanes N). Lanes not in use are
 #       ignored completely - no cable faults, no lights, not in results. Saved in lanes.txt on the Pico.
@@ -197,7 +199,8 @@ def estop_saved():
         return False
 
 
-estop_fitted = estop_saved()
+estop_fitted = True            # v3.12: always on - a kit can't race without its emergency stop
+estop_test_open = False       # button test: the E-stop has been seen pressed (ticked off once per press)
 
 # ---------------- Helpers ----------------
 
@@ -311,7 +314,7 @@ def show_help():
     print("log = list saved history files (download them from Thonny's Files view)")
     print("Jumper test: lanes/SET/GO jumpered to GND = idle, pull out = hit.")
     print("FINISH: touch pin 6 to GND for 1 s.")
-    print("estop on / estop off = emergency stop button fitted to GP28 (NC to GND) - now %s" % ("ON" if estop_fitted else "off"))
+    print("Emergency stop: GP28 (pin 34) to GND, normally-closed contact - always on, required to race")
 
 
 # ---- Extended microsecond clock ----
@@ -377,7 +380,7 @@ def results_data():
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "3.11", "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
+    emit({"ev": "hello", "fw": "3.12", "estop_req": True, "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
           "clock": True, "beat": True, "batt": batt_on, "batt_cmd": True, "box_temp": True, "estop_cmd": True, "estop_fitted": estop_fitted})
     emit({"ev": "estop", "on": estop_on, "fitted": estop_fitted})
@@ -838,18 +841,11 @@ def command(line):
         if len(w) < 2 or w[1] not in ("on", "off"):
             print("E-stop is %s. Type  estop on  if one is wired to GP28, or  estop off." % ("fitted" if estop_fitted else "not fitted"))
             return
-        if state in ("ARMED", "RACING"):
-            print("Change the E-stop setting between races.")
-            emit({"ev": "estop", "on": estop_on, "fitted": estop_fitted, "refused": True})
+        if w[1] == "off":
+            print("The emergency stop is always on - it can't be switched off.")
+            emit({"ev": "estop", "on": estop_on, "fitted": True, "refused": True})
             return
-        estop_fitted = w[1] == "on"
-        try:
-            with open(ESTOP_FILE, "w") as fh:
-                fh.write("1" if estop_fitted else "0")
-        except OSError:
-            pass
-        print("E-stop %s." % ("fitted - pressing it stops everything" if estop_fitted else "not fitted - GP28 is ignored"))
-        emit({"ev": "estop", "on": estop_on, "fitted": estop_fitted})
+        emit({"ev": "estop", "on": estop_on, "fitted": True})
         return
     if estop_on and c in ("set", "go", "f", "r", "test"):
         print("EMERGENCY STOP is on - twist the button to release it first.")
@@ -1183,17 +1179,20 @@ line = ""
 while True:
     # 0. EMERGENCY STOP - checked before anything else
     now = time.ticks_ms()
-    if estop_fitted:
-        raw_e = estop_in.value()
-        if raw_e != estop_seen:
-            estop_seen, estop_seen_since = raw_e, now
-        elif time.ticks_diff(now, estop_seen_since) >= ESTOP_STEADY_MS:
-            if raw_e and not estop_on:
-                estop_press()
-            elif not raw_e and estop_on:
-                estop_release()
-    elif estop_on:
-        estop_release()
+    raw_e = estop_in.value()
+    if raw_e != estop_seen:
+        estop_seen, estop_seen_since = raw_e, now
+    elif time.ticks_diff(now, estop_seen_since) >= ESTOP_STEADY_MS:
+        if test_mode and not estop_on:          # button test: just tick it off (released again later)
+            if raw_e and not estop_test_open:
+                estop_test_open = True
+                test_input("E-STOP")
+            elif not raw_e:
+                estop_test_open = False
+        elif raw_e and not estop_on:
+            estop_press()
+        elif not raw_e and estop_on:
+            estop_release()
     if estop_on:
         estop_run(now)
         tail = head                     # presses while stopped don't count
