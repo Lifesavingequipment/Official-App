@@ -1,12 +1,11 @@
 {
- "app": "1.20.0",
+ "app": "1.21.0",
  "pico": "3.11",
- "sha256": "2ad478ec55e88473074432a3b68376c41f2ff9564773ada975829b03933033d4",
+ "sha256": "27bdbb388be4c442ac1fa01efeb4ea133d29b08dace09c16a3ecc853cb53b38b",
  "pico_sha256": "93472188502f0c81a81ea7926fbd02697427af52d36a057da8983ac93fe7124a",
  "notes": [
-  "No more choosing an event or legs \u2013 each crew's finish is worked out from its presses",
-  "A lane that pressed fewer or more times than the others is flagged: DNF, DQ or It's fine",
-  "The button test sets today's lanes, and asks when a lane didn't respond or an extra lane was pressed",
-  "Timing box program v3.11: the button test listens to every wired lane"
+  "Hire-out reset (owner PIN): saves today, then clears results, officials, the timing desk PIN, join-card Wi-Fi and club name for the next hirer",
+  "Lane tiles say Check presses instead of INCOMPLETE",
+  "Removed the Number of legs buttons and the old Events list \u2013 the press-count flag covers them"
  ]
 }

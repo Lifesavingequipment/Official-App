@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.20.0"
+APP_VERSION = "1.21.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -706,6 +706,49 @@ def new_event(d):
     return "ok:" + os.path.basename(folder)
 
 
+def hire_reset(d):
+    """owner: get the kit ready for the next hirer. Today's data is saved first (like Start new event), then
+    officials, remembered officials, the timing desk PIN, the join-card Wi-Fi, club name and logo are cleared
+    and Get started shows again. Kept: owner PIN, hotspot, lanes, e-stop, battery calibration, updates key, kit list."""
+    if not OWNER["pin"]:
+        return "Set an owner PIN first (Owner lock)"
+    if str(d.get("pin") or "") != OWNER["pin"] and not owner_ok():
+        time.sleep(1)
+        return "Wrong owner PIN"
+    if S["state"] in ("ARMED", "RACING") or S["test"]:
+        return "Not during a race or button test"
+    r = new_event({"name": "before hire reset"})
+    if not r.startswith("ok"):
+        return r
+    with lock:
+        clear_officials()                           # every phone, the timing desk ones too
+        regulars.clear()
+        PINS["master"] = ""
+        NET["ssid"] = NET["pass"] = ""
+        BRAND["club"] = BRAND["event"] = ""
+        try:
+            os.remove(LOGO_FILE)
+        except OSError:
+            pass
+        S["last_test"] = None
+        S["backup"] = None
+        SETUP["done"] = False
+        OWNER["open_until"] = 0.0                    # locked again for the hirer
+        moved = 0
+        if d.get("archive", True):                   # earlier hires' saved events: out of the list, still on the kit
+            dest = os.path.join(DATA, "hire_archive", datetime.now().strftime("%Y-%m-%d %H%M%S"))
+            try:
+                for e in os.listdir(EVENTS_DIR):
+                    os.makedirs(dest, exist_ok=True)
+                    shutil.move(os.path.join(EVENTS_DIR, e), os.path.join(dest, e))
+                    moved += 1
+            except OSError:
+                pass
+        save_settings()
+    note("Hire-out reset: kit cleared for the next hirer%s" % (" (%d saved events moved to hire_archive)" % moved if moved else ""))
+    return "ok"
+
+
 def update_view():
     b = backups()
     prev = re.search(r"_v([\d.]+)\.py$", b[0]) if b else None
@@ -776,43 +819,7 @@ def brand_action(d):
     return "ok"
 
 
-def events_action(d):
-    if S["state"] in ("ARMED", "RACING"):
-        return "Not during a race"
-    name = re.sub(r"\s+", " ", str(d.get("name") or "")).strip()[:30]
-    try:
-        legs = int(d.get("legs") or 0)
-    except (TypeError, ValueError):
-        legs = 0
-    if d.get("reset"):
-        EVENTS[:] = [dict(e) for e in DEFAULT_EVENTS]
-    elif d.get("add"):
-        if len(name) < 2 or not 1 <= legs <= 8:
-            return "Type a name and choose 1 to 8 legs"
-        if any(e["name"].lower() == name.lower() for e in EVENTS):
-            return "There's already an event called " + name
-        n = 1
-        while any(e["id"] == "c%d" % n for e in EVENTS):
-            n += 1
-        EVENTS.append({"id": "c%d" % n, "name": name, "legs": legs})
-    elif d.get("edit"):
-        e = find_event(str(d["edit"]))
-        if not e or not e["id"] or len(name) < 2 or not 1 <= legs <= 8:
-            return "Type a name and choose 1 to 8 legs"
-        e.update(name=name, legs=legs)
-    elif d.get("remove"):
-        e = find_event(str(d["remove"]))
-        if not e or not e["id"]:
-            return "not allowed"
-        if len(EVENTS) <= 2:
-            return "Keep at least one event"
-        EVENTS.remove(e)
-        if S["event"] == e["id"]:
-            S["event"] = ""
-    else:
-        return "not allowed"
-    save_settings()
-    return "ok"
+
 
 
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -1627,7 +1634,7 @@ def allowed(role, path, data):
         if path.startswith("/api/cmd"):
             return None if ADMIN_CMDS.match(cmd) else "SET, GO and FINISH are for the Starter"
         if any(path.startswith(p) for p in ("/api/confirm", "/api/note", "/api/entered", "/api/rflag", "/api/draw/load",
-                                             "/api/program", "/api/heat", "/api/event", "/api/template")):
+                                             "/api/program", "/api/heat", "/api/template")):
             return None
         return "Only the timing desk can do that"
     if role == "starter":
@@ -1639,13 +1646,7 @@ def allowed(role, path, data):
     return "%s can't do that" % who
 
 
-def set_event(event_id):
-    if not find_event(event_id):
-        return "not allowed"
-    with lock:
-        S["event"] = event_id
-        save_settings()
-    return "ok"
+
 
 
 def save_flags():
@@ -3149,8 +3150,7 @@ def handle_line(line):
     elif ev == "results":
         ev_info = S["race_event"] or find_event(S["event"])
         if ev_info and ev_info["legs"]:
-            d["event"] = ev_info["name"]
-            d["event_legs"] = ev_info["legs"]
+            d["event"] = ev_info["name"]          # just the name - legs come from the presses
         heat = S["race_heat"] or S["heat"]
         if heat:
             d["heat"] = heat
@@ -3626,6 +3626,10 @@ class H(BaseHTTPRequestHandler):
         except ValueError:
             data = {}
         cookie = lambda tok: {"Set-Cookie": "irb_token=%s; Max-Age=31536000; Path=/; SameSite=Strict" % tok}
+        if self.path.startswith("/api/hire_reset"):       # owner: ready for the next hirer
+            r = hire_reset(data) if self.role() == "master" else "Only the timing desk can do that"
+            self.send(200, json.dumps({"result": r}))
+            return
         if self.path.startswith("/api/new_event"):        # Master: put today's event away and start clean
             data["_tok"] = None if self.is_local() else self.token()
             r = new_event(data) if self.role() == "master" else "Only the timing desk can start a new event"
@@ -3637,7 +3641,7 @@ class H(BaseHTTPRequestHandler):
                 r = fn(data) if self.role() == "master" else "Only the timing desk can do that"
                 self.send(200, json.dumps({"result": r}))
                 return
-        for route, fn in (("/api/owner", owner_action), ("/api/brand", brand_action), ("/api/events", events_action)):
+        for route, fn in (("/api/owner", owner_action), ("/api/brand", brand_action)):
             if self.path.startswith(route):
                 if self.role() != "master":
                     r = "Only the timing desk can do that"
@@ -3887,8 +3891,6 @@ class H(BaseHTTPRequestHandler):
             self.send(200, json.dumps({"result": program_action(data)}))
         elif self.path.startswith("/api/heat"):
             self.send(200, json.dumps({"result": select_heat(data)}))
-        elif self.path.startswith("/api/event"):
-            self.send(200, json.dumps({"result": set_event(str(data.get("id", "")))}))
         else:
             self.send(404, '{"error":"not found"}')
 
@@ -3963,7 +3965,7 @@ touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callou
 .close{display:inline-block;margin-top:4px;padding:3px 9px;border-radius:99px;font:700 13px var(--f);background:var(--red);color:#fff}
 .gap{font:700 15px var(--fn);color:var(--mute)}
 .ev small{display:block;font-weight:600;font-size:14px}
-@media (min-width:900px){.btn.ev{min-height:44px;padding:6px 10px;font-size:15px}.btn.ev small{font-size:12px}}
+@media (min-width:900px){}
 .start{display:flex;gap:10px;margin-top:14px}
 .start .btn{flex:1;font-size:26px;padding:26px 12px;min-height:84px}
 .btn.amber{background:var(--amber);border-color:var(--amber);color:#fff}.btn.green{background:var(--green);border-color:var(--green);color:#fff}
@@ -4454,7 +4456,7 @@ border:2px solid var(--line);border-radius:10px;padding:.25em .7em;line-height:1
   #printcard .fxi summary::-webkit-details-marker{display:none}#printcard .fxsec{font-size:16pt;margin:5mm 0 1mm;color:#000;border-bottom:1px solid #888}
   #printcard .fxi ol{font-size:11pt;line-height:1.35;margin:1mm 0;padding-left:7mm}#printcard .fxi li{margin:0.6mm 0}#printcard .fxsee{font-size:10.5pt;margin:0.5mm 0}}
 details.fix{border-bottom:1px solid var(--soft);padding:8px 0}details.fix summary{font-weight:700}details.fix p{margin:6px 0 2px}
-.evrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:6px 0}.evrow input{flex:1 1 180px}.evrow select{padding:8px;font-size:17px}
+
 #iab{position:sticky;top:0;z-index:30;background:#fff4d6;border-bottom:3px solid var(--amber);padding:10px 14px;display:grid;gap:4px}
 #iab b{font-size:19px}
 @media print{#printcard .guide{page-break-after:always;font-family:sans-serif;color:#000}#printcard .guide:last-child{page-break-after:auto}
@@ -4742,8 +4744,6 @@ function setMyName(v){ try{ localStorage.setItem("irb_name",v.trim()); }catch(e)
 async function post(url,data){ try{ const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
   body:JSON.stringify(Object.assign({who:myName()||(st&&st.local?"Timing computer":"?")},data))}); const j=await r.json(); if(j.result!=="ok") toast(j.result); return j.result; }catch(e){ toast("No link to the timing computer"); } }
 function cmd(c,expect){ return post("/api/cmd",{cmd:c,expect:expect}); }
-let evOpen=false;
-function setEvent(id){ evOpen=false; if(st){ st.event=id; lastKey=""; render(); } post("/api/event",{id:id}); }
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{ tab=b.dataset.t;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("on",x===b));
   ["race","results","program","marshal","history","system"].forEach(s=>$(s).hidden=(s!==tab)); closeSheet(); lastKey=""; render(); rememberTab(); });
@@ -4776,8 +4776,6 @@ function shownHeat(){
 }
 function crewOf(h,l){ return h&&h.crews?h.crews[String(l)]||"":""; }
 function checkOf(h,l){ return h&&st&&st.checkin&&st.checkin[h.heat_id]?st.checkin[h.heat_id][String(l)]||"":""; }
-function eventName(e){ return ""; }      // events aren't chosen any more – legs come from the presses
-function chosenEvent(){ return st.events.find(e=>e.id===st.event); }
 function banner(){
   if(linkDown||!st) return `<div class="banner b-off"><div><div class="big">No link to the timing computer</div>
     <div class="sub">Check this device is on the timing Wi-Fi. The timing box keeps timing and saving while the link is down.</div></div></div>`;
@@ -4787,9 +4785,9 @@ function banner(){
     <div class="sub">Go to System and press Restart timing program.</div></div></div>`;
   const s=st.state, r=st.race;
   if(s==="RACING") return `<div class="banner b-racing"><div><div class="big">RACING</div>
-    <div class="sub">Race ${r+1}${st.race_heat?" · "+esc(heatLabel(st.race_heat)):eventName(st.race_event)}</div></div><div class="clock" id="clock">${clock(st.elapsed||0)}</div></div>`;
+    <div class="sub">Race ${r+1}${st.race_heat?" · "+esc(heatLabel(st.race_heat)):""}</div></div><div class="clock" id="clock">${clock(st.elapsed||0)}</div></div>`;
   if(s==="ARMED") return `<div class="banner b-armed"><div><div class="big">SET – waiting for GO</div>
-    <div class="sub">Race ${r+1}${st.heat?" · "+esc(heatLabel(st.heat)):eventName(chosenEvent())}</div></div></div>`;
+    <div class="sub">Race ${r+1}${st.heat?" · "+esc(heatLabel(st.heat)):""}</div></div></div>`;
   if(s==="DONE") return `<div class="banner b-done"><div><div class="big">Race ${r} finished</div>
     ${st.confirmed?`<div class="sub">Results confirmed ✓</div>`:""}</div></div>`;
   return `<div class="banner b-idle"><div><div class="big">Ready – press SET</div>
@@ -4865,7 +4863,7 @@ function renderRace(){
       let hits=(st.live[String(l)]||[]), txt="—", sub="No presses";
       if(st.state==="DONE"&&st.results){ const row=st.results.rows.find(x=>x.lane===l);
         if(row){ const eq=(st.results.ties||[]).includes(l)?"=":"";
-          txt=row.place?ft(row.t_us):row.status; sub=row.place?"Place "+eq+row.place+(row.status!=="TIMED"?" · "+row.status:""):"No place"; } }
+          txt=row.place?ft(row.t_us):row.status==="INCOMPLETE"?"Check presses":row.status; sub=row.place?"Place "+eq+row.place+(row.status!=="TIMED"?" · "+row.status:""):"No place"; } }
       else if(hits.length){ txt=ft(hits[hits.length-1]); sub=hits.length+" press"+(hits.length>1?"es":""); }
       const cn=crewOf(ht,l), mv=ht&&(ht.swaps||[]).filter(s=>s.includes(l)).length, ck=checkOf(ht,l);
       h+=`<div class="lane ${hits.length?"hit":""} ${ck==="scratched"?"scr":""}"><div class="n">Lane ${l}</div>${cn?`<div class="crew">${esc(cn)}</div>`:""}${mv?`<div class="p">lane changed</div>`:""}
@@ -5382,7 +5380,7 @@ function resultsTable(res, tappable){
     const vid=res.go_wall&&r.t_us!=null&&r.tooClose?`<div class="vid">video ${wall(res.go_wall,r.t_us)}</div>`:"";
     const dqc=r.status==="DQ"&&res.flags&&(res.flags.dq||{})[String(r.lane)]?` · ${esc(res.flags.dq[String(r.lane)])}`:"";
     h+=`<tr class="${tappable?"tap":""}" data-lane="${r.lane}"><td><b>${r.place?((res.ties||[]).includes(r.lane)?"=":"")+r.place:""}</b></td><td class="cr"><span style="white-space:nowrap">Lane ${r.lane}</span>${crewOf(res.heat,r.lane)?`<div class="crew">${esc(crewOf(res.heat,r.lane))}</div>`:""}</td>
-      <td class="tm">${ft(r.t_us)}${r.gap!=null?`<div><span class="gap">+${ft(r.gap)}</span>${r.tooClose?`<span class="close">TOO CLOSE</span>`:""}</div>`:""}${splits?`<div class="split">${splits}</div>`:""}${extra}${r.status!=="TIMED"?`<div><span class="tag t-${r.status}">${r.status}${dqc}</span></div>`:""}${vid}${ch?`<div class="split">officials: ${esc(ch)}</div>`:""}</td>${
+      <td class="tm">${ft(r.t_us)}${r.gap!=null?`<div><span class="gap">+${ft(r.gap)}</span>${r.tooClose?`<span class="close">TOO CLOSE</span>`:""}</div>`:""}${splits?`<div class="split">${splits}</div>`:""}${extra}${r.status!=="TIMED"?`<div><span class="tag t-${r.status}">${r.status==="INCOMPLETE"?"CHECK PRESSES":r.status}${dqc}</span></div>`:""}${vid}${ch?`<div class="split">officials: ${esc(ch)}</div>`:""}</td>${
       tappable?`<td class="ed"><button class="btn sm">Edit</button></td>`:""}</tr>`;
   }
   return h+`</table></div>`;
@@ -5435,9 +5433,7 @@ function renderResults(){
   else if(fl.note) right+=`<div class="card"><h2>Race note</h2><p>${esc(fl.note)}</p></div>`;
   if((fl.log||[]).length) right+=`<div class="card"><h2>Changes</h2>${fl.log.map(x=>`<div class="log">${esc(x[0])} ${esc(x[1])}: ${esc(x[2])}</div>`).join("")}</div>`;
   if(can){
-    right+=`<div class="card"><h2 style="margin:0">Number of legs</h2><div class="mute" style="font-size:14px">From the presses. Change only if most crews missed a press.</div><div class="row">`;
-    for(let n=1;n<=4;n++) right+=`<button class="btn ${n===res.legs?"pri":""}" onclick="cmd('legs ${n}')">${n}</button>`;
-    right+=`</div><div class="row"><button class="btn" onclick="askYes('Undo every change made to this race, including the number of legs?',()=>cmd('clear'),'Yes, undo all')">Undo ALL changes (whole race)</button></div></div>`;
+    right+=`<div class="card"><div class="row"><button class="btn" onclick="askYes('Undo every change made to this race?',()=>cmd('clear'),'Yes, undo all')">Undo ALL changes (whole race)</button></div></div>`;
   }
   right=earlierCard()+right;
   $("results").innerHTML=`<div class="cols"><div>${h}</div><div>${right}</div></div>`;
@@ -6190,9 +6186,7 @@ function rDetail(race){
       :live?"":`<p class="mute rnote">This race can't be changed here any more (the next race has been SET). If a place is wrong, fix it in LiveHeats and note it.</p>`;
     if(act&&s==="confirm") h+=`<div class="ract"><button class="btn pri big rbig" onclick="rConfirm(${r.race})">Confirm results</button>${later}</div>`;
     else if(act) h+=`<div class="ract">${later}</div>`;
-    if(can){ h+=`<details class="rmore"><summary>More – legs, race note, undo all</summary><div class="mute" style="font-size:14px;margin-top:6px">Number of legs (from the presses – change only if most crews missed a press)</div><div class="row">`;
-      for(let n=1;n<=4;n++) h+=`<button class="btn ${n===r.legs?"pri":""}" onclick="cmd('legs ${n}')">${n}</button>`;
-      h+=`</div><div class="row"><button class="btn" onclick="openNote(${r.race})">${f.note?"Edit race note":"Add race note"}</button><button class="btn" onclick="askYes('Undo every change made to this race, including the number of legs?',()=>cmd('clear'),'Yes, undo all')">Undo ALL changes</button></div></details>`; }
+    if(can){ h+=`<details class="rmore"><summary>More – race note, undo all</summary><div class="row"><button class="btn" onclick="openNote(${r.race})">${f.note?"Edit race note":"Add race note"}</button><button class="btn" onclick="askYes('Undo every change made to this race?',()=>cmd('clear'),'Yes, undo all')">Undo ALL changes</button></div></details>`; }
   } else {
     // enter in LiveHeats (or read it back once done)
     const ties=r.ties||[], dq=f.dq||{};
@@ -6586,6 +6580,23 @@ function battSet(on){ const go=async()=>{ const r=await post("/api/batt",{on:on}
   if(on) askYes("Is the battery divider (100k + 10k) wired to GP26 and the battery − joined to GND?",go,"Yes, turn it on",false); else go(); }
 function sysCols(a,b,c){ return `<div class="syscols"><div>${a}</div><div>${b}</div><div>${c}</div></div>`; }
 let advOpen=false;
+function hireSheet(){
+  const open=st.owner&&st.owner.open;
+  $("sheetin").innerHTML=`<h2>Reset for the next hire?</h2>
+    <p>Today's results, program and race log are saved first (like Start new event). Then the kit is cleared:</p>
+    <ul class="helpl"><li>Results, program and LiveHeats draw</li><li>Approved and remembered officials – every phone is logged out, this one too</li>
+      <li>Timing desk PIN – the next hirer chooses their own</li><li>Join-card Wi-Fi, club name, event name and logo</li><li>Today's button test – Get started shows again</li></ul>
+    <p class="mute">Kept: owner PIN, the kit's hotspot, lanes, emergency stop, battery calibration, updates key and the hire kit list.</p>
+    <label style="display:flex;gap:8px;align-items:center;margin:10px 0"><input type="checkbox" id="hrarch" checked style="width:auto"> Hide earlier hires' saved events from the next hirer (kept on the kit in timing_data › hire_archive)</label>
+    ${open?"":`<input type="password" id="hrpin" inputmode="numeric" autocomplete="off" placeholder="Owner PIN">`}
+    <div class="row"><button class="btn red" id="hrgo">Yes, reset the kit</button><button class="btn" onclick="closeSheet()">Cancel</button></div><p class="bad" id="hrmsg"></p>`;
+  $("sheet").classList.add("on");
+  $("hrgo").onclick=async()=>{ const pin=$("hrpin")?$("hrpin").value:"";
+    try{ const j=await (await fetch("/api/hire_reset",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pin:pin,archive:$("hrarch").checked})})).json();
+      if(j.result!=="ok"){ $("hrmsg").textContent=j.result; return; }
+      closeSheet(); toast("Kit reset – ready for the next hire",5000); tabRole=""; location.hash=""; setTimeout(()=>location.reload(),1500); }
+    catch(e){ $("hrmsg").textContent="No link to the timing computer"; } };
+}
 function askNewEvent(){
   const q=st.queue_n||0, unconf=st.state==="DONE"&&st.results&&!st.confirmed&&!st.results.practice;
   $("sheetin").innerHTML=`<h2>Start a new event?</h2>
@@ -6628,17 +6639,8 @@ function kitSheet(){ sheet(`<h2>Hire kit list</h2><p class="mute">One item per l
 function packSheet(){ sheet(`<h2>Saved events</h2><p class="mute">Each one saved by Start new event. Download it as a zip – the results open in Excel.</p>
     ${(st.past_events||[]).map(e=>`<div class="ofrow"><span class="nm">${esc(e)}</span><a class="btn sm" href="/event_pack.zip?e=${encodeURIComponent(e)}" download>Download</a></div>`).join("")}
     <div class="row"><button class="btn" onclick="closeSheet()">Close</button></div>`); }
-async function evDo(d,ok){ try{ const j=await (await fetch("/api/events",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)})).json();
-  if(j.result!=="ok"){ toast(j.result); return; } toast(ok); const s=await (await fetch("/api/state")).json(); st=s; eventsSheet(); }catch(e){ toast("No link to the timing computer"); } lastKey=""; }
-function legSel(id,v){ return `<select id="${id}">${[1,2,3,4,5,6,7,8].map(n=>`<option ${n===v?"selected":""}>${n}</option>`).join("")}</select>`; }
-function eventsSheet(){ const ev=st.events.filter(e=>e.id);
-  sheet(`<h2>Events</h2><p class="mute">The events you run and how many legs each has – the app uses the legs to know when every crew is in.</p>
-    ${ev.map(e=>`<div class="evrow"><input type="text" id="en_${e.id}" value="${esc(e.name)}" maxlength="30">${legSel("el_"+e.id,e.legs)}<span class="mute">legs</span>
-      <button class="btn sm" onclick="evDo({edit:'${e.id}',name:$('en_${e.id}').value,legs:+$('el_${e.id}').value},'Saved')">Save</button>
-      <button class="btn sm" onclick="evDo({remove:'${e.id}'},'Removed')">Remove</button></div>`).join("")}
-    <div class="evrow" style="border-top:2px solid var(--line);padding-top:10px"><input type="text" id="en_new" placeholder="New event name" maxlength="30">${legSel("el_new",1)}<span class="mute">legs</span>
-      <button class="btn sm pri" onclick="evDo({add:true,name:$('en_new').value,legs:+$('el_new').value},'Added')">Add</button></div>
-    <div class="row"><button class="btn" onclick="askYes('Put the events back to the standard IRB list?',()=>evDo({reset:true},'Standard events back'),'Yes, reset')">Standard IRB events</button><button class="btn pri" onclick="closeSheet()">Done</button></div>`); }
+
+
 // ---------- printed guides: one page per job, plus the hire kit checklist ----------
 const GUIDES=[
   ["Timing desk","This laptop. You run the day.",[
@@ -6795,6 +6797,9 @@ function renderSystem(){
       if(master&&!ownLocked) G.upd+=row("Updates key", st.upd_key?`<span class="ok">Set</span><span class="mute"> · updates come from the private repository</span>`
           :`<span class="mute">Not set – only needed once the GitHub repository is private</span>`,
         ownLocked?"":`<button class="btn" onclick="keySheet()">${st.upd_key?"Change":"Add"}</button>${st.upd_key?`<button class="btn" onclick="askYes('Remove the updates key? Updates stop working if the repository is private.',()=>keyDo(''),'Yes, remove')">Remove</button>`:""}`);
+      if(master) G.system+=row("Hire-out reset", !(st.owner&&st.owner.set)?`<span class="mute">Set an owner PIN first – then this gets the kit ready for the next hirer</span>`
+          :`<span class="mute">Ready for the next hirer: saves today, then clears results, officials, the timing desk PIN, the join-card Wi-Fi and the club name</span>`,
+        st.owner&&st.owner.set?`<button class="btn red" ${racing?"disabled":""} onclick="hireSheet()">Reset for next hire</button>`:"");
       if(master) G.system+=row("Hire kit list", `<span class="mute">${esc((st.kit||"").split("\n").length)} items · printed with the role guides</span>`, ownLocked?"":`<button class="btn" onclick="kitSheet()">Edit</button>`);
       if(master&&st.connected&&!ownLocked) G.box+=row("Restart timing program", `<span class="mute">Only if the screen says the timing program stopped – clears any race in progress</span>`,
         `<button class="btn red" onclick="askYes('Restart the timing program in the timing box? Any race in progress is cleared.',()=>cmd('restart'),'Yes, restart')">Restart</button>`);
@@ -6949,7 +6954,7 @@ function pageKey(){
   if(!st) return JSON.stringify([tab,linkDown,tab==="history"?hist:0]);
   const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes,st.pi_temp&&[st.pi_temp.level,Math.round(st.pi_temp.temp),st.pi_temp.max,st.pi_temp.throttled,st.pi_temp.under_volt,st.pi_temp.volt],st.batt,st.batt_cfg,st.storage,st.box&&Math.round(st.box.temp),st.batt_use,st.phones,clockBad()];
   k.push(st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags,st.unconfirmed);
-  if(tab==="race") k.push(st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,evOpen,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,finishSent&&Date.now()-finishSent<5000,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
+  if(tab==="race") k.push(st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,finishSent&&Date.now()-finishSent<5000,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
     st.state==="RACING"&&(st.elapsed||0)<5);
   else if(tab==="results") k.push(st.results);
   else if(tab==="history") k.push(hist,queue,enterAsk,rView,rFilter,rDoneOpen,st.results,st.res_flags,st.confirmed,st.state,innerWidth>=1100);
