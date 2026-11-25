@@ -1,12 +1,13 @@
 {
- "app": "1.22.0",
+ "app": "1.23.0",
  "pico": "3.12",
- "sha256": "7557c0cf60d15354266a2c5bead1f794d70849dd35c553a350d6d9ac5c1e9913",
+ "sha256": "4266af552a331860324f2abba6c2b737f0aecda244612580f6e2b79a34aaa148",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "The emergency stop is now required: always on, and the timing box won't race unless it's connected and released",
-  "The button test includes the emergency stop \u2013 press it and twist to release; no alarm during the test",
-  "Start of day checklist has an Emergency stop row",
-  "Timing box program v3.12"
+  "Basic mode: a finish-line display \u2013 SET, GO, FINISH and the finish order, no names, no times, nothing to set up",
+  "Basic: lanes whose laps don't match show Checking with DNF / DQ / OK; Previous race button",
+  "Basic: TVs and phones show the same finish order read-only, with the previous race underneath",
+  "A new kit, or one after a hire-out reset, asks Basic or Full first; change it any time in System \u203a Setup",
+  "Races run in Basic are saved quietly and stay off the LiveHeats to-do list in Full"
  ]
 }

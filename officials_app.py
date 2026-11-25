@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.22.0"
+APP_VERSION = "1.23.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -69,6 +69,7 @@ INTER_WOFF2 = base64.b64decode("d09GMgABAAAAALyAABUAAAAB4CAAALwFAAEAAAAAAAAAAAAA
 BRAND = {"club": "", "event": ""}            # shown on the screens, join card and guides
 OWNER = {"pin": "", "open_until": 0.0}      # owner lock for hire kits: updates and advanced settings
 SETUP = {"done": True}                       # False = show the Get started steps (fresh install, new event)
+MODE = {"v": "full"}                         # "basic" = finish-line display only, "full" = everything, None = ask first
 DEFAULT_KIT = ("Laptop and charger\nTiming box (Pico) with USB cable\nLane buttons and cables\nStarter SET and GO buttons\n"
                "FINISH button and cable\nBattery and charger\nWi-Fi router and power\nTV or screen cable (optional)\n"
                "Printed join cards and role guides\nUSB stick with an IRB_backup folder")
@@ -144,10 +145,12 @@ def apply_events(lst):
 def load_settings():
     global draw
     SETUP["done"] = os.path.exists(SETTINGS_FILE)       # a fresh install starts with the Get started steps
+    MODE["v"] = "full" if SETUP["done"] else None        # kits already in use stay Full; a brand-new kit asks
     try:
         with open(SETTINGS_FILE, encoding="utf-8") as fh:
             s = json.load(fh)
         SETUP["done"] = bool(s.get("setup_done", True))
+        MODE["v"] = s["mode"] if s.get("mode") in ("basic", "full", None) and "mode" in s else "full"
         for k in BRAND:
             BRAND[k] = str((s.get("brand") or {}).get(k, ""))[:40]
         if re.match(r"^\d{4,8}$", str(s.get("owner_pin", ""))):
@@ -206,7 +209,7 @@ def save_settings():
                        "access_day": access_day[0], "regulars": regulars, "net": NET, "last_test": S["last_test"],
                        "setup_done": SETUP["done"], "brand": BRAND, "owner_pin": OWNER["pin"], "events": EVENTS[1:],
                        "kit": KIT["text"], "upd_key": UPD_KEY["v"], "pico_prev": PICO_UPD["prev"],
-                       "club_codes": CLUB_CODES, "coaches": COACHES, "lanes_use": LANES["use"]}, fh)
+                       "club_codes": CLUB_CODES, "coaches": COACHES, "lanes_use": LANES["use"], "mode": MODE["v"]}, fh)
     except OSError:
         pass                    # still used for this session
 
@@ -733,6 +736,7 @@ def hire_reset(d):
         S["last_test"] = None
         S["backup"] = None
         SETUP["done"] = False
+        MODE["v"] = None                             # the next hirer picks Basic or Full
         OWNER["open_until"] = 0.0                    # locked again for the hirer
         moved = 0
         if d.get("archive", True):                   # earlier hires' saved events: out of the list, still on the kit
@@ -2940,6 +2944,12 @@ def save_result(d):
             save_flags()
     rec = dict(d)
     rec["saved_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if MODE["v"] == "basic" and not d.get("practice"):     # written down off the screen, not entered in LiveHeats
+        fb = flags.setdefault(str(d.get("race")), {})
+        if not fb.get("basic"):
+            fb["basic"] = True
+            fb.setdefault("skip", {"at": datetime.now().strftime("%H:%M"), "by": "Basic mode", "why": "Basic mode"})
+            save_flags()
     history.append(rec)
     with open(HIST_FILE, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec) + "\n")
@@ -3416,8 +3426,11 @@ def snapshot(role="master", local=True, tok=None):
         cur_race = (S["results"] or {}).get("race") if S["state"] == "DONE" else None
         d["unconfirmed"] = [r.get("race") for r in history_summary()
                             if r.get("race") != cur_race and not flags.get(str(r.get("race")), {}).get("confirmed")
-                            and not flags.get(str(r.get("race")), {}).get("entered")][-30:]
+                            and not flags.get(str(r.get("race")), {}).get("entered")
+                            and not flags.get(str(r.get("race")), {}).get("basic")][-30:]
         d["today"] = datetime.now().strftime("%Y-%m-%d")
+        d["mode"] = MODE["v"]
+        d["prev"] = prev_race(cur_race) if MODE["v"] == "basic" else None
         for k in ("test_count", "test_last", "test_clash", "beat", "batt", "practice", "backup"):
             d[k] = S[k]
         d["silent"] = bool(S["connected"] and S["beat"] and time.time() - last_rx > 7)
@@ -3473,6 +3486,36 @@ def snapshot(role="master", local=True, tok=None):
         d["app"] = APP_VERSION
         d["events"] = EVENTS
         return json.dumps(d)
+
+
+def basic_order(rec, f=None):
+    """finish order for the Basic screens: place + lane, or DNF / DQ / Checking. No times."""
+    f = f if f is not None else flags.get(str(rec.get("race")), {})
+    legs, ch, calls = rec.get("legs") or 0, rec.get("changes") or {}, f.get("calls") or {}
+    out = []
+    for x in rec.get("rows") or []:
+        lane, n = x.get("lane"), len(x.get("presses_us") or [])
+        c = calls.get(str(lane))
+        if c in ("dnf", "dq"):
+            lab = c.upper()
+        elif x.get("status") in ("DQ", "DNF"):
+            lab = x["status"]
+        elif x.get("place"):
+            lab = ""
+        elif n and n != legs and str(lane) not in ch and not c:
+            lab = "Checking"
+        else:
+            lab = "DNF"
+        out.append({"lane": lane, "place": x.get("place") if not lab else None, "label": lab})
+    out.sort(key=lambda o: (o["place"] is None, o["place"] or 0, {"Checking": 0, "DQ": 1, "DNF": 2}.get(o["label"], 3), o["lane"]))
+    return out
+
+
+def prev_race(cur):
+    for h in reversed(history):
+        if h.get("race") != cur and not h.get("practice"):
+            return {"race": h.get("race"), "order": basic_order(h)}
+    return None
 
 
 def history_summary():
@@ -3627,6 +3670,22 @@ class H(BaseHTTPRequestHandler):
         except ValueError:
             data = {}
         cookie = lambda tok: {"Set-Cookie": "irb_token=%s; Max-Age=31536000; Path=/; SameSite=Strict" % tok}
+        if self.path.startswith("/api/mode"):             # Basic or Full
+            m = data.get("mode")
+            if self.role() != "master":
+                r = "Only the timing desk can do that"
+            elif m not in ("basic", "full"):
+                r = "Choose Basic or Full"
+            elif S["state"] in ("ARMED", "RACING"):
+                r = "Change this between races"
+            else:
+                with lock:
+                    MODE["v"] = m
+                    save_settings()
+                note("Mode: %s" % ("Basic" if m == "basic" else "Full"))
+                r = "ok"
+            self.send(200, json.dumps({"result": r}))
+            return
         if self.path.startswith("/api/hire_reset"):       # owner: ready for the next hirer
             r = hire_reset(data) if self.role() == "master" else "Only the timing desk can do that"
             self.send(200, json.dumps({"result": r}))
@@ -4682,6 +4741,47 @@ a{color:var(--blue)}a:hover{color:var(--ink)}
  .mb .mbl .ml{padding:9px 4px;gap:10px}.mb .mbl .ml:nth-child(even):not(.present):not(.scratched){background:#f6f7f9}
  .mb .mbl .ml>span{white-space:normal!important}
 }
+
+/* ---- Basic mode: finish-line display ---- */
+.bx{display:flex;flex-direction:column;gap:12px;max-width:1200px;margin:0 auto}
+.bxh{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.bxn{font-size:34px;font-weight:800;letter-spacing:-.5px}
+.bst{display:inline-block;font-size:15px;font-weight:700;border-radius:8px;padding:3px 10px;margin-left:12px;vertical-align:7px}
+.bst.r{background:#dcf5e3;color:#0f6b2f}.bst.d{background:#e3edfb;color:#174a8c}.bst.i{background:#eef0f3;color:#4a5260}.bst.a{background:#fff1cc;color:#7a5200}
+.bxc{font-size:46px;font-weight:800;font-variant-numeric:tabular-nums}
+.bxwhy{font-size:15px;color:#7a5200;font-weight:600}
+.bxmsg{font-size:20px;color:#5b6472;margin:24px 4px}
+.bxo{display:grid;gap:8px}
+.bxo.two{grid-template-columns:1fr 1fr;grid-auto-flow:column;grid-template-rows:repeat(var(--r),auto);column-gap:14px}
+.bxr{display:grid;grid-template-columns:70px 1fr auto;align-items:center;background:#fff;border:1px solid #e3e6eb;border-radius:12px;padding:8px 16px;font-size:24px;min-height:56px;box-shadow:var(--sh)}
+.bxo.one .bxr{font-size:30px;min-height:68px;grid-template-columns:90px 1fr auto}
+.bxr .pl{font-weight:800}.bxr .ln{font-weight:600}
+.bxr.ck{background:#fff6dc;border-color:#f0c35a}.bxr.out{color:#8a919c}
+.bxr .mini{display:flex;gap:6px}.bxr .mini .btn{min-height:40px;padding:6px 14px}
+.ckt{font-size:15px;font-weight:700;background:#f0c35a;color:#3a2a00;border-radius:6px;padding:3px 10px}
+.bxbar{display:flex;gap:12px;align-items:stretch;margin-top:4px}
+.bxbar .bxctl{flex:1}.bxbar .bxctl .start .btn{width:100%}
+.btn.bxprev{flex:0 0 170px;min-height:64px}
+.bxpv{font-size:16px;color:#5b6472;border-top:1px solid #e3e6eb;padding-top:10px;margin-top:4px}
+.bxclub{font-size:15px;color:#5b6472;font-weight:600}
+.bxoff{text-align:center;font-size:14px;margin-top:6px}
+body.bxb main{max-width:none}
+.bxtv{padding:2vh 2vw;max-width:none;min-height:100vh;box-sizing:border-box}
+.bxtv:not(.ph) .bxn{font-size:clamp(34px,4.6vw,90px)}.bxtv:not(.ph) .bxc{font-size:clamp(40px,5.4vw,110px)}
+.bxtv:not(.ph) .bst{font-size:clamp(15px,1.6vw,30px);vertical-align:.6em}
+.bxtv:not(.ph) .bxr{font-size:clamp(22px,2.7vw,54px);min-height:clamp(52px,7.4vh,120px);grid-template-columns:clamp(70px,8vw,170px) 1fr auto}
+.bxtv:not(.ph) .bxo.one .bxr{font-size:clamp(26px,3.4vw,68px);min-height:clamp(60px,12vh,150px)}
+.bxtv:not(.ph) .bxpv{font-size:clamp(15px,1.5vw,30px)}.bxtv:not(.ph) .bxmsg{font-size:clamp(20px,2.4vw,46px)}
+.bxtv:not(.ph){height:100vh;overflow:hidden}.bxtv:not(.ph) .bxo{flex:1;min-height:0;grid-auto-rows:minmax(0,1fr);max-height:78vh}
+.bxtv:not(.ph) .bxo.two{grid-template-rows:repeat(var(--r),minmax(0,1fr))}.bxtv:not(.ph) .bxo{align-content:start}
+.bxtv:not(.ph) .bxr,.bxtv:not(.ph) .bxo.one .bxr{min-height:0;height:100%;max-height:15vh;font-size:clamp(22px,min(3.2vw,6.4vh),76px)}
+.bxtv:not(.ph) .ckt{font-size:clamp(14px,min(1.7vw,3.4vh),36px);padding:.2em .6em}
+.bxtv:not(.ph) .bxwhy{font-size:clamp(15px,min(1.7vw,3.4vh),36px)}
+.bxtv.ph .bxo.two{grid-template-columns:1fr;grid-auto-flow:row;grid-template-rows:none}
+.bxtv.ph .bxr{font-size:22px;min-height:52px}.bxtv.ph .bxpv .bxr{font-size:16px;min-height:38px;box-shadow:none}
+.mpick{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.mpick .mbig{flex:1;min-height:86px;font-size:26px;flex-direction:column}
+.mpick .mbig small{font-size:15px;font-weight:500;opacity:.85}.mpick .minfo{flex:0 0 48px;min-height:48px;font-size:20px;border-radius:50%}.mpick p{flex-basis:100%}
+@media (max-width:700px){.bxo.two{grid-template-columns:1fr;grid-auto-flow:row;grid-template-rows:none}.btn.bxprev{flex-basis:120px}.bxr .mini .btn{padding:6px 10px}}
 </style></head><body>
 <header>
  <button class="tab on" data-t="race">Race</button>
@@ -4757,8 +4857,8 @@ let tabRole="", tabRestored=false;
 let justLogged=false;
 function applyTabs(){
   // each access level sees only its own tabs; Master and Admin reach the Marshal screen from System
-  const role=st&&st.role||"viewer", ok=TABS[role]||TABS.viewer;
-  if(role===tabRole) return; tabRole=role;
+  const role=st&&st.role||"viewer", ok=role==="master"&&st.mode==null?["race"]:role==="master"&&st.mode==="basic"?["race","system"]:(TABS[role]||TABS.viewer);
+  const tk=role+(st&&st.mode); if(tk===tabRole) return; tabRole=tk;
   document.querySelectorAll(".tab").forEach(b=>b.hidden=!ok.includes(b.dataset.t));
   document.querySelector("header").classList.toggle("six",ok.length>4);
   if(backAfterRestart(ok)) return;
@@ -4768,7 +4868,7 @@ function applyTabs(){
     if(b&&b.tab&&b.tab!==tab&&(ok.includes(b.tab)||(b.tab==="marshal"&&(role==="master"||role==="admin")))){
       if(b.sys) sysView=b.sys; if(b.rv!=null) rView=b.rv; goTab(b.tab); return; }
     if(b&&b.sys) sysView=b.sys; }
-  if(!ok.includes(tab)&&!(tab==="marshal"&&(role==="master"||role==="admin"))) goTab(ok[0]);
+  if(!ok.includes(tab)&&!(tab==="marshal"&&(role==="master"||role==="admin")&&st.mode==="full")) goTab(ok[0]);
 }
 
 function heatLabel(h){ return h?`${h.div} · ${h.round} · Heat ${h.no}`:""; }
@@ -4814,7 +4914,7 @@ function wizStepsAll(){
        <div class="row" style="align-items:center"><button class="btn pri" onclick="saveBrand()">Save</button>
        <label class="btn">${b.logo?"Change logo":"Add logo (optional)"}<input type="file" accept="image/*" style="display:none" onchange="logoPick(this)"></label>
        ${b.logo?`<img src="/logo?v=${b.logo}" alt="" style="height:44px"><button class="btn sm" onclick="brandDo({logo:''},'Logo removed')">Remove logo</button>`:""}</div>`},
-    {k:"heats",title:"How heats are run",ok:pg.mode!=null,status:pg.mode==="on"?"Program on":pg.mode==="off"?"No program – heats chosen by hand":"Not chosen yet",
+    {k:"heats",skip:isBasic(),title:"How heats are run",ok:pg.mode!=null,status:pg.mode==="on"?"Program on":pg.mode==="off"?"No program – heats chosen by hand":"Not chosen yet",
      body:()=>`<div class="choice"><button class="btn" onclick="${st.draw?"goTab('program')":"openLoad()"}">Use LiveHeats<small>${st.draw?"Draw loaded – choose its schedule on the Program tab":"Load the event's draw from LiveHeats (needs internet)"}</small></button>
        <button class="btn" onclick="goTab('program')">Build our own program<small>Type in the events, rounds and heats</small></button>
        <button class="btn" onclick="progDo({mode:'off'},'No program – choose heats one at a time')">No program<small>Pick each heat by hand before SET</small></button></div>`},
@@ -4854,8 +4954,87 @@ function logoPick(inp){ const f=inp.files&&inp.files[0]; if(!f) return; const im
   img.onload=()=>{ const s=Math.min(1,400/Math.max(img.width,img.height)), c=document.createElement("canvas"); c.width=Math.max(1,Math.round(img.width*s)); c.height=Math.max(1,Math.round(img.height*s));
     c.getContext("2d").drawImage(img,0,0,c.width,c.height); URL.revokeObjectURL(url); brandDo({logo:c.toDataURL("image/png")},"Logo saved"); };
   img.onerror=()=>toast("That file isn't a picture this browser can read"); img.src=url; }
+
+// ================= BASIC MODE: a finish-line display. No names, no times, no confirm – read the order off the screen =================
+function isBasic(){ return !!(st&&st.mode==="basic"); }
+let prevView=false;
+function nth(n){ const s=["th","st","nd","rd"], v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); }
+function liveOrder(){        // while racing: most presses leads; equal presses – whoever got there first
+  const L=st.lanes.map(l=>({lane:l,h:st.live[String(l)]||[]}));
+  const p=L.filter(x=>x.h.length).sort((a,b)=>b.h.length-a.h.length||a.h[a.h.length-1]-b.h[b.h.length-1]);
+  return p.map((x,i)=>({lane:x.lane,place:i+1,label:""})).concat(L.filter(x=>!x.h.length).map(x=>({lane:x.lane,place:null,label:"–"})));
+}
+function finishOrder(r,f){   // after FINISH: place + lane, or Checking / DQ / DNF
+  const odd=new Set(oddLanes(r,f).map(o=>o.lane)), calls=(f||{}).calls||{};
+  const o=(r.rows||[]).map(x=>{ const c=calls[String(x.lane)];
+    const lab=c==="dnf"||c==="dq"?c.toUpperCase():x.status==="DQ"||x.status==="DNF"?x.status:x.place?"":odd.has(x.lane)?"Checking":"DNF";
+    return {lane:x.lane,place:lab?null:x.place,label:lab}; });
+  const rk={Checking:0,DQ:1,DNF:2};
+  return o.sort((a,b)=>(a.place==null)-(b.place==null)||(a.place||0)-(b.place||0)||(rk[a.label]??3)-(rk[b.label]??3)||a.lane-b.lane);
+}
+function oddWhy(r,f){ return oddLanes(r,f).map(o=>`Lane ${o.lane} pressed ${pressWord(o.n)} – the others ${pressWord(r.legs)}`).join(" · "); }
+function bRows(order,act){
+  const two=order.length>5;
+  return `<div class="bxo ${two?"two":"one"}" style="--r:${Math.ceil(order.length/2)}">`+order.map(o=>{
+    const ck=o.label==="Checking", out=o.label==="DQ"||o.label==="DNF";
+    return `<div class="bxr ${ck?"ck":""} ${out?"out":""}"><span class="pl">${o.place?nth(o.place):o.label==="–"?"":ck?"":esc(o.label)}</span><span class="ln">Lane ${o.lane}</span>
+      <span class="bxe">${ck?(act?`<span class="mini"><button class="btn sm" onclick="cmd('dnf ${o.lane}')">DNF</button><button class="btn sm" onclick="cmd('dq ${o.lane}')">DQ</button><button class="btn sm" onclick="cmd('ok ${o.lane}')">OK</button></span>`:`<span class="ckt">Checking</span>`):o.label==="–"?`<span class="mute">–</span>`:""}</span></div>`; }).join("")+`</div>`;
+}
+function bHead(n,word,cls,right){ return `<div class="bxh"><div><span class="bxn">Race ${n}</span><span class="bst ${cls}">${word}</span></div>${right||""}</div>`; }
+function bPrevLine(p,phone){ if(!p) return "";
+  const t=p.order.map(o=>(o.place?nth(o.place)+" L"+o.lane:"L"+o.lane+" "+o.label)).join(" · ");
+  return phone?`<div class="bxpv"><div class="mute">Previous – Race ${p.race}</div>${bRows(p.order,false).replace('bxo two','bxo one')}</div>`
+    :`<div class="bxpv"><b>Previous – Race ${p.race}:</b> ${esc(t)}</div>`; }
+// what's on the screen right now (desk and TV share it)
+function bNow(act){
+  const s=st.state;
+  if(st.test) return {head:bHead(st.race+1,"Button test","a"),body:`<p class="bxmsg">Button test running – press every button.</p>`};
+  if(s==="RACING") return {head:bHead(st.race+1,"Racing","r",`<span class="bxc" id="clock">${clock(st.elapsed||0)}</span>`),body:bRows(liveOrder(),false)};
+  if(s==="ARMED") return {head:bHead(st.race+1,"Set","a"),body:`<p class="bxmsg">Waiting for GO…</p>`};
+  if(s==="DONE"&&st.results&&!st.results.practice){ const r=st.results, why=oddWhy(r,st.res_flags);
+    return {head:bHead(r.race,"Finish order","d",why?`<span class="bxwhy">${esc(why)}</span>`:""),body:bRows(finishOrder(r,st.res_flags),act)}; }
+  return {head:bHead(st.race+1,"Ready","i"),body:`<p class="bxmsg">${act?`Press SET to start Race ${st.race+1}.`:"Waiting for the start"}</p>`};
+}
+function renderBasicRace(){
+  if(!st||linkDown||!st.connected||st.at_prompt){ $("race").innerHTML=banner(); return; }
+  warnHtml=raceWarnings(); drawWarn();
+  const s=st.state, between=s==="IDLE"||s==="DONE";
+  if(prevView&&(!between||!st.prev)) prevView=false;
+  let h;
+  if(prevView){ const p=st.prev;
+    h=`<div class="bx">${bHead(p.race,"Previous race","i")}${bRows(p.order,false)}
+      <div class="bxbar"><button class="btn bxprev" onclick="prevView=false;lastKey='';render()">‹ Back</button></div></div>`;
+  } else { const n=bNow(true);
+    h=`<div class="bx">${n.head}${n.body}<div class="bxbar">${between&&st.prev?`<button class="btn bxprev" onclick="prevView=true;lastKey='';render()">Previous race</button>`:""}<div class="ctl bxctl">${controls()}</div></div></div>`; }
+  $("race").innerHTML=h; wireControls();
+}
+function renderBasicBoard(){
+  if(!st||linkDown||!st.connected){ $("race").innerHTML=banner(); return; }
+  const phone=innerWidth<700, n=bNow(false), b=st.brand||{};
+  $("race").innerHTML=`<div class="bx bxtv ${phone?"ph":""}">${b.club?`<div class="bxclub">${esc(b.club)}${b.event?" · "+esc(b.event):""}</div>`:""}${n.head}${n.body}${bPrevLine(st.prev,phone)}
+    ${st.role==="viewer"&&!st.local?`<div class="bxoff"><a href="#" onclick="openRequest();return false">Officials</a></div>`:""}</div>`;
+}
+function modeInfo(m){ return m==="basic"
+  ?"Time races and see the finish order on the screen – no names, no times, nothing to set up. Crews press their lane button; the screen shows who finished in what order, and checks everyone did the same number of laps. Phones and a TV can show the same screen. Switch to Full any time in Setup."
+  :"Everything: LiveHeats draw and schedule, your own program, marshalling, officials on their own phones, confirming results and entering them in LiveHeats, the Results and Team Manager screens."; }
+let modeInfoOpen="";
+function renderModePick(){
+  const card=(m,t,sub)=>`<div class="card mpick"><button class="btn ${m==="basic"?"pri":""} mbig" onclick="setMode('${m}')">${t}<small>${sub}</small></button>
+    <button class="btn sm minfo" aria-label="About ${t}" onclick="modeInfoOpen=modeInfoOpen==='${m}'?'':'${m}';lastKey='';render()">?</button>
+    ${modeInfoOpen===m?`<p class="mute" style="margin:10px 2px 0">${modeInfo(m)}</p>`:""}</div>`;
+  $("race").innerHTML=`<div class="wizwrap"><div class="card"><h2 style="margin:0 0 4px">How will this kit be used?</h2><p class="mute" style="margin:0">You can change this later in System › Setup.</p></div>
+    ${card("basic","Basic","Time races and see the finish order")}${card("full","Full","LiveHeats, program, marshalling, officials' phones, screens")}</div>`;
+}
+async function setMode(m,sure){
+  if(m==="basic"&&st.mode==="full"&&!sure){ const u=(st.unconfirmed||[]).length, q=st.queue_n||0;
+    if(u||q){ askYes(`${u?u+" race"+(u>1?"s":"")+" not confirmed":""}${u&&q?" and ":""}${q?q+" race"+(q>1?"s":"")+" not entered in LiveHeats":""}. They stay saved and come back when you switch to Full. Switch to Basic anyway?`,()=>setMode(m,true),"Switch to Basic"); return; } }
+  const r=await post("/api/mode",{mode:m}); if(r!=="ok") return;
+  st.mode=m; tabRole=""; prevView=false; toast(m==="basic"?"Basic mode":"Full mode"); lastKey=""; render();
+}
 function renderRace(){
+  if(st&&st.role==="master"&&st.mode==null){ renderModePick(); return; }
   if(st&&st.role==="master"&&st.setup_done===false&&st.state!=="ARMED"&&st.state!=="RACING"&&!st.test){ $("race").innerHTML=`<div class="wizwrap">${wizard()}</div>`; return; }
+  if(isBasic()){ renderBasicRace(); return; }
   let h=banner(), right="";
   warnHtml=st&&st.connected?raceWarnings():""; drawWarn();     // warnings sit in the strip under the Next bar
   h=`<div class="top" style="display:flex;flex-direction:column;gap:12px">${h}</div>`;
@@ -4893,7 +5072,7 @@ function raceWarnings(){
     h+=`<div class="bad-warn">Cable fault during race: ${esc(st.faults.join(", "))}. That lane may have a false press – check its presses after the race.</div>`;
   else if(st.faults.length&&st.state!=="RACING")
     h+=`<div class="warn">Check wiring: ${esc(st.faults.join(", "))} (open circuit or button held)${st.role==="master"&&st.lanes_cmd&&st.faults.some(f=>/^Lane/.test(f))?` · not using ${st.faults.filter(f=>/^Lane/.test(f)).length>1?"those lanes":"that lane"} today? <a href="#" onclick="lanesSheet();return false">Set the lanes in use</a>`:""}</div>`;
-  if(st.state==="DONE"&&st.results&&!st.results.practice&&(st.official||st.role==="starter")){
+  if(st.state==="DONE"&&st.results&&!st.results.practice&&(st.official||st.role==="starter")&&!isBasic()){
     const onBox=rCanAct()&&!st.confirmed; h+=oddHtml(st.results,st.res_flags,onBox,rCanAct()); }
   const ht=shownHeat();
   if(ht&&(st.state==="RACING"||st.state==="DONE")){
@@ -4902,7 +5081,7 @@ function raceWarnings(){
     if(scr.length) h+=`<div class="bad-warn">Press in ${scr.map(l=>"lane "+l).join(", ")} – that crew was scratched by the marshals. Judges to check.</div>`;
     if(empty.length) h+=`<div class="warn">Press in ${empty.map(l=>"lane "+l).join(", ")} – no crew is drawn in ${empty.length>1?"those lanes":"that lane"}. Wrong-lane press? Judges to check.</div>`;
   }
-  const pg=st.program||{};
+  const pg=isBasic()?{}:(st.program||{});
   if(pg.mode==="on"&&st.heat&&st.state!=="RACING"&&!(st.state==="DONE"&&st.results&&st.results.heat&&st.results.heat.heat_id===st.heat.heat_id)){
     const sd=(st.sent||{})[st.heat.heat_id];
     if(!sd) h+=`<div class="bad-warn">Patients for this heat have not been marked as sent by the Marshal. Check before SET.</div>`;
@@ -4910,7 +5089,7 @@ function raceWarnings(){
   }
   if(pg.warn&&st.state!=="RACING")
     h+=`<div class="warn">Only ${pg.left} heat${pg.left===1?"":"s"} left in the program after this one. ${st.official?`<a href="#" onclick="goTab('program');return false">Add more on the Program tab</a>, or turn the program off.`:"Tell the Admin."}</div>`;
-  else if(pg.mode==null&&st.official&&st.state!=="RACING")
+  else if(pg.mode==null&&st.official&&st.state!=="RACING"&&!isBasic())
     h+=`<div class="warn">How are heats being run today? <a href="#" onclick="goTab('program');return false">Set up the program</a> (or choose No program).</div>`;
   if(pg.lh_changed&&st.official&&st.state!=="RACING")
     h+=`<div class="warn">The LiveHeats schedule has changed. <a href="#" onclick="goTab('program');return false">Review it on the Program tab</a>.</div>`;
@@ -5095,7 +5274,7 @@ function dayChecks(){
   { const e=st.estop||{};
     if(st.connected) c.push({ok:!!(e.req&&!e.on),label:"Emergency stop",hint:!e.req?"Update the timing box program to v3.12 – the emergency stop is required to race"
       :e.on?"STOP – pressed or not connected. Twist to release, or check GP28 (pin 34) to GND":"Connected and released",btn:!e.req?"Updates":"",act:"sysView='setup';lastKey='';render()"}); }
-  c.push({ok:pg.mode!=null,label:"Heats for today",hint:pg.mode==="on"?"Program on":pg.mode==="off"?"No program – heats chosen by hand":"Choose the program, or No program",btn:"Program",act:"goTab('program')"});
+  if(!isBasic()) c.push({ok:pg.mode!=null,label:"Heats for today",hint:pg.mode==="on"?"Program on":pg.mode==="off"?"No program – heats chosen by hand":"Choose the program, or No program",btn:"Program",act:"goTab('program')"});
   if(st.has_test){ const today=lt&&lt.date===st.today, bad=today&&(lt.missing.length||(lt.clash||[]).length);
     const can=st.connected&&(st.state==="IDLE"||st.state==="DONE")&&!st.test;
     const la=lanesAsk();
@@ -5142,6 +5321,10 @@ function nextStep(){
   if(s==="RACING") return st.can_start?{text:"Racing – press FINISH when every crew is in",tab:"race",btn:"Race",dup:true}:{text:"Race in progress",calm:true};
   if(s==="ARMED") return st.can_start?{text:"Armed – press GO to start",tab:"race",btn:"Race",dup:true}:{text:"Race about to start",calm:true};
   if(st.test) return (role==="master"||role==="starter")?{text:"Button test running – press every button, then end the test",tab:"system",btn:"Test",act:"sysView='today'"}:null;
+  if(role==="master"&&st.mode==null) return null;
+  if(isBasic()){ if(role==="master"&&!racedToday()&&!dayReady()){ const n=dayChecks().filter(x=>!x.opt&&!x.ok).length; return {text:`Start of day – ${n} check${n===1?"":"s"} to do`,tab:"system",btn:"Checklist",act:"sysView='today'"}; }
+    if(st.faults.length) return {text:"Fix wiring before SET: "+st.faults.join(", "),tab:"system",btn:"System"};
+    return null; }
   if(st.official&&s==="DONE"&&st.results&&!st.confirmed&&!st.results.practice) return tab==="history"&&rView===st.results.race
     ?{text:`Race ${st.results.race} finished – check it, then Confirm results`}
     :{text:`Race ${st.results.race} finished – check the result, then Confirm results`,tab:"results",btn:"Check",same:false};
@@ -5183,6 +5366,7 @@ const ROLE_NAME={master:"Timing desk",admin:"Admin",starter:"Starter",marshal:"M
 function setWarnings(){
   const w=[];
   const ph=st.program&&st.program.mode==="on";
+  if(isBasic()){ if(st.state==="DONE"&&st.results){ const odd=oddLanes(st.results,st.res_flags); if(odd.length) w.push(`Lane ${odd.map(o=>o.lane).join(", ")} still Checking – the laps don't match. Answer DNF, DQ or OK first.`); } return w; }
   if(st.state==="DONE"&&st.results&&!st.confirmed) w.push(`Race ${st.results.race} results aren't confirmed yet.`);
   if(st.state==="DONE"&&st.results){ const odd=oddLanes(st.results,st.res_flags); if(odd.length) w.push(`Lane ${odd.map(o=>o.lane).join(", ")}: presses don't match the other crews – answer DNF, DQ or It's fine first.`); }
   if((st.draw||ph)&&!st.heat) w.push("No heat chosen – lanes will show without crew names.");
@@ -6355,7 +6539,7 @@ function qrSvg(text,px){ const k=text+"|"+px; if(qrCache[k]) return qrCache[k];
 function wifiText(j){ const e=s=>String(s).replace(/([\\;,:"])/g,"\\$1"); return `WIFI:T:${j.pass?"WPA":"nopass"};S:${e(j.ssid)};${j.pass?"P:"+e(j.pass)+";":""};`; }
 function joinCodes(px){ const j=st.join||{}; let h=`<div class="qrs">`;
   if(j.ssid) h+=`<div>1. Wi-Fi${qrSvg(wifiText(j),px)}<div class="mute">${esc(j.ssid)}</div></div>`;
-  return h+`<div>${j.ssid?"2. ":""}IRB Racing App${qrSvg(j.url,px)}<div class="mute">${esc(j.url)}</div></div></div>`; }
+  return h+`<div>${j.ssid?"2. ":""}${isBasic()?"Results":"IRB Racing App"}${qrSvg(j.url,px)}<div class="mute">${esc(j.url)}</div></div></div>`; }
 let joinOpen=false;
 function joinCard(){
   const j=st.join||{};
@@ -6365,7 +6549,7 @@ function joinCard(){
     ${j.ssid||st.role==="master"?"":`<p class="warn" style="margin-top:0">Ask the timing desk to add the Wi-Fi for the Wi-Fi code.</p>`}
     ${joinCodes(st.role==="master"?130:180)}<div class="row"><button class="btn pri" onclick="downloadCard()">Download</button><button class="btn" onclick="printCard()">Print</button>${racedToday()?`<button class="btn" onclick="joinOpen=false;lastKey='';render()">Hide</button>`:""}</div></div>`; }
 function cardCanvas(){
-  const j=st.join||{}, codes=(j.ssid?[["1. Wi-Fi",wifiText(j),j.ssid]]:[]).concat([[(j.ssid?"2. ":"")+"IRB Racing App",j.url,j.url]]);
+  const j=st.join||{}, codes=(j.ssid?[["1. Wi-Fi",wifiText(j),j.ssid]]:[]).concat([[(j.ssid?"2. ":"")+(isBasic()?"Results":"IRB Racing App"),j.url,j.url]]);
   const W=codes.length*560+80, c=document.createElement("canvas"); c.width=W; c.height=760; const x=c.getContext("2d");
   x.fillStyle="#fff"; x.fillRect(0,0,W,760); x.fillStyle="#000"; x.textAlign="center";
   x.font="bold 54px sans-serif"; x.fillText(((st.brand||{}).club||"IRB Racing").slice(0,40),W/2,80);
@@ -6728,7 +6912,10 @@ function renderSystem(){
     <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected))?' <span class="badge">1</span>':""}</button></div>`:"";
   let c="";
   if(sysView==="today"){
-    if(master&&st.access) c=sysCols((st.test?test:"")+dayCard(), officialsCard()+clubCard()+batt, joinCard());   // the button test lives in the checklist; screens are under ?
+    if(master&&isBasic()) c=sysCols((st.test?test:"")+dayCard(), batt, joinCard()+`<div class="card"><h2>Results screen</h2>
+      <p class="mute" style="margin-top:0">The same finish order, read-only, for a TV, laptop or tablet on the kit's Wi-Fi. Phones that scan the join card see it too.</p>
+      <div class="row"><a class="btn pri" href="/#board" target="_blank" style="text-decoration:none">Open the results screen</a></div></div>`);
+    else if(master&&st.access) c=sysCols((st.test?test:"")+dayCard(), officialsCard()+clubCard()+batt, joinCard());   // the button test lives in the checklist; screens are under ?
     else c=sysCols(box+test, pinCard()+(st.role==="admin"?clubCard():""), batt);
   } else {
     // Setup: one tidy list – a line per item, status in the middle, button on the right
@@ -6738,6 +6925,8 @@ function renderSystem(){
     let L="";
     const G={event:"",box:"",upd:"",net:"",results:"",system:"",adv:""};
     const ownLocked=!!(st.owner&&st.owner.set&&!st.owner.open);
+    if(master) G.event+=row("Mode", isBasic()?`<b>Basic</b> <span class="mute">– finish-line display: SET, GO, FINISH and the finish order</span>`:`<b>Full</b> <span class="mute">– LiveHeats, program, marshalling, officials' phones, screens</span>`,
+      `<button class="btn" ${racing?"disabled":""} onclick="setMode('${isBasic()?"full":"basic"}')">Switch to ${isBasic()?"Full":"Basic"}</button>`);
     if(master) G.event+=row("Get started", st.setup_done?`<span class="mute">The setup steps for a new carnival</span>`:`<b class="okb">Showing on the Race tab</b>`,
       st.setup_done?`<button class="btn" onclick="brandDo({setup_done:false},'Get started is on the Race tab');goTab('race')">Open</button>`:`<button class="btn" onclick="goTab('race')">Go there</button>`);
     if(master) G.event+=row("Club and event", (st.brand||{}).club?`<b>${esc(st.brand.club)}</b>${st.brand.event?`<span class="mute"> · ${esc(st.brand.event)}</span>`:""}${st.brand.logo?` <span class="mute">· logo</span>`:""}`:`<span class="mute">Not set – shown on the screens and join card</span>`,
@@ -6760,7 +6949,7 @@ function renderSystem(){
       `<button class="btn" onclick="offDo({net:{ssid:$('wssid').value,pass:$('wpass').value,addr:a_addr()}},'Saved')">Save</button>`);
     G.results+=row("Backup", st.backup?`<span class="${st.backup.ok?"ok":"bad"}">${st.backup.ok?"Copied "+esc(st.backup.at):esc(st.backup.msg)}</span>`:`<span class="mute">USB stick with an <b>IRB_backup</b> folder</span>`,
       master?`<button class="btn" onclick="post('/api/backup',{}).then(()=>toast('Backup done'))">Back up now</button>`:"");
-    if(master) G.event+=row("Practice mode", st.practice?`<b class="bad">ON – races aren't saved</b>`:`<span class="mute">Off · for training, races aren't saved</span>`,
+    if(master&&!isBasic()) G.event+=row("Practice mode", st.practice?`<b class="bad">ON – races aren't saved</b>`:`<span class="mute">Off · for training, races aren't saved</span>`,
       `<button class="btn ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Turn off":"Turn on"}</button>`);
     G.box+=row("Timing box", st.connected?(st.faults.length?`<span class="bad">Wiring fault: ${esc(st.faults.join(", "))}</span>`
         :`<span class="ok">Connected · wiring OK</span>`):`<span class="bad">Not connected – plug its USB cable into this computer</span>`, "");
@@ -6966,7 +7155,7 @@ function pageKey(){
   // redraw only when something shown has changed, so taps and open sections aren't lost
   if(!st) return JSON.stringify([tab,linkDown,tab==="history"?hist:0]);
   const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes,st.pi_temp&&[st.pi_temp.level,Math.round(st.pi_temp.temp),st.pi_temp.max,st.pi_temp.throttled,st.pi_temp.under_volt,st.pi_temp.volt],st.batt,st.batt_cfg,st.storage,st.box&&Math.round(st.box.temp),st.batt_use,st.phones,clockBad()];
-  k.push(st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags,st.unconfirmed);
+  k.push(st.mode,st.prev,prevView,modeInfoOpen,st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags,st.unconfirmed);
   if(tab==="race") k.push(st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,finishSent&&Date.now()-finishSent<5000,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
     st.state==="RACING"&&(st.elapsed||0)<5);
   else if(tab==="results") k.push(st.results);
@@ -7070,6 +7259,11 @@ function render(){
   drawEstop(); rememberTab();
   if(location.hash==="#fix"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
     const k=JSON.stringify(["fix",st&&st.brand]); if(k!==lastKey){ lastKey=k; renderFix(); } return; }
+  if(st&&st.mode==="basic"&&(["#board","#team","#marshalling"].includes(location.hash)||(st.role!=="master"&&!st.local))){
+    document.body.classList.add("board","bxb"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
+    const k=JSON.stringify(["basic",st.state,st.race,st.live,st.results,st.res_flags,st.prev,st.connected,linkDown,st.test,st.lanes,st.brand,st.role,innerWidth<700]);
+    if(k!==lastKey){ lastKey=k; renderBasicBoard(); } return; }
+  document.body.classList.remove("bxb");
   if(location.hash==="#team"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
     const k=JSON.stringify([tmView,tmView==="club"?tmData:tmView==="program"?prog:hist,tmClubs.length,linkDown,st&&st.role,st&&st.brand,tmClub(),st&&st.coach,st&&st.role_fix]); if(k!==lastKey){ lastKey=k; renderTeam(); } return; }
   if(location.hash==="#marshalling"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
