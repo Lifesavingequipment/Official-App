@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.23.0"
+APP_VERSION = "1.24.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -750,6 +750,349 @@ def hire_reset(d):
                 pass
         save_settings()
     note("Hire-out reset: kit cleared for the next hirer%s" % (" (%d saved events moved to hire_archive)" % moved if moved else ""))
+    return "ok"
+
+
+# ---------------- location, venue, weather and tides ----------------
+# Where is the kit? GPS (through gpsd) when it has a 3D fix, otherwise nearby Wi-Fi sent to a geolocation
+# service (needs a key), otherwise the internet address (city-level - never trusted alone to pick a venue),
+# otherwise the official picks. Weather, swell, water temperature and tides come from Open-Meteo by lat/lon;
+# everything is cached so it still shows offline.
+LOC_FILE = os.path.join(DATA, "location.json")
+GEO_URL = os.environ.get("IRB_GEO_URL", "https://www.googleapis.com/geolocation/v1/geolocate")
+IPGEO_URL = os.environ.get("IRB_IPGEO_URL", "http://ip-api.com/json/?fields=status,lat,lon,city,regionName")
+WX_URL = os.environ.get("IRB_WX_URL", "https://api.open-meteo.com/v1/forecast")
+MARINE_URL = os.environ.get("IRB_MARINE_URL", "https://marine-api.open-meteo.com/v1/marine")
+TIDES_URL = os.environ.get("IRB_TIDES_URL", "https://www.worldtides.info/api/v3")
+GPSD = os.environ.get("IRB_GPSD", "127.0.0.1:2947")
+LOC = {"venues": [], "source": "auto", "venue": None, "how": "", "picked": "", "ask": False, "fix": None,
+       "keys": {"google": "", "worldtides": ""}, "gps": {"state": "none"}, "wx": None, "msg": "", "wx_msg": "",
+       "next_fix": 0.0, "next_wx": 0.0, "wx_for": None, "gps_clock": 0.0}
+
+
+def loc_load():
+    try:
+        with open(LOC_FILE) as fh:
+            d = json.load(fh)
+        for k in ("venues", "source", "venue", "how", "picked", "fix", "keys", "wx"):
+            if k in d:
+                LOC[k] = d[k]
+    except (OSError, ValueError):
+        pass
+
+
+def loc_save():
+    try:
+        tmp = LOC_FILE + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({k: LOC[k] for k in ("venues", "source", "venue", "how", "picked", "fix", "keys", "wx")}, fh)
+        os.replace(tmp, LOC_FILE)
+    except OSError:
+        pass
+
+
+def http_json(url, data=None, timeout=8):
+    req = urllib.request.Request(url, data=json.dumps(data).encode() if data is not None else None,
+                                 headers={"User-Agent": "IRB-timing-app/" + APP_VERSION, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def dist_m(a_lat, a_lon, b_lat, b_lon):
+    import math
+    p1, p2 = math.radians(a_lat), math.radians(b_lat)
+    dp, dl = p2 - p1, math.radians(b_lon - a_lon)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 6371000 * 2 * math.asin(min(1, math.sqrt(h)))
+
+
+def gps_read():
+    """one look at gpsd: fix mode, position, accuracy, satellites and time. No gpsd = no GPS."""
+    host, _, port = GPSD.partition(":")
+    g = {"state": "none"}
+    try:
+        with socket.create_connection((host, int(port or 2947)), timeout=2) as sk:
+            sk.settimeout(3)
+            sk.sendall(b'?WATCH={"enable":true,"json":true}\n')
+            buf, end = b"", time.time() + 3
+            tpv, sky, seen = None, None, False
+            while time.time() < end and not (tpv and sky):
+                try:
+                    chunk = sk.recv(4096)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    try:
+                        m = json.loads(line)
+                    except ValueError:
+                        continue
+                    seen = True
+                    if m.get("class") == "TPV":
+                        tpv = m
+                    elif m.get("class") == "SKY":
+                        sky = m
+            g = {"state": "nofix" if seen else "none"}
+            if sky:
+                sats = sky.get("satellites") or []
+                g["sats"] = sky.get("uSat", sum(1 for x in sats if x.get("used")))
+            if tpv and tpv.get("mode", 0) >= 2 and "lat" in tpv:
+                g.update(state="3d" if tpv["mode"] >= 3 else "2d", lat=tpv["lat"], lon=tpv["lon"],
+                         acc=round(tpv.get("eph") or max(tpv.get("epx", 15), tpv.get("epy", 15))), time=tpv.get("time"))
+    except (OSError, ValueError):
+        pass
+    return g
+
+
+def wifi_aps():
+    """nearby Wi-Fi access points (BSSID + signal in dBm) for Wi-Fi geolocation"""
+    if not IS_LINUX and not os.environ.get("IRB_NMCLI"):
+        return []
+    try:
+        rc, out, _ = nm(["-t", "-f", "BSSID,SIGNAL", "device", "wifi", "list", "--rescan", "auto"], timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    aps = []
+    for line in out.splitlines():
+        f = nm_fields(line)
+        if len(f) >= 2 and re.match(r"^[0-9A-Fa-f:]{17}$", f[0]) and f[1].isdigit():
+            aps.append({"macAddress": f[0].lower(), "signalStrength": int(f[1]) // 2 - 100})
+    return aps
+
+
+def get_fix():
+    """best location we can get right now: GPS 3D > Wi-Fi > internet address"""
+    g = LOC["gps"]
+    now = time.time()
+    if g.get("state") == "3d":
+        return {"lat": g["lat"], "lon": g["lon"], "acc": g.get("acc") or 15, "src": "gps", "at": now}
+    if LOC["keys"].get("google"):
+        aps = wifi_aps()
+        if len(aps) >= 2:
+            try:
+                r = http_json(GEO_URL + "?key=" + urllib.parse.quote(LOC["keys"]["google"]), {"considerIp": False, "wifiAccessPoints": aps[:30]})
+                if r.get("location"):
+                    return {"lat": r["location"]["lat"], "lon": r["location"]["lng"], "acc": round(r.get("accuracy") or 100),
+                            "src": "wifi", "at": now, "aps": len(aps)}
+            except Exception as e:                 # a bad key or no internet: fall through
+                LOC["msg"] = "Wi-Fi location failed (%s)" % (getattr(e, "code", "") or "no internet")
+    try:
+        r = http_json(IPGEO_URL)
+        if r.get("status", "success") == "success" and "lat" in r:
+            return {"lat": r["lat"], "lon": r["lon"], "acc": 25000, "src": "ip", "at": now, "city": r.get("city", "")}
+    except Exception:
+        pass
+    return None
+
+
+def venue_by_id(i):
+    return next((v for v in LOC["venues"] if v["id"] == i), None)
+
+
+def pick_venue():
+    """auto-select only when exactly one saved venue is in range and the fix is better than 500 m"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if LOC["how"] == "manual" and LOC["picked"] == today and venue_by_id(LOC["venue"]):
+        LOC["ask"] = False
+        return
+    f = LOC["fix"]
+    if LOC["source"] == "auto" and f and f.get("acc", 1e9) <= 500:
+        near = [v for v in LOC["venues"] if dist_m(f["lat"], f["lon"], v["lat"], v["lon"]) <= v.get("radius", 2000)]
+        if len(near) == 1:
+            if LOC["venue"] != near[0]["id"] or LOC["how"] != "auto":
+                note("Venue: %s (auto, %s ±%d m)" % (near[0]["name"], f["src"], f["acc"]))
+            LOC.update(venue=near[0]["id"], how="auto", ask=False)
+            return
+    LOC["ask"] = bool(LOC["venues"])               # nothing certain - an official confirms (last venue offered first)
+    if LOC["how"] == "auto" or (LOC["how"] == "manual" and LOC["picked"] != today):
+        LOC["how"] = "last"
+
+
+def tide_extremes(times, heights, offset):
+    """high and low tides from an hourly sea-level series (parabolic fit around each turning point)"""
+    out = []
+    for i in range(1, len(heights) - 1):
+        a, b, c = heights[i - 1], heights[i], heights[i + 1]
+        if None in (a, b, c):
+            continue
+        if (b > a and b >= c) or (b < a and b <= c):
+            den = a - 2 * b + c
+            dx = 0.5 * (a - c) / den if den else 0
+            t = (datetime.fromisoformat(times[i]) - datetime(1970, 1, 1)).total_seconds() - offset + dx * 3600   # local → UTC
+            out.append({"t": int(t * 1000), "type": "High" if b > a else "Low", "h": round(b - 0.25 * (a - c) * dx, 2)})
+    return out
+
+
+def wx_fetch(lat, lon):
+    q = "latitude=%.4f&longitude=%.4f&timezone=auto" % (lat, lon)
+    w = http_json(WX_URL + "?" + q + "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m"
+                  "&daily=sunrise,sunset&forecast_days=1&wind_speed_unit=kmh")
+    out = {"at": int(time.time() * 1000), "lat": lat, "lon": lon, "now": {}, "tides": [], "tide_src": ""}
+    c = w.get("current") or {}
+    out["now"].update(air=c.get("temperature_2m"), feels=c.get("apparent_temperature"), code=c.get("weather_code"),
+                      wind=c.get("wind_speed_10m"), wind_dir=c.get("wind_direction_10m"), gust=c.get("wind_gusts_10m"))
+    off = w.get("utc_offset_seconds", 0)
+    dl = w.get("daily") or {}
+    for k in ("sunrise", "sunset"):
+        if dl.get(k):
+            out["now"][k] = int(((datetime.fromisoformat(dl[k][0]) - datetime(1970, 1, 1)).total_seconds() - off) * 1000)
+    try:
+        m = http_json(MARINE_URL + "?" + q + "&current=wave_height,wave_direction,wave_period,sea_surface_temperature"
+                      "&hourly=sea_level_height_msl&past_days=1&forecast_days=2")
+        mc = m.get("current") or {}
+        out["now"].update(swell=mc.get("wave_height"), swell_dir=mc.get("wave_direction"), swell_per=mc.get("wave_period"),
+                          water=mc.get("sea_surface_temperature"))
+        h = m.get("hourly") or {}
+        if h.get("sea_level_height_msl"):
+            out["tides"] = tide_extremes(h["time"], h["sea_level_height_msl"], m.get("utc_offset_seconds", off))
+            out["tide_src"] = "model"
+    except Exception:
+        out["marine_err"] = True
+    if LOC["keys"].get("worldtides"):               # a real tide service beats the sea-level model
+        try:
+            t = http_json(TIDES_URL + "?extremes&days=2&lat=%.4f&lon=%.4f&key=%s" % (lat, lon, urllib.parse.quote(LOC["keys"]["worldtides"])))
+            if t.get("extremes"):
+                out["tides"] = [{"t": int(x["dt"]) * 1000, "type": x.get("type", ""), "h": round(x.get("height", 0), 2)} for x in t["extremes"]]
+                out["tide_src"] = "worldtides"
+        except Exception:
+            pass
+    return out
+
+
+def wx_point():
+    v = venue_by_id(LOC["venue"])
+    if v:
+        return v["lat"], v["lon"], v["name"]
+    f = LOC["fix"]
+    if f and f.get("acc", 1e9) <= 5000:
+        return f["lat"], f["lon"], ""
+    return None
+
+
+def loc_tick(force=False):
+    now = time.time()
+    LOC["gps"] = gps_read()
+    g = LOC["gps"]
+    if g.get("state") == "3d" and g.get("time") and now - LOC["gps_clock"] > 3600:     # GPS time keeps results right offline
+        try:
+            gt = (datetime.strptime(g["time"][:19], "%Y-%m-%dT%H:%M:%S") - datetime(1970, 1, 1)).total_seconds()
+            if abs(gt - time.time()) > 5:
+                LOC["gps_clock"] = now
+                if clock_set(gt * 1000) == "ok":
+                    note("Clock set from GPS")
+            else:
+                LOC["gps_clock"] = now
+        except ValueError:
+            pass
+    if force or now >= LOC["next_fix"]:
+        LOC["next_fix"] = now + (60 if g.get("state") == "3d" else 300)
+        f = get_fix() if LOC["source"] == "auto" else None
+        if f:
+            LOC["fix"], LOC["msg"] = f, ""
+        pick_venue()
+        loc_save()
+    pt = wx_point()
+    if pt and (force or now >= LOC["next_wx"] or LOC["wx_for"] != pt[:2]):
+        LOC["next_wx"], LOC["wx_for"] = now + 20 * 60, pt[:2]
+        try:
+            w = wx_fetch(pt[0], pt[1])
+            w["for"] = pt[2]
+            LOC["wx"], LOC["wx_msg"] = w, ""
+            loc_save()
+        except Exception as e:
+            LOC["next_wx"] = now + 5 * 60
+            LOC["wx_msg"] = "No internet – showing the last weather" if LOC["wx"] else "No internet for weather yet"
+
+
+LOC_KICK = threading.Event()
+
+
+def loc_loop():
+    while True:
+        force = LOC_KICK.is_set()
+        LOC_KICK.clear()
+        try:
+            loc_tick(force)
+        except Exception as e:
+            LOC["msg"] = "Location error: %s" % e
+        LOC_KICK.wait(60)
+
+
+def loc_view():
+    v = venue_by_id(LOC["venue"])
+    f = LOC["fix"]
+    near = []
+    if f:
+        near = sorted(({"id": x["id"], "d": round(dist_m(f["lat"], f["lon"], x["lat"], x["lon"]))} for x in LOC["venues"]), key=lambda z: z["d"])
+    return {"venue": {"id": v["id"], "name": v["name"]} if v else None, "how": LOC["how"], "ask": LOC["ask"], "source": LOC["source"],
+            "fix": {k: f.get(k) for k in ("lat", "lon", "acc", "src", "at", "city")} if f else None, "near": near,
+            "gps": LOC["gps"], "venues": LOC["venues"], "keys": {k: bool(x) for k, x in LOC["keys"].items()},
+            "wx": LOC["wx"], "msg": LOC["msg"], "wx_msg": LOC["wx_msg"]}
+
+
+def loc_action(d, role):
+    if role not in ("master", "admin"):
+        return "Only the timing desk or an Admin can do that"
+    today = datetime.now().strftime("%Y-%m-%d")
+    msg = ""
+    with lock:                                     # note() takes the lock too, so it's called after
+        if "venue" in d:
+            v = venue_by_id(d["venue"])
+            if not v:
+                return "That venue isn't saved"
+            LOC.update(venue=v["id"], how="manual", picked=today, ask=False)
+            msg = "Venue: %s (chosen)" % v["name"]
+        elif d.get("auto"):
+            LOC.update(how="last", picked="")
+        elif d.get("refresh"):
+            pass
+        elif role != "master":
+            return "Only the timing desk can do that"
+        elif "save" in d:
+            x = d["save"] or {}
+            try:
+                name = str(x.get("name") or "").strip()[:60]
+                lat, lon, rad = float(x["lat"]), float(x["lon"]), int(float(x.get("radius") or 2000))
+            except (KeyError, TypeError, ValueError):
+                return "Enter a name, latitude and longitude"
+            if not name or not (-90 <= lat <= 90 and -180 <= lon <= 180) or not 100 <= rad <= 50000:
+                return "Check the name, latitude (−90 to 90), longitude (−180 to 180) and radius (100–50000 m)"
+            old = venue_by_id(x.get("id"))
+            if old:
+                old.update(name=name, lat=lat, lon=lon, radius=rad)
+            else:
+                LOC["venues"].append({"id": secrets.token_hex(4), "name": name, "lat": lat, "lon": lon, "radius": rad})
+                if not LOC["venue"]:
+                    LOC.update(venue=LOC["venues"][-1]["id"], how="manual", picked=today, ask=False)
+        elif "here" in d:
+            f = LOC["fix"]
+            if not f or f.get("acc", 1e9) > 500:
+                return "No accurate location yet (needs GPS or Wi-Fi location better than 500 m)"
+            name = str(d.get("here") or "").strip()[:60]
+            if not name:
+                return "Enter a name"
+            LOC["venues"].append({"id": secrets.token_hex(4), "name": name, "lat": round(f["lat"], 6), "lon": round(f["lon"], 6), "radius": 2000})
+            LOC.update(venue=LOC["venues"][-1]["id"], how="manual", picked=today, ask=False)
+        elif "delete" in d:
+            LOC["venues"] = [v for v in LOC["venues"] if v["id"] != d["delete"]]
+            if LOC["venue"] == d["delete"]:
+                LOC.update(venue=None, how="")
+        elif d.get("source") in ("auto", "manual"):
+            LOC["source"] = d["source"]
+        elif isinstance(d.get("keys"), dict):
+            for k in ("google", "worldtides"):
+                if d["keys"].get(k) is not None:
+                    LOC["keys"][k] = str(d["keys"][k]).strip()[:200]
+        else:
+            return "Nothing to do"
+        LOC["next_fix"] = LOC["next_wx"] = 0
+        loc_save()
+    if msg:
+        note(msg)
+    LOC_KICK.set()
     return "ok"
 
 
@@ -2944,6 +3287,9 @@ def save_result(d):
             save_flags()
     rec = dict(d)
     rec["saved_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    vn = venue_by_id(LOC["venue"])
+    if vn:
+        rec["venue"] = vn["name"]
     if MODE["v"] == "basic" and not d.get("practice"):     # written down off the screen, not entered in LiveHeats
         fb = flags.setdefault(str(d.get("race")), {})
         if not fb.get("basic"):
@@ -3430,6 +3776,7 @@ def snapshot(role="master", local=True, tok=None):
                             and not flags.get(str(r.get("race")), {}).get("basic")][-30:]
         d["today"] = datetime.now().strftime("%Y-%m-%d")
         d["mode"] = MODE["v"]
+        d["loc"] = loc_view() if role in ("master", "admin") else None
         d["prev"] = prev_race(cur_race) if MODE["v"] == "basic" else None
         for k in ("test_count", "test_last", "test_clash", "beat", "batt", "practice", "backup"):
             d[k] = S[k]
@@ -3670,6 +4017,9 @@ class H(BaseHTTPRequestHandler):
         except ValueError:
             data = {}
         cookie = lambda tok: {"Set-Cookie": "irb_token=%s; Max-Age=31536000; Path=/; SameSite=Strict" % tok}
+        if self.path.split("?")[0] == "/api/loc":         # venue, location, weather (exact: /api/lock is log out)
+            self.send(200, json.dumps({"result": loc_action(data, self.role())}))
+            return
         if self.path.startswith("/api/mode"):             # Basic or Full
             m = data.get("mode")
             if self.role() != "master":
@@ -4742,6 +5092,12 @@ a{color:var(--blue)}a:hover{color:var(--ink)}
  .mb .mbl .ml>span{white-space:normal!important}
 }
 
+/* ---- venue and conditions ---- */
+.wxg{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.wxg>div{background:#f4f6f9;border-radius:10px;padding:8px 10px}.wxg span{display:block;font-size:12px;color:#5b6472;font-weight:600}
+.wxg b{font-size:22px;font-weight:800}.wxg small{display:block;font-size:12.5px;color:#4a5260}
+.tides{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.tides span{background:#eaf3fb;border-radius:8px;padding:5px 9px;font-size:14px}
+.tides small{color:#5b6472}
 /* ---- Basic mode: finish-line display ---- */
 .bx{display:flex;flex-direction:column;gap:12px;max-width:1200px;margin:0 auto}
 .bxh{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
@@ -5274,6 +5630,7 @@ function dayChecks(){
   { const e=st.estop||{};
     if(st.connected) c.push({ok:!!(e.req&&!e.on),label:"Emergency stop",hint:!e.req?"Update the timing box program to v3.12 – the emergency stop is required to race"
       :e.on?"STOP – pressed or not connected. Twist to release, or check GP28 (pin 34) to GND":"Connected and released",btn:!e.req?"Updates":"",act:"sysView='setup';lastKey='';render()"}); }
+  if(!isBasic()&&st.loc&&st.loc.venues.length) c.push({ok:!!(st.loc.venue&&!st.loc.ask),opt:true,label:"Venue",hint:st.loc.venue?st.loc.venue.name+(st.loc.ask?" – please confirm":""):"Choose today's venue",btn:st.loc.ask||!st.loc.venue?"Choose":"",act:"venueSheet()"});
   if(!isBasic()) c.push({ok:pg.mode!=null,label:"Heats for today",hint:pg.mode==="on"?"Program on":pg.mode==="off"?"No program – heats chosen by hand":"Choose the program, or No program",btn:"Program",act:"goTab('program')"});
   if(st.has_test){ const today=lt&&lt.date===st.today, bad=today&&(lt.missing.length||(lt.clash||[]).length);
     const can=st.connected&&(st.state==="IDLE"||st.state==="DONE")&&!st.test;
@@ -6541,6 +6898,94 @@ function joinCodes(px){ const j=st.join||{}; let h=`<div class="qrs">`;
   if(j.ssid) h+=`<div>1. Wi-Fi${qrSvg(wifiText(j),px)}<div class="mute">${esc(j.ssid)}</div></div>`;
   return h+`<div>${j.ssid?"2. ":""}${isBasic()?"Results":"IRB Racing App"}${qrSvg(j.url,px)}<div class="mute">${esc(j.url)}</div></div></div>`; }
 let joinOpen=false;
+// ================= venue, location and conditions (Full mode) =================
+function compass(d){ return d==null?"":["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"][Math.round(((d%360)+360)%360/22.5)%16]; }
+function wxWord(c){ if(c==null) return ""; if(c===0) return "Clear"; if(c<=2) return "Partly cloudy"; if(c===3) return "Cloudy"; if(c<=48) return "Fog";
+  if(c<=57) return "Drizzle"; if(c<=67) return "Rain"; if(c<=77) return "Snow"; if(c<=82) return "Showers"; if(c<=86) return "Snow showers"; return "Thunderstorm"; }
+function hm(ms){ const d=new Date(ms); return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); }
+function r1(x){ return x==null?"–":(Math.round(x*10)/10).toString(); }
+function fixText(f){ if(!f) return "Not located yet";
+  return {gps:"GPS",wifi:"Wi-Fi location",ip:"internet address (rough)"}[f.src]+(f.src==="ip"?(f.city?" – "+f.city:""):" ±"+(f.acc>=1000?(f.acc/1000).toFixed(1)+" km":f.acc+" m")); }
+function gpsText(g){ g=g||{}; return g.state==="none"?"No GPS found":g.state==="nofix"?`GPS – no fix yet${g.sats!=null?" · "+g.sats+" satellites":""}`
+  :`GPS ${g.state==="3d"?"3D":"2D"} fix · ${g.sats!=null?g.sats+" satellites · ":""}±${g.acc} m`; }
+function venueLine(L){ const v=L.venue; if(!v) return `<span class="mute">No venue chosen</span>`;
+  return `<b>${esc(v.name)}</b> <span class="mute">(${L.how==="auto"?"auto":L.how==="manual"?"chosen":"last used"})</span>`; }
+function nextTides(w){ const now=Date.now(); return (w&&w.tides||[]).filter(t=>t.t>now-30*60000).slice(0,3); }
+function wxCard(){
+  const L=st.loc; if(!L||isBasic()) return "";
+  const w=L.wx, n=(w&&w.now)||{}, old=w&&Date.now()-w.at>45*60000;
+  let h=`<div class="card wxc"><div class="row" style="margin:0;align-items:center;justify-content:space-between"><h2 style="margin:0">Venue</h2>
+    <button class="btn sm" onclick="venueSheet()">Change</button></div><div style="margin:4px 0 6px;font-size:17px">${venueLine(L)}</div>`;
+  if(L.ask) h+=`<div class="warn" style="margin:0 0 8px">Confirm today's venue – ${L.fix?"the location isn't certain":"no location yet"}.
+    <div class="row">${(L.near.length?L.near.map(x=>L.venues.find(v=>v.id===x.id)).filter(Boolean):L.venues).slice(0,3).map(v=>`<button class="btn sm ${L.venue&&v.id===L.venue.id?"pri":""}" onclick="pickVenue('${v.id}')">${esc(v.name)}</button>`).join("")}
+    <button class="btn sm" onclick="venueSheet()">Other…</button></div></div>`;
+  if(!L.venues.length) h+=`<p class="mute" style="margin:0 0 8px">No saved venues yet – add them under Setup › Venue and location.</p>`;
+  if(w){ const t=nextTides(w);
+    h+=`<div class="wxg">
+      <div><span>Air</span><b>${r1(n.air)}°</b><small>${esc(wxWord(n.code))}${n.feels!=null?" · feels "+r1(n.feels)+"°":""}</small></div>
+      <div><span>Wind</span><b>${n.wind!=null?Math.round(n.wind)+" km/h":"–"}</b><small>${compass(n.wind_dir)}${n.wind!=null?" · "+Math.round(n.wind/1.852)+" kn":""}${n.gust!=null?" · gusts "+Math.round(n.gust):""}</small></div>
+      <div><span>Swell</span><b>${n.swell!=null?r1(n.swell)+" m":"–"}</b><small>${n.swell_per!=null?Math.round(n.swell_per)+" s · ":""}${compass(n.swell_dir)}</small></div>
+      <div><span>Water</span><b>${n.water!=null?r1(n.water)+"°":"–"}</b><small>${n.sunset?"sunset "+hm(n.sunset):""}</small></div></div>`;
+    if(t.length) h+=`<div class="tides">${t.map(x=>`<span><b>${x.type}</b> ${hm(x.t)} <small>${r1(x.h)} m</small></span>`).join("")}</div>`;
+    h+=`<p class="mute" style="margin:6px 0 0;font-size:13px">${old?"⚠ ":""}${esc(L.wx_msg||"")} ${L.wx_msg?"":"Updated"} ${hm(w.at)}${w.for?" · "+esc(w.for):""} · Open-Meteo${w.tide_src==="worldtides"?" · tides WorldTides":w.tide_src==="model"?" · tides approximate":""}</p>`;
+  } else h+=`<p class="mute" style="margin:0">${esc(L.wx_msg||"Weather shows once the kit has internet and a venue.")}</p>`;
+  return h+`</div>`;
+}
+async function pickVenue(id){ const r=await post("/api/loc",{venue:id}); if(r==="ok"){ closeSheet(); toast("Venue set"); } }
+function venueSheet(){
+  const L=st.loc||{venues:[]}, d=Object.fromEntries((L.near||[]).map(x=>[x.id,x.d]));
+  const list=L.venues.slice().sort((a,b)=>(d[a.id]??1e12)-(d[b.id]??1e12));
+  $("sheetin").innerHTML=`<h2>Today's venue</h2>
+    <p class="mute">Location: ${esc(fixText(L.fix))}.</p>
+    ${list.length?list.map(v=>`<button class="btn ${L.venue&&L.venue.id===v.id?"pri":""}" style="width:100%;justify-content:space-between;margin-bottom:6px" onclick="pickVenue('${v.id}')">
+      <span>${esc(v.name)}</span><small>${d[v.id]!=null?(d[v.id]>=1000?(d[v.id]/1000).toFixed(1)+" km":d[v.id]+" m")+" away":""}</small></button>`).join("")
+      :`<p>No saved venues yet.</p>`}
+    <div class="row">${L.source==="auto"?`<button class="btn" onclick="post('/api/loc',{auto:true}).then(()=>{closeSheet();toast('Choosing from location')})">Choose from location</button>`:""}
+    ${st.role==="master"?`<button class="btn" onclick="closeSheet();venueEdit()">Add a venue</button>`:""}<button class="btn" onclick="closeSheet()">Close</button></div>`;
+  $("sheet").classList.add("on");
+}
+function venueEdit(id){
+  const L=st.loc, v=(L.venues||[]).find(x=>x.id===id)||{name:"",lat:"",lon:"",radius:2000}, f=L.fix;
+  $("sheetin").innerHTML=`<h2>${id?"Edit venue":"Add a venue"}</h2>
+    <label>Name<input id="vn" value="${esc(v.name)}" placeholder="North Kirra SLSC"></label>
+    <div class="row" style="margin:0"><label style="flex:1">Latitude<input id="vlat" inputmode="decimal" value="${v.lat}" placeholder="-28.1667"></label>
+    <label style="flex:1">Longitude<input id="vlon" inputmode="decimal" value="${v.lon}" placeholder="153.5250"></label></div>
+    <label>Radius (m) – the venue is picked automatically within this distance<input id="vrad" inputmode="numeric" value="${v.radius}"></label>
+    <p class="mute" style="font-size:13px">Tip: in Google Maps, long-press the beach and copy the numbers (latitude, longitude). Pasting both into Latitude works too.</p>
+    <div class="row">${f&&f.acc<=500?`<button class="btn" onclick="$('vlat').value=${f.lat.toFixed(6)};$('vlon').value=${f.lon.toFixed(6)}">Use current location (±${f.acc} m)</button>`:""}
+    <button class="btn pri" id="vsave">Save</button>${id?`<button class="btn red" onclick="askYes('Delete ${esc(v.name).replace(/'/g,"")}?',()=>post('/api/loc',{delete:'${id}'}).then(closeSheet),'Delete')">Delete</button>`:""}<button class="btn" onclick="closeSheet()">Cancel</button></div><p class="bad" id="vmsg"></p>`;
+  $("sheet").classList.add("on");
+  $("vlat").addEventListener("input",()=>{ const m=$("vlat").value.match(/(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)/); if(m){ $("vlat").value=m[1]; $("vlon").value=m[2]; } });
+  $("vsave").onclick=async()=>{ const r=await post("/api/loc",{save:{id:id||"",name:$("vn").value,lat:$("vlat").value,lon:$("vlon").value,radius:$("vrad").value}});
+    if(r!=="ok"){ $("vmsg").textContent=r; return; } closeSheet(); toast("Venue saved"); };
+}
+function locKeys(){
+  const k=(st.loc||{}).keys||{};
+  $("sheetin").innerHTML=`<h2>Location and tide keys</h2>
+    <label>Google Geolocation API key ${k.google?"<span class='ok'>(set)</span>":""}<input id="kg" autocomplete="off" placeholder="${k.google?"leave blank to keep":"AIza…"}"></label>
+    <p class="mute" style="font-size:13px">Finds the kit from nearby Wi-Fi (usually 20–100 m) when there's no GPS. Free tier at console.cloud.google.com.</p>
+    <label>WorldTides API key ${k.worldtides?"<span class='ok'>(set)</span>":""}<input id="kt" autocomplete="off" placeholder="${k.worldtides?"leave blank to keep":"optional"}"></label>
+    <p class="mute" style="font-size:13px">Optional: proper tide times. Without it, tides come from the Open-Meteo sea-level model (approximate).</p>
+    <div class="row"><button class="btn pri" id="ksave">Save</button>${k.google||k.worldtides?`<button class="btn" onclick="post('/api/loc',{keys:{google:'',worldtides:''}}).then(closeSheet)">Remove both</button>`:""}<button class="btn" onclick="closeSheet()">Cancel</button></div>`;
+  $("sheet").classList.add("on");
+  $("ksave").onclick=async()=>{ const g=$("kg").value.trim(), t=$("kt").value.trim(); const r=await post("/api/loc",{keys:{google:g||null,worldtides:t||null}}); if(r==="ok"){ closeSheet(); toast("Keys saved"); } };
+}
+function locRows(master){
+  const L=st.loc, row=(n,v,b)=>`<div class="srow"><div class="sn">${n}</div><div class="ss">${v}</div><div class="sb">${b||""}</div></div>`;
+  let h=row("Venue today",venueLine(L),`<button class="btn" onclick="venueSheet()">Change</button>`)
+    +row("Location",`${esc(fixText(L.fix))}${L.msg?` <span class="bad">${esc(L.msg)}</span>`:""}<br><span class="mute">${L.source==="auto"?"Auto: GPS, then nearby Wi-Fi, then the internet address. A venue is picked only when exactly one is within its radius and the location is better than 500 m.":"Manual: officials pick the venue."}</span>`,
+      master?`<button class="btn" onclick="post('/api/loc',{source:'${L.source==="auto"?"manual":"auto"}'})">${L.source==="auto"?"Manual only":"Use auto"}</button>`:"")
+    +row("GPS",`${esc(gpsText(L.gps))}${L.gps.state==="none"?`<br><span class="mute">Plug in a USB GPS or the 4G HAT's GNSS and run gpsd – it's used automatically, and sets the clock when there's no internet.</span>`:""}`,"");
+  if(master) h+=row("Saved venues",L.venues.length?L.venues.map(v=>`<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin:2px 0"><span>${esc(v.name)} <span class="mute">${v.lat.toFixed(4)}, ${v.lon.toFixed(4)} · ${v.radius>=1000?(v.radius/1000)+" km":v.radius+" m"}</span></span><button class="btn sm" onclick="venueEdit('${v.id}')">Edit</button></div>`).join(""):`<span class="mute">None yet</span>`,
+      `<button class="btn" onclick="venueEdit()">Add</button>${L.fix&&L.fix.acc<=500?`<button class="btn" onclick="hereSave()">Save current location</button>`:""}`)
+    +row("Weather and tides",L.wx?`Updated ${hm(L.wx.at)}${L.wx.for?" for "+esc(L.wx.for):""} · ${L.wx.tide_src==="worldtides"?"tides from WorldTides":"tides approximate (Open-Meteo sea level)"}${L.wx_msg?` <span class="mute">– ${esc(L.wx_msg)}</span>`:""}`:`<span class="mute">${esc(L.wx_msg||"Not fetched yet – needs internet and a venue")}</span>`,
+      `<button class="btn" onclick="post('/api/loc',{refresh:true}).then(()=>toast('Refreshing…'))">Refresh</button>`)
+    +row("API keys",`Google Geolocation ${L.keys.google?"<span class='ok'>set</span>":"<span class='mute'>not set</span>"} · WorldTides ${L.keys.worldtides?"<span class='ok'>set</span>":"<span class='mute'>not set (optional)</span>"}`,`<button class="btn" onclick="locKeys()">Edit</button>`);
+  return h;
+}
+function hereSave(){ $("sheetin").innerHTML=`<h2>Save current location</h2><p class="mute">${esc(fixText(st.loc.fix))}</p><label>Venue name<input id="hn" placeholder="North Kirra SLSC"></label>
+  <div class="row"><button class="btn pri" id="hgo">Save</button><button class="btn" onclick="closeSheet()">Cancel</button></div><p class="bad" id="hmsg"></p>`; $("sheet").classList.add("on");
+  $("hgo").onclick=async()=>{ const r=await post("/api/loc",{here:$("hn").value}); if(r!=="ok"){ $("hmsg").textContent=r; return; } closeSheet(); toast("Venue saved"); }; }
 function joinCard(){
   const j=st.join||{};
   if(racedToday()&&!joinOpen) return `<div class="card"><div class="row" style="margin:0;align-items:center;justify-content:space-between"><h2 style="margin:0">Join card</h2>
@@ -6915,8 +7360,8 @@ function renderSystem(){
     if(master&&isBasic()) c=sysCols((st.test?test:"")+dayCard(), batt, joinCard()+`<div class="card"><h2>Results screen</h2>
       <p class="mute" style="margin-top:0">The same finish order, read-only, for a TV, laptop or tablet on the kit's Wi-Fi. Phones that scan the join card see it too.</p>
       <div class="row"><a class="btn pri" href="/#board" target="_blank" style="text-decoration:none">Open the results screen</a></div></div>`);
-    else if(master&&st.access) c=sysCols((st.test?test:"")+dayCard(), officialsCard()+clubCard()+batt, joinCard());   // the button test lives in the checklist; screens are under ?
-    else c=sysCols(box+test, pinCard()+(st.role==="admin"?clubCard():""), batt);
+    else if(master&&st.access) c=sysCols((st.test?test:"")+dayCard(), officialsCard()+clubCard()+batt, wxCard()+joinCard());   // the button test lives in the checklist; screens are under ?
+    else c=sysCols(box+test, pinCard()+(st.role==="admin"?clubCard():""), (st.role==="admin"?wxCard():"")+batt);
   } else {
     // Setup: one tidy list – a line per item, status in the middle, button on the right
     const a=st.access||{net:{ssid:"",pass:"",addr:""},auto_url:"",master_pin:"",regulars:[]};
@@ -7015,6 +7460,7 @@ function renderSystem(){
        +sec("box","Timing box",!st.connected?"Not connected":st.faults.length?"Wiring fault: "+st.faults.length:"Connected · wiring OK"+(st.fw?" · v"+st.fw:""),G.box,!st.connected||st.faults.length)
        +sec("upd","Updates",pu.busy?"Updating the timing box…":["App v"+st.app+(u.newer?" → v"+u.latest+" available":" up to date"),st.connected&&pu.current?"Timing box v"+pu.current+(pu.newer?" → v"+pu.latest+" available":" up to date"):"Timing box not connected"].join(" · "),G.upd,updBad)
        +(G.net?sec("net","Wi-Fi and phones",w.on?[w.mode==="hotspot"?"On the timing hotspot":w.mode==="wifi"?"Home Wi-Fi: "+w.name:"No Wi-Fi",w.hs_ssid?"hotspot "+w.hs_ssid:"",i.two?(i.name?"internet via "+i.name:"no internet Wi-Fi"):""].filter(Boolean).join(" · "):"Join card Wi-Fi and phones",G.net,false):"")
+       +(st.loc&&!isBasic()?sec("loc","Venue and location",[st.loc.venue?st.loc.venue.name:"no venue",fixText(st.loc.fix),gpsText(st.loc.gps)].join(" · "),locRows(master),!!st.loc.ask):"")
        +sec("results","Results and backup",st.backup?(st.backup.ok?"Backed up "+st.backup.at:"Backup problem"):"Results zip, USB backup, problem report",G.results,st.backup&&!st.backup.ok)
        +sec("system","Battery, power and owner lock",[(st.batt_cfg||{}).on?"battery reading on":"",st.owner&&st.owner.set?(st.owner.open?"owner lock unlocked":"owner lock on"):"owner lock off","hire kit list"].filter(Boolean).join(" · "),G.system,sysBad)
        +sec("adv","Advanced","App address, timing desk PIN, your name",G.adv,false); }
@@ -7162,7 +7608,7 @@ function pageKey(){
   else if(tab==="history") k.push(hist,queue,enterAsk,rView,rFilter,rDoneOpen,st.results,st.res_flags,st.confirmed,st.state,innerWidth>=1100);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
-  else k.push(sysView,dayOpen,hxOpen,joinOpen,racedToday(),updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.lanes,st.lanes_use,st.lanes_max,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
+  else k.push(st.loc,sysView,dayOpen,hxOpen,joinOpen,racedToday(),updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.lanes,st.lanes_use,st.lanes_max,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
   return JSON.stringify(k);
 }
 function brandBar(){ const b=(st&&st.brand)||{}; if(!b.club&&!b.event&&!b.logo) return "";
@@ -7441,6 +7887,8 @@ def main():
     threading.Thread(target=update_check, daemon=True).start()       # quietly see if there's a newer version
     threading.Thread(target=firewall_check, daemon=True).start()     # Windows: can phones get in?
     threading.Thread(target=temp_loop, daemon=True).start()          # Pi temperature (box in the sun)
+    loc_load()
+    threading.Thread(target=loc_loop, daemon=True).start()           # venue, GPS, weather and tides
     threading.Thread(target=resil_setup, daemon=True).start()        # Pi: watchdogs + logs kept (once)
     threading.Thread(target=watchdog_loop, daemon=True).start()      # Pi: "still alive" to systemd
     if IS_LINUX:

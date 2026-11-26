@@ -1,13 +1,12 @@
 {
- "app": "1.23.0",
+ "app": "1.24.0",
  "pico": "3.12",
- "sha256": "4266af552a331860324f2abba6c2b737f0aecda244612580f6e2b79a34aaa148",
+ "sha256": "256bb5eb2f1d766fbeba39bdce789f104491802efa3804cb6424a9b821f2dbb0",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "Basic mode: a finish-line display \u2013 SET, GO, FINISH and the finish order, no names, no times, nothing to set up",
-  "Basic: lanes whose laps don't match show Checking with DNF / DQ / OK; Previous race button",
-  "Basic: TVs and phones show the same finish order read-only, with the previous race underneath",
-  "A new kit, or one after a hire-out reset, asks Basic or Full first; change it any time in System \u203a Setup",
-  "Races run in Basic are saved quietly and stay off the LiveHeats to-do list in Full"
+  "Venue and conditions on System \u203a Today: weather, wind (km/h and knots), swell, water temperature, sunset and the next tides",
+  "The kit finds where it is \u2013 GPS (gpsd) when fitted, nearby Wi-Fi (Google key), then the internet address \u2013 and picks the venue only when it's certain; otherwise an official confirms",
+  "Setup \u203a Venue and location: saved venues, save current location, auto or manual, GPS status, API keys (Google Geolocation, optional WorldTides)",
+  "Works offline with the last weather; GPS sets the clock when there's no internet; each saved race records its venue"
  ]
 }
