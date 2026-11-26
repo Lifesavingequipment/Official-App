@@ -1,9 +1,10 @@
 {
- "app": "1.26.2",
+ "app": "1.26.3",
  "pico": "3.12",
- "sha256": "cc275ae5184d274b56657ac7a6b31bff9854dadc9d93dce18a918dfadbeec14e",
+ "sha256": "f434b6a7d6673e00314d642b07cc7f72d6bb16a404385f64fdf08e625fc5c077",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "At power-up the kit gets the forecast and tides for where it is by itself: retries every minute until the internet is up, and uses the GPS position as soon as it gets its first fix"
+  "Correct tide times for fewer credits: one WorldTides request gets a week of tides per venue (nearest tide station, heights above LAT like BOM tables), kept on the Pi and reused \u2013 about 1 credit per venue every 5 days",
+  "Setup shows which tide station, how far ahead tides are saved, and WorldTides credits used"
  ]
 }

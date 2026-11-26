@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.26.2"
+APP_VERSION = "1.26.3"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -765,7 +765,7 @@ MARINE_URL = os.environ.get("IRB_MARINE_URL", "https://marine-api.open-meteo.com
 TIDES_URL = os.environ.get("IRB_TIDES_URL", "https://www.worldtides.info/api/v3")
 GPSD = os.environ.get("IRB_GPSD", "127.0.0.1:2947")
 LOC = {"venues": [], "venue": None, "how": "", "picked": "", "newspot": False, "fix": None,
-       "keys": {"worldtides": ""}, "gps": {"state": "none"}, "wx": None, "msg": "", "wx_msg": "", "gps_msg": "",
+       "keys": {"worldtides": ""}, "gps": {"state": "none"}, "wx": None, "tcache": {}, "tide_calls": 0, "msg": "", "wx_msg": "", "gps_msg": "",
        "next_fix": 0.0, "next_wx": 0.0, "wx_for": None, "gps_clock": 0.0}
 
 
@@ -773,7 +773,7 @@ def loc_load():
     try:
         with open(LOC_FILE) as fh:
             d = json.load(fh)
-        for k in ("venues", "venue", "how", "picked", "fix", "wx"):
+        for k in ("venues", "venue", "how", "picked", "fix", "wx", "tcache", "tide_calls"):
             if k in d:
                 LOC[k] = d[k]
         LOC["keys"]["worldtides"] = (d.get("keys") or {}).get("worldtides", "")
@@ -785,7 +785,7 @@ def loc_save():
     try:
         tmp = LOC_FILE + ".tmp"
         with open(tmp, "w") as fh:
-            json.dump({k: LOC[k] for k in ("venues", "venue", "how", "picked", "fix", "keys", "wx")}, fh)
+            json.dump({k: LOC[k] for k in ("venues", "venue", "how", "picked", "fix", "keys", "wx", "tcache", "tide_calls")}, fh)
         os.replace(tmp, LOC_FILE)
     except OSError:
         pass
@@ -924,20 +924,40 @@ def wx_fetch(lat, lon):
             out["tide_src"] = "model"
     except Exception:
         out["marine_err"] = True
-    prev = LOC["wx"] or {}
-    if LOC["keys"].get("worldtides") and prev.get("tide_src") == "worldtides" and time.time() - prev.get("tides_at", 0) < 6 * 3600 \
-            and abs(prev.get("lat", 0) - lat) < 1e-4 and abs(prev.get("lon", 0) - lon) < 1e-4:
-        out.update(tides=prev["tides"], tide_src="worldtides", tides_at=prev["tides_at"])   # tide times don't change: save credits
-    elif LOC["keys"].get("worldtides"):             # a real tide service beats the sea-level model
-        try:
-            t = http_json(TIDES_URL + "?extremes&date=today&days=2&localtime&lat=%.4f&lon=%.4f&key=%s" % (lat, lon, urllib.parse.quote(LOC["keys"]["worldtides"])))
-            if t.get("extremes"):
-                out["tides"] = [{"t": int(x["dt"]) * 1000, "type": x.get("type", ""), "h": round(x.get("height", 0), 2)} for x in t["extremes"]]
-                out["tide_src"] = "worldtides"
-                out["tides_at"] = time.time()
-        except Exception:
-            pass
+    if LOC["keys"].get("worldtides"):               # real tide times: a week per venue, kept on the Pi
+        t = worldtides(lat, lon)
+        if t:
+            out.update(tides=t["tides"], tide_src="worldtides", tide_station=t.get("station", ""), tides_until=t["until"])
     return out
+
+
+def worldtides(lat, lon):
+    """WorldTides charges per request and one request covers up to 7 days, so fetch a week for this spot and keep it.
+    Ask again only when under 2 days are left (about 1 credit per venue every 5 days). A tide station within 50 km is
+    used when there is one (more accurate than the global model); heights are above LAT, like BOM tide tables."""
+    key = "%.3f,%.3f" % (lat, lon)
+    tc = LOC["tcache"].get(key)
+    now_ms = time.time() * 1000
+    if tc and tc.get("for_key") == LOC["keys"]["worldtides"][-6:] and tc["until"] - now_ms > 2 * 86400000:
+        return tc
+    try:
+        r = http_json(TIDES_URL + "?extremes&date=today&days=7&datum=LAT&stationDistance=50&lat=%.4f&lon=%.4f&key=%s"
+                      % (lat, lon, urllib.parse.quote(LOC["keys"]["worldtides"])))
+        LOC["tide_calls"] = LOC.get("tide_calls", 0) + int(r.get("callCount") or 1)
+        ex = r.get("extremes") or []
+        if ex:
+            tc = {"tides": [{"t": int(x["dt"]) * 1000, "type": x.get("type", ""), "h": round(x.get("height", 0), 2)} for x in ex],
+                  "until": int(ex[-1]["dt"]) * 1000, "at": time.time(), "station": r.get("station") or "", "for_key": LOC["keys"]["worldtides"][-6:]}
+            LOC["tcache"][key] = tc
+            if len(LOC["tcache"]) > 20:              # keep the 20 most recent spots
+                for k in sorted(LOC["tcache"], key=lambda z: LOC["tcache"][z]["at"])[:-20]:
+                    LOC["tcache"].pop(k, None)
+            LOC["tide_msg"] = ""
+            return tc
+        LOC["tide_msg"] = "WorldTides: %s" % (r.get("error") or "no tide times returned")
+    except Exception as e:
+        LOC["tide_msg"] = "WorldTides didn't answer (%s) – using %s" % (getattr(e, "code", "") or "no internet", "the saved tide times" if tc else "the approximate tide times")
+    return tc                                      # whatever we saved last time, even if it's running short
 
 
 def tide_at(tides, t_ms):
@@ -962,7 +982,7 @@ def cond_now(t_ms=None):
     n = w.get("now") or {}
     c = {k: n.get(k) for k in ("air", "wind", "wind_dir", "gust", "swell", "swell_per", "swell_dir", "water")}
     c.update(venue=(venue_by_id(LOC["venue"]) or {}).get("name") or w.get("for") or "", forecast_at=w.get("at"),
-             tide_src=w.get("tide_src", ""), old=t_ms - (w.get("at") or 0) > 3 * 3600 * 1000)
+             tide_src=w.get("tide_src", ""), tide_station=w.get("tide_station", ""), old=t_ms - (w.get("at") or 0) > 3 * 3600 * 1000)
     td = tide_at(w.get("tides"), t_ms)
     if td:
         c.update(tide_h=td["h"], tide_state=td["state"], next_tide=td["next"])
@@ -983,7 +1003,7 @@ def cond_log(w):
            c["air"], c["wind"], compass_py(c["wind_dir"]), c["gust"], c["swell"], c["swell_per"], compass_py(c["swell_dir"]), c["water"],
            c.get("tide_h", ""), c.get("tide_state", ""),
            ("%s %s %.2f m" % (nt["type"], datetime.fromtimestamp(nt["t"] / 1000).strftime("%H:%M"), nt["h"])) if nt else "",
-           "WorldTides" if c["tide_src"] == "worldtides" else "Open-Meteo (approximate)"]
+           ("WorldTides" + (" – %s" % c["tide_station"] if c.get("tide_station") else "")) if c["tide_src"] == "worldtides" else "Open-Meteo (approximate)"]
     if LOC.get("_last_row") == row:            # the same minute and the same numbers: once is enough
         return
     LOC["_last_row"] = row
@@ -1076,7 +1096,8 @@ def loc_view():
             "fix": {k: f.get(k) for k in ("lat", "lon", "acc")} if f else None, "near": near, "gps": LOC["gps"], "gps_msg": LOC["gps_msg"],
             "venues": LOC["venues"], "keys": {"worldtides": bool(LOC["keys"].get("worldtides"))},
             "wx": LOC["wx"], "msg": LOC["msg"], "wx_msg": LOC["wx_msg"],
-            "tide_now": tide_at((LOC["wx"] or {}).get("tides"), int(time.time() * 1000))}
+            "tide_now": tide_at((LOC["wx"] or {}).get("tides"), int(time.time() * 1000)),
+            "tide_calls": LOC.get("tide_calls", 0), "tide_msg": LOC.get("tide_msg", "")}
 
 
 def gps_setup():
@@ -1154,8 +1175,7 @@ def loc_action(d, role):
         elif isinstance(d.get("keys"), dict):
             if d["keys"].get("worldtides") is not None:
                 LOC["keys"]["worldtides"] = str(d["keys"]["worldtides"]).strip()[:200]
-                if LOC["wx"]:
-                    LOC["wx"]["tides_at"] = 0            # a new key: fetch tide times straight away
+                LOC["tcache"] = {}                       # a new key: fetch tide times straight away
         elif d.get("gps_setup"):
             threading.Thread(target=gps_setup, daemon=True).start()
             return "ok"
@@ -7019,7 +7039,7 @@ function wxCard(){
         <div><span>Water</span><b>${n.water!=null?r1(n.water)+"°":"–"}</b><small>${n.sunset?"sunset "+hm(n.sunset):""}</small></div></div>`;
       if(t.length) h+=`<div class="tides">${t.map(x=>`<span><b>${x.type}</b> ${hm(x.t)} <small>${r1(x.h)} m</small></span>`).join("")}</div>`;
     }
-    h+=`<p class="mute wxft">${old||L.wx_msg?"⚠ "+esc(L.wx_msg||"Not updated recently")+" · ":""}Forecast ${hm(w.at)} – check conditions on the beach${wxOpen&&w.tide_src==="model"?" · tide times approximate":""}</p>`;
+    h+=`<p class="mute wxft">${old||L.wx_msg?"⚠ "+esc(L.wx_msg||"Not updated recently")+" · ":""}Forecast ${hm(w.at)} – check conditions on the beach${wxOpen?(w.tide_src==="model"?" · tide times approximate":w.tide_station?" · tides: "+esc(w.tide_station):""):""}</p>`;
   } else if(L.venue||L.fix) h+=`<p class="mute" style="margin:6px 0 0">${esc(L.wx_msg||"Weather and tides show once the kit has internet.")}</p>`;
   return h+`</div>`;
 }
@@ -7066,7 +7086,10 @@ function locRows(master){
       `<button class="btn" onclick="venueEdit()">Add</button>${L.gps.state==="3d"?`<button class="btn" onclick="hereSave()">Save this spot</button>`:""}`);
   h+=row("GPS",esc(gpsText(L.gps))+(L.gps_msg?`<br><span class="mute">${esc(L.gps_msg)}</span>`:L.gps.state==="none"?`<br><span class="mute">Optional. A USB GPS picks the venue for you and keeps the clock right without internet. Plug it in after setting it up.</span>`:L.gps.state==="nofix"?`<br><span class="mute">Needs a clear view of the sky – a few minutes the first time.</span>`:""),
       master&&L.gps.state==="none"?`<button class="btn" onclick="post('/api/loc',{gps_setup:true}).then(()=>toast('Setting up GPS…'))">Set up GPS</button>`:"");
-  h+=row("Weather and tides",L.wx?`Forecast ${hm(L.wx.at)}${L.wx.for?" for "+esc(L.wx.for):""} · ${L.wx.tide_src==="worldtides"?"tide times from WorldTides":"tide times approximate"}${L.wx_msg?` <span class="mute">– ${esc(L.wx_msg)}</span>`:""}`:`<span class="mute">${esc(L.wx_msg||"Needs internet and a venue")}</span>`,
+  h+=row("Weather and tides",L.wx?`Forecast ${hm(L.wx.at)}${L.wx.for?" for "+esc(L.wx.for):""}${L.wx_msg?` <span class="mute">– ${esc(L.wx_msg)}</span>`:""}<br>${L.wx.tide_src==="worldtides"
+        ?`Tide times from WorldTides${L.wx.tide_station?" – "+esc(L.wx.tide_station)+" station":" (model – no station within 50 km)"}, saved to ${new Date(L.wx.tides_until).toLocaleDateString([], {weekday:"short",day:"numeric",month:"short"})}`
+        :`<span class="mute">Tide times approximate${L.keys.worldtides?"":" – add a WorldTides key for proper tide times"}</span>`}${L.tide_msg?`<br><span class="bad">${esc(L.tide_msg)}</span>`:""}${L.keys.worldtides?`<br><span class="mute">WorldTides credits used by this kit: ${L.tide_calls} (about 1 per venue every 5 days)</span>`:""}`
+      :`<span class="mute">${esc(L.wx_msg||"Needs internet and a venue")}</span>`,
       `<button class="btn" onclick="post('/api/loc',{refresh:true}).then(()=>toast('Refreshing…'))">Refresh</button>${master?`<button class="btn" onclick="tideKey()">Tide key</button>`:""}`);
   return h;
 }
