@@ -1,11 +1,10 @@
 {
- "app": "1.26.4",
+ "app": "1.27.0",
  "pico": "3.12",
- "sha256": "9edcc83314eb64effb666e9d121c99d1fd5cb12ddee8461f2d6ade4e011e2498",
+ "sha256": "31c402fb2732aba9b5281054ba08bf9a97b45108951aabb130c40b17b653d5dd",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "Not at a saved venue: weather and tides are now for where the GPS says the kit is, not the last venue",
-  "The spot only changes when the kit moves more than 2 km, so GPS drift and switching on and off don't use tide credits",
-  "Save this spot keeps the tides already fetched \u2013 no extra credit"
+  "UV index: shown in the weather line (current) and details (today's peak), saved with each race and in the logs",
+  "Big screens (Full and Basic TV): one small line at the bottom with the tide now, the next high or low, and UV \u2013 only when the kit has them"
  ]
 }

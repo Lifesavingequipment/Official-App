@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.26.4"
+APP_VERSION = "1.27.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -912,14 +912,16 @@ def tide_extremes(times, heights, offset):
 
 def wx_fetch(lat, lon):
     q = "latitude=%.4f&longitude=%.4f&timezone=auto" % (lat, lon)
-    w = http_json(WX_URL + "?" + q + "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m"
-                  "&daily=sunrise,sunset&forecast_days=1&wind_speed_unit=kmh")
+    w = http_json(WX_URL + "?" + q + "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,uv_index"
+                  "&daily=sunrise,sunset,uv_index_max&forecast_days=1&wind_speed_unit=kmh")
     out = {"at": int(time.time() * 1000), "lat": lat, "lon": lon, "now": {}, "tides": [], "tide_src": ""}
     c = w.get("current") or {}
     out["now"].update(air=c.get("temperature_2m"), feels=c.get("apparent_temperature"), code=c.get("weather_code"),
-                      wind=c.get("wind_speed_10m"), wind_dir=c.get("wind_direction_10m"), gust=c.get("wind_gusts_10m"))
+                      wind=c.get("wind_speed_10m"), wind_dir=c.get("wind_direction_10m"), gust=c.get("wind_gusts_10m"), uv=c.get("uv_index"))
     off = w.get("utc_offset_seconds", 0)
     dl = w.get("daily") or {}
+    if dl.get("uv_index_max"):
+        out["now"]["uv_max"] = dl["uv_index_max"][0]
     for k in ("sunrise", "sunset"):
         if dl.get(k):
             out["now"][k] = int(((datetime.fromisoformat(dl[k][0]) - datetime(1970, 1, 1)).total_seconds() - off) * 1000)
@@ -991,7 +993,7 @@ def cond_now(t_ms=None):
         return None
     t_ms = t_ms or int(time.time() * 1000)
     n = w.get("now") or {}
-    c = {k: n.get(k) for k in ("air", "wind", "wind_dir", "gust", "swell", "swell_per", "swell_dir", "water")}
+    c = {k: n.get(k) for k in ("air", "wind", "wind_dir", "gust", "swell", "swell_per", "swell_dir", "water", "uv")}
     c.update(venue=w.get("for") if w.get("for") == SPOT_NAME else (venue_by_id(LOC["venue"]) or {}).get("name") or w.get("for") or "", forecast_at=w.get("at"),
              tide_src=w.get("tide_src", ""), tide_station=w.get("tide_station", ""), old=t_ms - (w.get("at") or 0) > 3 * 3600 * 1000)
     td = tide_at(w.get("tides"), t_ms)
@@ -1014,17 +1016,25 @@ def cond_log(w):
            c["air"], c["wind"], compass_py(c["wind_dir"]), c["gust"], c["swell"], c["swell_per"], compass_py(c["swell_dir"]), c["water"],
            c.get("tide_h", ""), c.get("tide_state", ""),
            ("%s %s %.2f m" % (nt["type"], datetime.fromtimestamp(nt["t"] / 1000).strftime("%H:%M"), nt["h"])) if nt else "",
-           ("WorldTides" + (" – %s" % c["tide_station"] if c.get("tide_station") else "")) if c["tide_src"] == "worldtides" else "Open-Meteo (approximate)"]
+           ("WorldTides" + (" – %s" % c["tide_station"] if c.get("tide_station") else "")) if c["tide_src"] == "worldtides" else "Open-Meteo (approximate)",
+           c.get("uv") if c.get("uv") is not None else ""]
     if LOC.get("_last_row") == row:            # the same minute and the same numbers: once is enough
         return
     LOC["_last_row"] = row
     try:
         new = not os.path.exists(COND_FILE)
+        if not new:                            # a log from before UV was added: add the column to its heading
+            with open(COND_FILE, encoding="utf-8") as fh:
+                old = fh.read()
+            if old and not old.split("\n", 1)[0].endswith(",uv"):
+                hd, _, rest = old.partition("\n")
+                with open(COND_FILE, "w", encoding="utf-8", newline="") as fh:
+                    fh.write(hd.rstrip("\r") + ",uv\r\n" + rest)
         with open(COND_FILE, "a", encoding="utf-8", newline="") as fh:
             wr = csv.writer(fh)
             if new:
                 wr.writerow(["time", "venue", "lat", "lon", "air_c", "wind_kmh", "wind_dir", "gust_kmh", "swell_m", "swell_period_s",
-                             "swell_dir", "water_c", "tide_m", "tide", "next_tide", "tide_source"])
+                             "swell_dir", "water_c", "tide_m", "tide", "next_tide", "tide_source", "uv"])
             wr.writerow(row)
         with open(TIDES_FILE, "w", encoding="utf-8", newline="") as fh:
             wr = csv.writer(fh)
@@ -1103,6 +1113,21 @@ def loc_loop():
         except Exception as e:
             LOC["msg"] = "Location error: %s" % e
         LOC_KICK.wait(60)
+
+
+def board_strip():
+    """tide now and UV for the big screens – only what's known; nothing when there's nothing"""
+    w = LOC["wx"]
+    if not w:
+        return None
+    out = {}
+    td = tide_at(w.get("tides"), int(time.time() * 1000))
+    if td:
+        out["tide"] = td
+    n = w.get("now") or {}
+    if n.get("uv") is not None and time.time() * 1000 - (w.get("at") or 0) < 3 * 3600 * 1000 and n["uv"] >= 0.5:
+        out["uv"] = n["uv"]
+    return out or None
 
 
 def loc_view():
@@ -3441,7 +3466,7 @@ def history_csv():
     w.writerow(["saved_at", "race", "event", "division", "round", "heat", "version", "final", "legs", "lane", "crew", "place",
                 "time_s", "status", "dq_code", "presses_s", "officials_changes", "changes_by", "note", "video_go",
                 "venue", "air_c", "wind_kmh", "wind_dir", "gust_kmh", "swell_m", "swell_period_s", "swell_dir", "water_c",
-                "tide_m", "tide", "next_tide", "conditions_from"])
+                "tide_m", "tide", "next_tide", "uv", "conditions_from"])
     for h in history:
         ch = "; ".join("lane %s %s" % (k, v) for k, v in sorted(h.get("changes", {}).items()))
         if h.get("legs_set"):
@@ -3457,6 +3482,7 @@ def history_csv():
         cc = [h.get("venue") or c.get("venue", ""), c.get("air", ""), c.get("wind", ""), compass_py(c.get("wind_dir")), c.get("gust", ""),
               c.get("swell", ""), c.get("swell_per", ""), compass_py(c.get("swell_dir")), c.get("water", ""), c.get("tide_h", ""),
               c.get("tide_state", ""), ("%s %s" % (nt["type"], datetime.fromtimestamp(nt["t"] / 1000).strftime("%H:%M"))) if nt else "",
+              c.get("uv") if c.get("uv") is not None else "",
               ("forecast %s" % datetime.fromtimestamp(c["forecast_at"] / 1000).strftime("%H:%M")) if c.get("forecast_at") else ""]
         for r in h.get("rows", []):
             w.writerow([h.get("saved_at"), h.get("race"), h.get("event") or "", ht.get("div", ""), ht.get("round", ""),
@@ -3906,6 +3932,7 @@ def snapshot(role="master", local=True, tok=None):
         d["today"] = datetime.now().strftime("%Y-%m-%d")
         d["mode"] = MODE["v"]
         d["loc"] = loc_view() if role in ("master", "admin") else None
+        d["strip"] = board_strip()
         d["prev"] = prev_race(cur_race) if MODE["v"] == "basic" else None
         for k in ("test_count", "test_last", "test_clash", "beat", "batt", "practice", "backup"):
             d[k] = S[k]
@@ -5251,6 +5278,9 @@ a{color:var(--blue)}a:hover{color:var(--ink)}
 .bxbar{display:flex;gap:12px;align-items:stretch;margin-top:4px}
 .bxbar .bxctl{flex:1}.bxbar .bxctl .start .btn{width:100%}
 .btn.bxprev{flex:0 0 170px;min-height:64px}
+.bstrip{font-size:16px;color:#5b6472;text-align:center;padding:6px 0 0;font-weight:600}
+.bd .bstrip{font-size:clamp(16px,1.6vw,30px);border-top:1px solid #e3e6eb;padding-top:10px}
+.bxtv:not(.ph) .bstrip{font-size:clamp(15px,1.5vw,30px)}
 .bxpv{font-size:16px;color:#5b6472;border-top:1px solid #e3e6eb;padding-top:10px;margin-top:4px}
 .bxclub{font-size:15px;color:#5b6472;font-weight:600}
 .bxoff{text-align:center;font-size:14px;margin-top:6px}
@@ -5500,7 +5530,7 @@ function renderBasicRace(){
 function renderBasicBoard(){
   if(!st||linkDown||!st.connected){ $("race").innerHTML=banner(); return; }
   const phone=innerWidth<700, n=bNow(false), b=st.brand||{};
-  $("race").innerHTML=`<div class="bx bxtv ${phone?"ph":""}">${b.club?`<div class="bxclub">${esc(b.club)}${b.event?" · "+esc(b.event):""}</div>`:""}${n.head}${n.body}${bPrevLine(st.prev,phone)}
+  $("race").innerHTML=`<div class="bx bxtv ${phone?"ph":""}">${b.club?`<div class="bxclub">${esc(b.club)}${b.event?" · "+esc(b.event):""}</div>`:""}${n.head}${n.body}${bPrevLine(st.prev,phone)}${stripHtml()}
     ${st.role==="viewer"&&!st.local?`<div class="bxoff"><a href="#" onclick="openRequest();return false">Officials</a></div>`:""}</div>`;
 }
 function modeInfo(m){ return m==="basic"
@@ -7039,10 +7069,15 @@ function hm(ms){ const d=new Date(ms); return String(d.getHours()).padStart(2,"0
 function r1(x){ return x==null?"–":(Math.round(x*10)/10).toString(); }
 function gpsText(g){ g=g||{}; return g.state==="none"?"No GPS":g.state==="nofix"?`GPS searching${g.sats!=null?" · "+g.sats+" satellites":""}`
   :`GPS ${g.state==="3d"?"fix":"2D fix"} · ${g.sats!=null?g.sats+" satellites · ":""}±${g.acc} m`; }
+function uvWord(u){ u=Math.round(u); return u<=2?"Low":u<=5?"Moderate":u<=7?"High":u<=10?"Very high":"Extreme"; }
+function uvText(u){ return `UV ${Math.round(u)} ${uvWord(u)}`; }
+function stripHtml(){ const s=st&&st.strip; if(!s) return ""; const t=s.tide, nt=t&&t.next;
+  const parts=[t?`Tide ${t.h!=null?r1(t.h)+" m ":""}${t.state}`:"", nt?`${nt.type.toLowerCase()} ${hm(nt.t)}`:"", s.uv!=null?uvText(s.uv):""].filter(Boolean);
+  return parts.length?`<div class="bstrip">${esc(parts.join(" · "))}</div>`:""; }
 function venueLine(L){ const v=L.venue; if(!v) return `<span class="mute">No venue chosen</span>`;
   return `<b>${esc(v.name)}</b>${L.how==="auto"?` <span class="mute">(GPS)</span>`:""}`; }
 function condLine(c){ if(!c) return ""; const nt=c.next_tide;
-  return [c.venue,c.wind!=null?`wind ${Math.round(c.wind)} km/h ${compass(c.wind_dir)}`:"",c.swell!=null?`swell ${r1(c.swell)} m`:"",c.water!=null?`water ${Math.round(c.water)}°`:"",
+  return [c.venue,c.wind!=null?`wind ${Math.round(c.wind)} km/h ${compass(c.wind_dir)}`:"",c.swell!=null?`swell ${r1(c.swell)} m`:"",c.water!=null?`water ${Math.round(c.water)}°`:"",c.uv!=null&&c.uv>=0.5?`UV ${Math.round(c.uv)}`:"",
     c.tide_state?`tide ${c.tide_h!=null?r1(c.tide_h)+" m ":""}${c.tide_state}${nt?" ("+nt.type.toLowerCase()+" "+hm(nt.t)+")":""}`:""].filter(Boolean).join(" · ")+(c.old?" · forecast was old":""); }
 function nextTides(w){ const now=Date.now(); return (w&&w.tides||[]).filter(t=>t.t>now-30*60000).slice(0,3); }
 let wxOpen=false;
@@ -7055,11 +7090,12 @@ function wxCard(){
   if(w){
     const tn=L.tide_now;
     const line=[n.wind!=null?`Wind ${Math.round(n.wind)} km/h ${compass(n.wind_dir)}`:"",n.swell!=null?`Swell ${r1(n.swell)} m`:"",n.water!=null?`Water ${Math.round(n.water)}°`:"",
-      tn?`Tide ${tn.h!=null?r1(tn.h)+" m ":""}${tn.state}, ${tn.next.type.toLowerCase()} ${hm(tn.next.t)}`:t[0]?`${t[0].type} ${hm(t[0].t)}`:""].filter(Boolean).join(" · ");
+      tn?`Tide ${tn.h!=null?r1(tn.h)+" m ":""}${tn.state}, ${tn.next.type.toLowerCase()} ${hm(tn.next.t)}`:t[0]?`${t[0].type} ${hm(t[0].t)}`:"",
+      n.uv!=null&&n.uv>=0.5?uvText(n.uv):""].filter(Boolean).join(" · ");
     h+=`<button class="wxline" onclick="wxOpen=!wxOpen;lastKey='';render()" aria-expanded="${wxOpen}"><span>${esc(line)}</span><span class="wxchev">${wxOpen?"▴":"▾"}</span></button>`;
     if(wxOpen){
       h+=`<div class="wxg">
-        <div><span>Air</span><b>${r1(n.air)}°</b><small>${esc(wxWord(n.code))}${n.feels!=null?" · feels "+r1(n.feels)+"°":""}</small></div>
+        <div><span>Air</span><b>${r1(n.air)}°</b><small>${esc(wxWord(n.code))}${n.feels!=null?" · feels "+r1(n.feels)+"°":""}${n.uv_max!=null?" · UV peak "+Math.round(n.uv_max):""}</small></div>
         <div><span>Wind</span><b>${n.wind!=null?Math.round(n.wind)+" km/h":"–"}</b><small>${compass(n.wind_dir)}${n.wind!=null?" · "+Math.round(n.wind/1.852)+" kn":""}${n.gust!=null?" · gusts "+Math.round(n.gust):""}</small></div>
         <div><span>Swell</span><b>${n.swell!=null?r1(n.swell)+" m":"–"}</b><small>${n.swell_per!=null?Math.round(n.swell_per)+" s · ":""}${compass(n.swell_dir)}</small></div>
         <div><span>Water</span><b>${n.water!=null?r1(n.water)+"°":"–"}</b><small>${n.sunset?"sunset "+hm(n.sunset):""}</small></div></div>`;
@@ -7820,7 +7856,7 @@ function renderBoard(){
     // between races: the heat on the start, then the next two
     h+=`<div class="two"><div>${boardStart(st.heat,"On the start",s==="ARMED"?`<span class="pill armed">SET</span>`:"")}</div><div>${boardNext2(nx[0],nx[1])}</div></div>`;
   }
-  $("race").innerHTML=h+boardRecent(skip)+`</div>`+boardQr()+homeBtn();
+  $("race").innerHTML=h+boardRecent(skip)+stripHtml()+`</div>`+boardQr()+homeBtn();
   fitRecent();
 }
 // ---------- EMERGENCY STOP: every screen, every role, until the button on the timing box is released ----------
@@ -7843,7 +7879,7 @@ function render(){
     const k=JSON.stringify(["fix",st&&st.brand]); if(k!==lastKey){ lastKey=k; renderFix(); } return; }
   if(st&&st.mode==="basic"&&(["#board","#team","#marshalling"].includes(location.hash)||(st.role!=="master"&&!st.local))){
     document.body.classList.add("board","bxb"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
-    const k=JSON.stringify(["basic",st.state,st.race,st.live,st.results,st.res_flags,st.prev,st.connected,linkDown,st.test,st.lanes,st.brand,st.role,innerWidth<700]);
+    const k=JSON.stringify(["basic",st.state,st.race,st.live,st.results,st.res_flags,st.prev,st.strip,st.connected,linkDown,st.test,st.lanes,st.brand,st.role,innerWidth<700]);
     if(k!==lastKey){ lastKey=k; renderBasicBoard(); } return; }
   document.body.classList.remove("bxb");
   if(location.hash==="#team"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
