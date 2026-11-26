@@ -1,12 +1,9 @@
 {
- "app": "1.26.0",
+ "app": "1.26.1",
  "pico": "3.12",
- "sha256": "7cf153d3f58b3fd92d19a079d100291936875407b872f914c51ed3edaba17f16",
+ "sha256": "3db96f4513ec22b00b4ea3c88a5c92fa1fc507f13af88fe58ecc74f345cff15e",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "Conditions saved automatically with every race: venue, wind, swell, water and air temperature, tide height, rising or falling, next high or low",
-  "Results spreadsheet has the conditions columns; each race in the Results tab shows its conditions",
-  "A conditions log and the day's tide times are kept with the event, in the take-home zip and on the USB backup",
-  "The one-line forecast now shows the tide now: height, rising or falling, next high or low"
+  "WorldTides is asked for tide times once every 6 hours (or when the venue or key changes) to save credits"
  ]
 }

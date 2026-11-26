@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.26.0"
+APP_VERSION = "1.26.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -924,12 +924,17 @@ def wx_fetch(lat, lon):
             out["tide_src"] = "model"
     except Exception:
         out["marine_err"] = True
-    if LOC["keys"].get("worldtides"):               # a real tide service beats the sea-level model
+    prev = LOC["wx"] or {}
+    if LOC["keys"].get("worldtides") and prev.get("tide_src") == "worldtides" and time.time() - prev.get("tides_at", 0) < 6 * 3600 \
+            and abs(prev.get("lat", 0) - lat) < 1e-4 and abs(prev.get("lon", 0) - lon) < 1e-4:
+        out.update(tides=prev["tides"], tide_src="worldtides", tides_at=prev["tides_at"])   # tide times don't change: save credits
+    elif LOC["keys"].get("worldtides"):             # a real tide service beats the sea-level model
         try:
             t = http_json(TIDES_URL + "?extremes&date=today&days=2&localtime&lat=%.4f&lon=%.4f&key=%s" % (lat, lon, urllib.parse.quote(LOC["keys"]["worldtides"])))
             if t.get("extremes"):
                 out["tides"] = [{"t": int(x["dt"]) * 1000, "type": x.get("type", ""), "h": round(x.get("height", 0), 2)} for x in t["extremes"]]
                 out["tide_src"] = "worldtides"
+                out["tides_at"] = time.time()
         except Exception:
             pass
     return out
@@ -1146,6 +1151,8 @@ def loc_action(d, role):
         elif isinstance(d.get("keys"), dict):
             if d["keys"].get("worldtides") is not None:
                 LOC["keys"]["worldtides"] = str(d["keys"]["worldtides"]).strip()[:200]
+                if LOC["wx"]:
+                    LOC["wx"]["tides_at"] = 0            # a new key: fetch tide times straight away
         elif d.get("gps_setup"):
             threading.Thread(target=gps_setup, daemon=True).start()
             return "ok"
