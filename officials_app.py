@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.25.0"
+APP_VERSION = "1.26.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -678,7 +678,7 @@ def new_event(d):
         if history:
             with open(os.path.join(folder, "results.csv"), "w", encoding="utf-8", newline="") as fh:
                 fh.write(history_csv())
-        for f in (HIST_FILE, FLAGS_FILE, PROGRAM_FILE, DRAW_FILE, ROLES_FILE, ROLE_LOG_FILE):
+        for f in (HIST_FILE, FLAGS_FILE, PROGRAM_FILE, DRAW_FILE, ROLES_FILE, ROLE_LOG_FILE, COND_FILE, TIDES_FILE):
             if os.path.exists(f):
                 shutil.copy2(f, folder)
         for f in glob.glob(os.path.join(DATA, "pico_log_*.txt")):
@@ -692,7 +692,7 @@ def new_event(d):
         SETUP["done"] = False                       # the Get started steps show again for the next event
         BRAND["event"] = ""
         S.update(heat=None, race_heat=None, results=None, race_event=None, event="")
-        for f in (HIST_FILE, FLAGS_FILE, ROLES_FILE, ROLE_LOG_FILE):
+        for f in (HIST_FILE, FLAGS_FILE, ROLES_FILE, ROLE_LOG_FILE, COND_FILE):
             try:
                 os.remove(f)
             except OSError:
@@ -758,6 +758,8 @@ def hire_reset(d):
 # stays until an official changes it. Weather, swell, water temperature and tides come from Open-Meteo by
 # lat/lon (forecast, not measured), cached so they still show offline. GPS also sets the clock offline.
 LOC_FILE = os.path.join(DATA, "location.json")
+COND_FILE = os.path.join(DATA, "conditions.csv")       # every forecast update today (saved with the event, backed up)
+TIDES_FILE = os.path.join(DATA, "tides.csv")           # the tide times around today
 WX_URL = os.environ.get("IRB_WX_URL", "https://api.open-meteo.com/v1/forecast")
 MARINE_URL = os.environ.get("IRB_MARINE_URL", "https://marine-api.open-meteo.com/v1/marine")
 TIDES_URL = os.environ.get("IRB_TIDES_URL", "https://www.worldtides.info/api/v3")
@@ -924,13 +926,78 @@ def wx_fetch(lat, lon):
         out["marine_err"] = True
     if LOC["keys"].get("worldtides"):               # a real tide service beats the sea-level model
         try:
-            t = http_json(TIDES_URL + "?extremes&days=2&lat=%.4f&lon=%.4f&key=%s" % (lat, lon, urllib.parse.quote(LOC["keys"]["worldtides"])))
+            t = http_json(TIDES_URL + "?extremes&date=today&days=2&localtime&lat=%.4f&lon=%.4f&key=%s" % (lat, lon, urllib.parse.quote(LOC["keys"]["worldtides"])))
             if t.get("extremes"):
                 out["tides"] = [{"t": int(x["dt"]) * 1000, "type": x.get("type", ""), "h": round(x.get("height", 0), 2)} for x in t["extremes"]]
                 out["tide_src"] = "worldtides"
         except Exception:
             pass
     return out
+
+
+def tide_at(tides, t_ms):
+    """tide height and direction at a moment, between the high/low either side (cosine curve)"""
+    import math
+    tl = sorted(tides or [], key=lambda x: x["t"])
+    for a, b in zip(tl, tl[1:]):
+        if a["t"] <= t_ms <= b["t"]:
+            f = (t_ms - a["t"]) / max(1, b["t"] - a["t"])
+            h = (a["h"] + b["h"]) / 2 + (a["h"] - b["h"]) / 2 * math.cos(math.pi * f)
+            return {"h": round(h, 2), "state": "rising" if b["type"] == "High" else "falling", "next": b}
+    nxt = next((x for x in tl if x["t"] > t_ms), None)       # before the first high/low we know: direction only
+    return {"h": None, "state": "rising" if nxt["type"] == "High" else "falling", "next": nxt} if nxt else None
+
+
+def cond_now(t_ms=None):
+    """the conditions for one moment (a race) from the latest forecast – saved with each race"""
+    w = LOC["wx"]
+    if not w:
+        return None
+    t_ms = t_ms or int(time.time() * 1000)
+    n = w.get("now") or {}
+    c = {k: n.get(k) for k in ("air", "wind", "wind_dir", "gust", "swell", "swell_per", "swell_dir", "water")}
+    c.update(venue=(venue_by_id(LOC["venue"]) or {}).get("name") or w.get("for") or "", forecast_at=w.get("at"),
+             tide_src=w.get("tide_src", ""), old=t_ms - (w.get("at") or 0) > 3 * 3600 * 1000)
+    td = tide_at(w.get("tides"), t_ms)
+    if td:
+        c.update(tide_h=td["h"], tide_state=td["state"], next_tide=td["next"])
+    return c
+
+
+def compass_py(d):
+    return "" if d is None else ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"][int(round((d % 360) / 22.5)) % 16]
+
+
+def cond_log(w):
+    """append the new forecast to today's conditions log, and rewrite the tide times"""
+    c = cond_now()
+    if not c:
+        return
+    nt = c.get("next_tide") or {}
+    row = [datetime.now().strftime("%Y-%m-%d %H:%M"), c["venue"], round(w.get("lat", 0), 5), round(w.get("lon", 0), 5),
+           c["air"], c["wind"], compass_py(c["wind_dir"]), c["gust"], c["swell"], c["swell_per"], compass_py(c["swell_dir"]), c["water"],
+           c.get("tide_h", ""), c.get("tide_state", ""),
+           ("%s %s %.2f m" % (nt["type"], datetime.fromtimestamp(nt["t"] / 1000).strftime("%H:%M"), nt["h"])) if nt else "",
+           "WorldTides" if c["tide_src"] == "worldtides" else "Open-Meteo (approximate)"]
+    if LOC.get("_last_row") == row:            # the same minute and the same numbers: once is enough
+        return
+    LOC["_last_row"] = row
+    try:
+        new = not os.path.exists(COND_FILE)
+        with open(COND_FILE, "a", encoding="utf-8", newline="") as fh:
+            wr = csv.writer(fh)
+            if new:
+                wr.writerow(["time", "venue", "lat", "lon", "air_c", "wind_kmh", "wind_dir", "gust_kmh", "swell_m", "swell_period_s",
+                             "swell_dir", "water_c", "tide_m", "tide", "next_tide", "tide_source"])
+            wr.writerow(row)
+        with open(TIDES_FILE, "w", encoding="utf-8", newline="") as fh:
+            wr = csv.writer(fh)
+            wr.writerow(["date", "time", "tide", "height_m", "venue", "source"])
+            for x in sorted(w.get("tides") or [], key=lambda z: z["t"]):
+                d = datetime.fromtimestamp(x["t"] / 1000)
+                wr.writerow([d.strftime("%Y-%m-%d"), d.strftime("%H:%M"), x["type"], x["h"], c["venue"], row[-1]])
+    except OSError:
+        pass
 
 
 def wx_point():
@@ -973,6 +1040,7 @@ def loc_tick(force=False):
             w["for"] = pt[2]
             LOC["wx"], LOC["wx_msg"] = w, ""
             loc_save()
+            cond_log(w)
         except Exception as e:
             LOC["next_wx"] = now + 5 * 60
             LOC["wx_msg"] = "No internet – showing the last weather" if LOC["wx"] else "No internet for weather yet"
@@ -999,7 +1067,8 @@ def loc_view():
     return {"venue": {"id": v["id"], "name": v["name"]} if v else None, "how": LOC["how"], "newspot": LOC["newspot"],
             "fix": {k: f.get(k) for k in ("lat", "lon", "acc")} if f else None, "near": near, "gps": LOC["gps"], "gps_msg": LOC["gps_msg"],
             "venues": LOC["venues"], "keys": {"worldtides": bool(LOC["keys"].get("worldtides"))},
-            "wx": LOC["wx"], "msg": LOC["msg"], "wx_msg": LOC["wx_msg"]}
+            "wx": LOC["wx"], "msg": LOC["msg"], "wx_msg": LOC["wx_msg"],
+            "tide_now": tide_at((LOC["wx"] or {}).get("tides"), int(time.time() * 1000))}
 
 
 def gps_setup():
@@ -1918,7 +1987,7 @@ def event_pack(name):
         return zip_bytes(sorted(glob.glob(os.path.join(folder, "*"))))
     with lock:
         csv_text = history_csv() if history else ""
-    return zip_bytes([HIST_FILE, FLAGS_FILE, PROGRAM_FILE], {"results.csv": csv_text} if csv_text else None)
+    return zip_bytes([HIST_FILE, FLAGS_FILE, PROGRAM_FILE, COND_FILE, TIDES_FILE], {"results.csv": csv_text} if csv_text else None)
 
 
 def diagnostics():
@@ -3284,6 +3353,8 @@ def save_result(d):
     vn = venue_by_id(LOC["venue"])
     if vn:
         rec["venue"] = vn["name"]
+    first = next((h for h in history if h.get("race") == d.get("race") and h.get("cond")), None)
+    rec["cond"] = first["cond"] if first else cond_now(int((d.get("go_wall") or time.time()) * 1000))
     if MODE["v"] == "basic" and not d.get("practice"):     # written down off the screen, not entered in LiveHeats
         fb = flags.setdefault(str(d.get("race")), {})
         if not fb.get("basic"):
@@ -3312,7 +3383,9 @@ def history_csv():
     out = io.StringIO()
     w = csv.writer(out)
     w.writerow(["saved_at", "race", "event", "division", "round", "heat", "version", "final", "legs", "lane", "crew", "place",
-                "time_s", "status", "dq_code", "presses_s", "officials_changes", "changes_by", "note", "video_go"])
+                "time_s", "status", "dq_code", "presses_s", "officials_changes", "changes_by", "note", "video_go",
+                "venue", "air_c", "wind_kmh", "wind_dir", "gust_kmh", "swell_m", "swell_period_s", "swell_dir", "water_c",
+                "tide_m", "tide", "next_tide", "conditions_from"])
     for h in history:
         ch = "; ".join("lane %s %s" % (k, v) for k, v in sorted(h.get("changes", {}).items()))
         if h.get("legs_set"):
@@ -3323,12 +3396,18 @@ def history_csv():
         fl = flags.get(str(h.get("race")), {})
         by = "; ".join("%s %s: %s" % tuple(x) for x in fl.get("log", []))
         go = datetime.fromtimestamp(h["go_wall"]).strftime("%H:%M:%S.%f")[:-3] if h.get("go_wall") else ""
+        c = h.get("cond") or {}
+        nt = c.get("next_tide") or {}
+        cc = [h.get("venue") or c.get("venue", ""), c.get("air", ""), c.get("wind", ""), compass_py(c.get("wind_dir")), c.get("gust", ""),
+              c.get("swell", ""), c.get("swell_per", ""), compass_py(c.get("swell_dir")), c.get("water", ""), c.get("tide_h", ""),
+              c.get("tide_state", ""), ("%s %s" % (nt["type"], datetime.fromtimestamp(nt["t"] / 1000).strftime("%H:%M"))) if nt else "",
+              ("forecast %s" % datetime.fromtimestamp(c["forecast_at"] / 1000).strftime("%H:%M")) if c.get("forecast_at") else ""]
         for r in h.get("rows", []):
             w.writerow([h.get("saved_at"), h.get("race"), h.get("event") or "", ht.get("div", ""), ht.get("round", ""),
                         ht.get("no", ""), h.get("version"), final, h.get("legs"),
                         r.get("lane"), crews.get(str(r.get("lane")), ""), r.get("place") or "", fmt_s(r.get("t_us")), r.get("status"),
                         fl.get("dq", {}).get(str(r.get("lane")), "") if r.get("status") == "DQ" else "",
-                        ";".join(fmt_s(x) for x in r.get("presses_us", [])), ch, by, fl.get("note", ""), go])
+                        ";".join(fmt_s(x) for x in r.get("presses_us", [])), ch, by, fl.get("note", ""), go] + cc)
     return out.getvalue()
 
 
@@ -6716,7 +6795,7 @@ function rDetail(race){
   const r=rRec(r0), s=rStatus(r0), f=r.flags||{}, live=rLive(r0), act=rCanAct()&&st.official!==false;
   const todo=rTodo(), pos=todo.findIndex(x=>x.race===race);
   let h=`<div class="rdh"><div class="rdtop"><button class="rback" onclick="rView=null;lastKey='';render()">‹ Results</button><span class="mute">${pos>=0?`${pos+1} of ${todo.length} to do`:""}</span></div>
-    <h2>Race ${r.race}${r.heat?` · Heat ${esc(r.heat.no)}`:""}</h2><div class="mute">${r.heat?esc(r.heat.div)+" · "+esc(r.heat.round)+" · ":r.event?esc(r.event)+" · ":""}finished ${esc(rTime(r0))||"just now"}</div>${rSteps(s)}</div>`;
+    <h2>Race ${r.race}${r.heat?` · Heat ${esc(r.heat.no)}`:""}</h2><div class="mute">${r.heat?esc(r.heat.div)+" · "+esc(r.heat.round)+" · ":r.event?esc(r.event)+" · ":""}finished ${esc(rTime(r0))||"just now"}</div>${(()=>{ const c=r.cond||((hist||[]).find(x=>x.race===r.race)||{}).cond; return c&&!isBasic()?`<div class="mute rcond">${esc(condLine(c))}</div>`:""; })()}${rSteps(s)}</div>`;
   // why it's waiting
   if(s==="protest"){ const p=f.protest;
     h+=`<div class="rban am"><b>Under protest</b><div>${p.lanes&&p.lanes.length?p.lanes.map(x=>"Lane "+x+(crewOf(r.heat,x)?" ("+esc(crewOf(r.heat,x))+")":"")).join(", "):"Whole race"}${p.reason?" – "+esc(p.reason):""}</div>
@@ -6906,6 +6985,9 @@ function gpsText(g){ g=g||{}; return g.state==="none"?"No GPS":g.state==="nofix"
   :`GPS ${g.state==="3d"?"fix":"2D fix"} · ${g.sats!=null?g.sats+" satellites · ":""}±${g.acc} m`; }
 function venueLine(L){ const v=L.venue; if(!v) return `<span class="mute">No venue chosen</span>`;
   return `<b>${esc(v.name)}</b>${L.how==="auto"?` <span class="mute">(GPS)</span>`:""}`; }
+function condLine(c){ if(!c) return ""; const nt=c.next_tide;
+  return [c.venue,c.wind!=null?`wind ${Math.round(c.wind)} km/h ${compass(c.wind_dir)}`:"",c.swell!=null?`swell ${r1(c.swell)} m`:"",c.water!=null?`water ${Math.round(c.water)}°`:"",
+    c.tide_state?`tide ${c.tide_h!=null?r1(c.tide_h)+" m ":""}${c.tide_state}${nt?" ("+nt.type.toLowerCase()+" "+hm(nt.t)+")":""}`:""].filter(Boolean).join(" · ")+(c.old?" · forecast was old":""); }
 function nextTides(w){ const now=Date.now(); return (w&&w.tides||[]).filter(t=>t.t>now-30*60000).slice(0,3); }
 let wxOpen=false;
 function wxCard(){
@@ -6915,7 +6997,9 @@ function wxCard(){
   if(L.newspot&&st.role==="master") h+=`<div class="wxnew">Not at a saved venue. <button class="btn sm" onclick="hereSave()">Save this spot</button></div>`;
   else if(!L.venues.length) h+=`<p class="mute" style="margin:6px 0 0">No saved venues yet – add them under Setup › Venue and location${L.gps.state==="3d"?", or save this spot":""}.</p>`;
   if(w){
-    const line=[n.wind!=null?`Wind ${Math.round(n.wind)} km/h ${compass(n.wind_dir)}`:"",n.swell!=null?`Swell ${r1(n.swell)} m`:"",n.water!=null?`Water ${Math.round(n.water)}°`:"",t[0]?`${t[0].type} ${hm(t[0].t)}`:""].filter(Boolean).join(" · ");
+    const tn=L.tide_now;
+    const line=[n.wind!=null?`Wind ${Math.round(n.wind)} km/h ${compass(n.wind_dir)}`:"",n.swell!=null?`Swell ${r1(n.swell)} m`:"",n.water!=null?`Water ${Math.round(n.water)}°`:"",
+      tn?`Tide ${tn.h!=null?r1(tn.h)+" m ":""}${tn.state}, ${tn.next.type.toLowerCase()} ${hm(tn.next.t)}`:t[0]?`${t[0].type} ${hm(t[0].t)}`:""].filter(Boolean).join(" · ");
     h+=`<button class="wxline" onclick="wxOpen=!wxOpen;lastKey='';render()" aria-expanded="${wxOpen}"><span>${esc(line)}</span><span class="wxchev">${wxOpen?"▴":"▾"}</span></button>`;
     if(wxOpen){
       h+=`<div class="wxg">

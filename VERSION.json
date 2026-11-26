@@ -1,11 +1,12 @@
 {
- "app": "1.25.0",
+ "app": "1.26.0",
  "pico": "3.12",
- "sha256": "3bdf07b127d667ed9dcc71a3b294140fa46ca9a47e4c8851574be41a4862f6ec",
+ "sha256": "7cf153d3f58b3fd92d19a079d100291936875407b872f914c51ed3edaba17f16",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "Simpler venue and conditions: one line (wind \u00b7 swell \u00b7 water \u00b7 next tide), tap for more, labelled as a forecast",
-  "Venue by USB GPS or one tap \u2013 no Wi-Fi or internet-address location, no Google key",
-  "Not at a saved venue? Save this spot (GPS). Set up GPS button installs the GPS service on the Pi"
+  "Conditions saved automatically with every race: venue, wind, swell, water and air temperature, tide height, rising or falling, next high or low",
+  "Results spreadsheet has the conditions columns; each race in the Results tab shows its conditions",
+  "A conditions log and the day's tide times are kept with the event, in the take-home zip and on the USB backup",
+  "The one-line forecast now shows the tide now: height, rising or falling, next high or low"
  ]
 }
