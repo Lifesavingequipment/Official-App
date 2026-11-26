@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.26.3"
+APP_VERSION = "1.26.4"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -765,7 +765,7 @@ MARINE_URL = os.environ.get("IRB_MARINE_URL", "https://marine-api.open-meteo.com
 TIDES_URL = os.environ.get("IRB_TIDES_URL", "https://www.worldtides.info/api/v3")
 GPSD = os.environ.get("IRB_GPSD", "127.0.0.1:2947")
 LOC = {"venues": [], "venue": None, "how": "", "picked": "", "newspot": False, "fix": None,
-       "keys": {"worldtides": ""}, "gps": {"state": "none"}, "wx": None, "tcache": {}, "tide_calls": 0, "msg": "", "wx_msg": "", "gps_msg": "",
+       "keys": {"worldtides": ""}, "gps": {"state": "none"}, "wx": None, "tcache": {}, "tide_calls": 0, "spot": None, "at_spot": False, "msg": "", "wx_msg": "", "gps_msg": "",
        "next_fix": 0.0, "next_wx": 0.0, "wx_for": None, "gps_clock": 0.0}
 
 
@@ -773,7 +773,7 @@ def loc_load():
     try:
         with open(LOC_FILE) as fh:
             d = json.load(fh)
-        for k in ("venues", "venue", "how", "picked", "fix", "wx", "tcache", "tide_calls"):
+        for k in ("venues", "venue", "how", "picked", "fix", "wx", "tcache", "tide_calls", "spot", "at_spot"):
             if k in d:
                 LOC[k] = d[k]
         LOC["keys"]["worldtides"] = (d.get("keys") or {}).get("worldtides", "")
@@ -785,7 +785,7 @@ def loc_save():
     try:
         tmp = LOC_FILE + ".tmp"
         with open(tmp, "w") as fh:
-            json.dump({k: LOC[k] for k in ("venues", "venue", "how", "picked", "fix", "keys", "wx", "tcache", "tide_calls")}, fh)
+            json.dump({k: LOC[k] for k in ("venues", "venue", "how", "picked", "fix", "keys", "wx", "tcache", "tide_calls", "spot", "at_spot")}, fh)
         os.replace(tmp, LOC_FILE)
     except OSError:
         pass
@@ -859,6 +859,9 @@ def venue_by_id(i):
     return next((v for v in LOC["venues"] if v["id"] == i), None)
 
 
+SPOT_M = 2000
+
+
 def pick_venue():
     """GPS picks the nearest saved venue in range; a venue chosen by an official today holds; otherwise the last one stays"""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -877,11 +880,19 @@ def pick_venue():
     if near:
         if LOC["venue"] != near[0][1] or LOC["how"] != "auto":
             note("Venue: %s (GPS)" % near[0][2])
-        LOC.update(venue=near[0][1], how="auto")
+        LOC.update(venue=near[0][1], how="auto", at_spot=False)
     else:
         LOC["newspot"] = True                  # somewhere not saved yet: offer "Save this spot"
         if LOC["how"] == "auto":
             LOC["how"] = "last"
+        # weather and tides for where the kit actually is. The spot only moves when the kit is over 2 km away,
+        # so GPS drift and power cycles reuse the same saved tides (tides hardly change within 2 km)
+        sp = LOC.get("spot")
+        if not sp or dist_m(f["lat"], f["lon"], sp["lat"], sp["lon"]) > SPOT_M:
+            LOC["spot"] = {"lat": round(f["lat"], 3), "lon": round(f["lon"], 3)}
+        if not LOC.get("at_spot"):
+            note("Not at a saved venue – weather and tides for the GPS position")
+        LOC["at_spot"] = True
 
 
 def tide_extremes(times, heights, offset):
@@ -981,7 +992,7 @@ def cond_now(t_ms=None):
     t_ms = t_ms or int(time.time() * 1000)
     n = w.get("now") or {}
     c = {k: n.get(k) for k in ("air", "wind", "wind_dir", "gust", "swell", "swell_per", "swell_dir", "water")}
-    c.update(venue=(venue_by_id(LOC["venue"]) or {}).get("name") or w.get("for") or "", forecast_at=w.get("at"),
+    c.update(venue=w.get("for") if w.get("for") == SPOT_NAME else (venue_by_id(LOC["venue"]) or {}).get("name") or w.get("for") or "", forecast_at=w.get("at"),
              tide_src=w.get("tide_src", ""), tide_station=w.get("tide_station", ""), old=t_ms - (w.get("at") or 0) > 3 * 3600 * 1000)
     td = tide_at(w.get("tides"), t_ms)
     if td:
@@ -1025,7 +1036,13 @@ def cond_log(w):
         pass
 
 
+SPOT_NAME = "Unsaved spot (GPS)"
+
+
 def wx_point():
+    sp = LOC.get("spot")
+    if LOC.get("at_spot") and sp and LOC["how"] != "manual":     # GPS says we're at an unsaved spot
+        return sp["lat"], sp["lon"], SPOT_NAME
     v = venue_by_id(LOC["venue"])
     if v:
         return v["lat"], v["lon"], v["name"]
@@ -1090,6 +1107,8 @@ def loc_loop():
 
 def loc_view():
     v = venue_by_id(LOC["venue"])
+    if wx_point() and wx_point()[2] == SPOT_NAME:
+        v = {"id": "", "name": SPOT_NAME}
     f = LOC["fix"] if LOC["gps"].get("state") == "3d" else None
     near = sorted(({"id": x["id"], "d": round(dist_m(f["lat"], f["lon"], x["lat"], x["lon"]))} for x in LOC["venues"]), key=lambda z: z["d"]) if f else []
     return {"venue": {"id": v["id"], "name": v["name"]} if v else None, "how": LOC["how"], "newspot": LOC["newspot"],
@@ -1134,7 +1153,7 @@ def loc_action(d, role):
             v = venue_by_id(d["venue"])
             if not v:
                 return "That venue isn't saved"
-            LOC.update(venue=v["id"], how="manual", picked=today, newspot=False)
+            LOC.update(venue=v["id"], how="manual", picked=today, newspot=False, at_spot=False)
             msg = "Venue: %s (chosen)" % v["name"]
         elif d.get("gps"):                         # back to GPS choosing
             LOC.update(how="last", picked="")
@@ -1166,7 +1185,14 @@ def loc_action(d, role):
             if not name:
                 return "Enter a name"
             LOC["venues"].append({"id": secrets.token_hex(4), "name": name, "lat": round(f["lat"], 6), "lon": round(f["lon"], 6), "radius": 2000})
-            LOC.update(venue=LOC["venues"][-1]["id"], how="auto", newspot=False)
+            nv = LOC["venues"][-1]
+            sp = LOC.get("spot")
+            if sp and dist_m(nv["lat"], nv["lon"], sp["lat"], sp["lon"]) <= SPOT_M:     # reuse this spot's tides: no extra credit
+                tc = LOC["tcache"].get("%.3f,%.3f" % (sp["lat"], sp["lon"]))
+                if tc:
+                    LOC["tcache"]["%.3f,%.3f" % (nv["lat"], nv["lon"])] = tc
+            LOC.update(venue=nv["id"], how="auto", newspot=False, at_spot=False)
+            LOC["next_wx"] = 0
             msg = "Venue saved: %s" % name
         elif "delete" in d:
             LOC["venues"] = [v for v in LOC["venues"] if v["id"] != d["delete"]]

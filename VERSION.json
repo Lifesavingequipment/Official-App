@@ -1,10 +1,11 @@
 {
- "app": "1.26.3",
+ "app": "1.26.4",
  "pico": "3.12",
- "sha256": "f434b6a7d6673e00314d642b07cc7f72d6bb16a404385f64fdf08e625fc5c077",
+ "sha256": "9edcc83314eb64effb666e9d121c99d1fd5cb12ddee8461f2d6ade4e011e2498",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "Correct tide times for fewer credits: one WorldTides request gets a week of tides per venue (nearest tide station, heights above LAT like BOM tables), kept on the Pi and reused \u2013 about 1 credit per venue every 5 days",
-  "Setup shows which tide station, how far ahead tides are saved, and WorldTides credits used"
+  "Not at a saved venue: weather and tides are now for where the GPS says the kit is, not the last venue",
+  "The spot only changes when the kit moves more than 2 km, so GPS drift and switching on and off don't use tide credits",
+  "Save this spot keeps the tides already fetched \u2013 no extra credit"
  ]
 }
