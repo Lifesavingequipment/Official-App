@@ -1,9 +1,11 @@
 {
- "app": "1.27.1",
+ "app": "1.27.2",
  "pico": "3.12",
- "sha256": "587af844390c3727afb0000303c3c0cfc151637d31b1c4f8f23a60719604d706",
+ "sha256": "70ee485edc2d6390401f151c23e893bdb69c8e72d6221c8f000b9f5662b85f02",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "Big screens: the tide and UV line is pinned to the bottom of the screen"
+  "Big screens checked with 10 lanes, a full LiveHeats program and the previous race at 1920x1080, 1366x768 and 1280x720",
+  "Basic TV: lanes make room so the previous race never touches the tide/UV line; wider place column so 10th fits",
+  "Full big screen: the recent results list stops above the tide/UV line, and is left off when there's no room"
  ]
 }

@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.27.1"
+APP_VERSION = "1.27.2"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -5282,7 +5282,7 @@ a{color:var(--blue)}a:hover{color:var(--ink)}
 @media (min-width:700px){
 .bstrip{position:fixed;left:0;right:0;bottom:0;z-index:4;background:var(--bg);border-top:1px solid #e3e6eb;padding:1vh 2vw;font-size:clamp(16px,1.6vw,30px);line-height:1.3}
 .hasstrip{padding-bottom:calc(clamp(16px,1.6vw,30px)*1.3 + 2vh + 10px)!important}
-.bxtv.hasstrip .bxo{max-height:72vh}}
+.bxtv.hasstrip:not(.ph) .bxo{max-height:64vh}}
 .bxpv{font-size:16px;color:#5b6472;border-top:1px solid #e3e6eb;padding-top:10px;margin-top:4px}
 .bxclub{font-size:15px;color:#5b6472;font-weight:600}
 .bxoff{text-align:center;font-size:14px;margin-top:6px}
@@ -5290,7 +5290,7 @@ body.bxb main{max-width:none}
 .bxtv{padding:2vh 2vw;max-width:none;min-height:100vh;box-sizing:border-box}
 .bxtv:not(.ph) .bxn{font-size:clamp(34px,4.6vw,90px)}.bxtv:not(.ph) .bxc{font-size:clamp(40px,5.4vw,110px)}
 .bxtv:not(.ph) .bst{font-size:clamp(15px,1.6vw,30px);vertical-align:.6em}
-.bxtv:not(.ph) .bxr{font-size:clamp(22px,2.7vw,54px);min-height:clamp(52px,7.4vh,120px);grid-template-columns:clamp(70px,8vw,170px) 1fr auto}
+.bxtv:not(.ph) .bxr{font-size:clamp(22px,2.7vw,54px);min-height:clamp(52px,7.4vh,120px);grid-template-columns:clamp(84px,9.6vw,200px) 1fr auto}
 .bxtv:not(.ph) .bxo.one .bxr{font-size:clamp(26px,3.4vw,68px);min-height:clamp(60px,12vh,150px)}
 .bxtv:not(.ph) .bxpv{font-size:clamp(15px,1.5vw,30px)}.bxtv:not(.ph) .bxmsg{font-size:clamp(20px,2.4vw,46px)}
 .bxtv:not(.ph){height:100vh;overflow:hidden}.bxtv:not(.ph) .bxo{flex:1;min-height:0;grid-auto-rows:minmax(0,1fr);max-height:78vh}
@@ -7832,7 +7832,8 @@ function boardRecent(skipRace){
 }
 function fitRecent(){
   const box=$("recent"); if(!box||innerWidth<700) return;
-  const over=()=>box.getBoundingClientRect().bottom>innerHeight-6;
+  const sp=document.querySelector(".bstrip"), lim=(sp&&getComputedStyle(sp).position==="fixed"?sp.getBoundingClientRect().top:innerHeight)-6;   // stop above the tide/UV line
+  const over=()=>box.getBoundingClientRect().bottom>lim;
   // 1) drop the oldest Final ones
   while(over()){ const c=box.querySelectorAll(".rc.conf"); if(!c.length) break; c[c.length-1].remove(); }
   // 2) still too many? fold the oldest provisional ones into one tag, so the screen never scrolls
@@ -7840,7 +7841,7 @@ function fitRecent(){
   while(over()){ const c=box.querySelectorAll(".rc.prov"); if(c.length<2) break; c[c.length-1].remove(); n++;
     let m=box.querySelector(".rc.more"); if(!m){ m=document.createElement("div"); m.className="rc more"; box.querySelector(".rgrid").appendChild(m); }
     m.innerHTML=`<span class="rct"><b>+${n} more</b><small>not confirmed yet</small></span><span class="pill prov">Provisional</span>`; }
-  if(!box.querySelector(".rc")) box.remove();
+  if(!box.querySelector(".rc")||over()) box.remove();      // no room even for one: leave it off rather than half-show it
 }
 addEventListener("resize",()=>{ if(location.hash==="#board") lastKey=""; });
 function renderBoard(){
