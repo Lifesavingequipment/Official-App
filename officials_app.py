@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.27.0"
+APP_VERSION = "1.27.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -5279,8 +5279,10 @@ a{color:var(--blue)}a:hover{color:var(--ink)}
 .bxbar .bxctl{flex:1}.bxbar .bxctl .start .btn{width:100%}
 .btn.bxprev{flex:0 0 170px;min-height:64px}
 .bstrip{font-size:16px;color:#5b6472;text-align:center;padding:6px 0 0;font-weight:600}
-.bd .bstrip{font-size:clamp(16px,1.6vw,30px);border-top:1px solid #e3e6eb;padding-top:10px}
-.bxtv:not(.ph) .bstrip{font-size:clamp(15px,1.5vw,30px)}
+@media (min-width:700px){
+.bstrip{position:fixed;left:0;right:0;bottom:0;z-index:4;background:var(--bg);border-top:1px solid #e3e6eb;padding:1vh 2vw;font-size:clamp(16px,1.6vw,30px);line-height:1.3}
+.hasstrip{padding-bottom:calc(clamp(16px,1.6vw,30px)*1.3 + 2vh + 10px)!important}
+.bxtv.hasstrip .bxo{max-height:72vh}}
 .bxpv{font-size:16px;color:#5b6472;border-top:1px solid #e3e6eb;padding-top:10px;margin-top:4px}
 .bxclub{font-size:15px;color:#5b6472;font-weight:600}
 .bxoff{text-align:center;font-size:14px;margin-top:6px}
@@ -5530,7 +5532,7 @@ function renderBasicRace(){
 function renderBasicBoard(){
   if(!st||linkDown||!st.connected){ $("race").innerHTML=banner(); return; }
   const phone=innerWidth<700, n=bNow(false), b=st.brand||{};
-  $("race").innerHTML=`<div class="bx bxtv ${phone?"ph":""}">${b.club?`<div class="bxclub">${esc(b.club)}${b.event?" · "+esc(b.event):""}</div>`:""}${n.head}${n.body}${bPrevLine(st.prev,phone)}${stripHtml()}
+  $("race").innerHTML=`<div class="bx bxtv ${phone?"ph":""} ${st.strip&&stripHtml()?"hasstrip":""}">${b.club?`<div class="bxclub">${esc(b.club)}${b.event?" · "+esc(b.event):""}</div>`:""}${n.head}${n.body}${bPrevLine(st.prev,phone)}${stripHtml()}
     ${st.role==="viewer"&&!st.local?`<div class="bxoff"><a href="#" onclick="openRequest();return false">Officials</a></div>`:""}</div>`;
 }
 function modeInfo(m){ return m==="basic"
@@ -7844,7 +7846,7 @@ addEventListener("resize",()=>{ if(location.hash==="#board") lastKey=""; });
 function renderBoard(){
   if(linkDown||!st.connected) { $("race").innerHTML=banner(); return; }
   const s=st.state, nx=st.next_heats||[];
-  let h=`<div class="bd">${brandBar()}`, skip=null;
+  let h=`<div class="bd ${stripHtml()?"hasstrip":""}">${brandBar()}`, skip=null;
   if(s==="DONE"&&st.results){
     // just finished: results first; then the next two heats
     const res=st.results, moved=st.heat&&(!res.heat||st.heat.heat_id!==res.heat.heat_id);
