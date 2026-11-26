@@ -1,12 +1,11 @@
 {
- "app": "1.24.0",
+ "app": "1.25.0",
  "pico": "3.12",
- "sha256": "256bb5eb2f1d766fbeba39bdce789f104491802efa3804cb6424a9b821f2dbb0",
+ "sha256": "3bdf07b127d667ed9dcc71a3b294140fa46ca9a47e4c8851574be41a4862f6ec",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "Venue and conditions on System \u203a Today: weather, wind (km/h and knots), swell, water temperature, sunset and the next tides",
-  "The kit finds where it is \u2013 GPS (gpsd) when fitted, nearby Wi-Fi (Google key), then the internet address \u2013 and picks the venue only when it's certain; otherwise an official confirms",
-  "Setup \u203a Venue and location: saved venues, save current location, auto or manual, GPS status, API keys (Google Geolocation, optional WorldTides)",
-  "Works offline with the last weather; GPS sets the clock when there's no internet; each saved race records its venue"
+  "Simpler venue and conditions: one line (wind \u00b7 swell \u00b7 water \u00b7 next tide), tap for more, labelled as a forecast",
+  "Venue by USB GPS or one tap \u2013 no Wi-Fi or internet-address location, no Google key",
+  "Not at a saved venue? Save this spot (GPS). Set up GPS button installs the GPS service on the Pi"
  ]
 }
