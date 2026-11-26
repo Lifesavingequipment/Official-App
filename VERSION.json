@@ -1,9 +1,9 @@
 {
- "app": "1.26.1",
+ "app": "1.26.2",
  "pico": "3.12",
- "sha256": "3db96f4513ec22b00b4ea3c88a5c92fa1fc507f13af88fe58ecc74f345cff15e",
+ "sha256": "cc275ae5184d274b56657ac7a6b31bff9854dadc9d93dce18a918dfadbeec14e",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "WorldTides is asked for tide times once every 6 hours (or when the venue or key changes) to save credits"
+  "At power-up the kit gets the forecast and tides for where it is by itself: retries every minute until the internet is up, and uses the GPS position as soon as it gets its first fix"
  ]
 }

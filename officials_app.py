@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.26.1"
+APP_VERSION = "1.26.2"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -1017,8 +1017,11 @@ def wx_point():
 
 def loc_tick(force=False):
     now = time.time()
+    was3d = LOC["gps"].get("state") == "3d"
     LOC["gps"] = gps_read()
     g = LOC["gps"]
+    if g.get("state") == "3d" and not was3d:         # the GPS just got its fix (a few minutes after power-up): use it now
+        force = True
     if g.get("state") == "3d" and g.get("time") and now - LOC["gps_clock"] > 3600:     # GPS time keeps results right offline
         try:
             gt = (datetime.strptime(g["time"][:19], "%Y-%m-%dT%H:%M:%S") - datetime(1970, 1, 1)).total_seconds()
@@ -1043,11 +1046,11 @@ def loc_tick(force=False):
         try:
             w = wx_fetch(pt[0], pt[1])
             w["for"] = pt[2]
-            LOC["wx"], LOC["wx_msg"] = w, ""
+            LOC["wx"], LOC["wx_msg"], LOC["wx_ok"] = w, "", True
             loc_save()
             cond_log(w)
         except Exception as e:
-            LOC["next_wx"] = now + 5 * 60
+            LOC["next_wx"] = now + (5 * 60 if LOC.get("wx_ok") else 60)   # after power-up: try every minute until internet is up
             LOC["wx_msg"] = "No internet – showing the last weather" if LOC["wx"] else "No internet for weather yet"
 
 
