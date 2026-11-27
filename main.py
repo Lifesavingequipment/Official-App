@@ -1,4 +1,10 @@
-# IRB Finish Timing - bench test v3.12
+# IRB Finish Timing - bench test v3.13
+# v3.13: CHANGEOVERS switch (co on / co off, from the app between races; off at power-up). When on, a press
+#        in a race lights the lane 1 s, off 2 s, then on for 10 s ("next driver, go") until the next press.
+#        A press while that go light is on is a changeover ("out"), it turns the light off. A press in the
+#        first 3 s after an arrival is "early" (the light doesn't react - the app decides later). Presses
+#        under 0.5 s apart are one press. Only arrival presses count as legs, so results work as before;
+#        changeover and early presses are sent alongside (outs_us, early_us). Off = exactly as v3.12.
 # v3.12: the EMERGENCY STOP is required - always on, no racing unless GP28 is closed to GND. In the button
 #        test, pressing it is just ticked off (no alarm) so it can be checked every morning.
 # v3.11: the button test listens to every wired lane, so the app can see which lanes are racing today.
@@ -97,6 +103,10 @@ LIGHT_HOLD_MS = 10_000        # in a race, a lane light stays on this long after
 CHECK_FLASH_MS = 500          # before a race, a press flashes the light twice (on/off this long)
 FLASH_OFF_MS = 700            # in a race, a press while the light is on: off this long, then on again
 LIGHT_GAP_MS = 1000           # light ignores further edges from the same lane for this long (button bounce)
+CO_BOUNCE_US = 500_000        # changeovers on: presses closer than this are one press (double tap)
+CO_ON_MS = 1000               # changeovers on: an arrival press lights the lane this long ("press counted")
+CO_WAIT_MS = 2000             # ...then off this long ("next driver, wait")
+CO_GO_MS = 10_000             # ...then on this long ("next driver, go") or until the next driver presses
 FAULT_CHECK_MS = 500
 RACE_FAULT_MS = 2000          # lane input held open this long during a race = cable fault
 TEST_TIMEOUT_MS = 300_000     # button test switches itself off after 5 min
@@ -256,6 +266,20 @@ def lane_light_hit(lane):
         light_plan(lane, [(0, 1), (LIGHT_HOLD_MS, 0)])
 
 
+def co_light_arrive(lane):
+    # changeovers on: 1 s on, 2 s off, then the go light for 10 s (or until the next driver presses)
+    if lane not in lights:
+        return
+    light_plan(lane, [(0, 1), (CO_ON_MS, 0), (CO_ON_MS + CO_WAIT_MS, 1), (CO_ON_MS + CO_WAIT_MS + CO_GO_MS, 0)])
+
+
+def co_light_out(lane):
+    # changeovers on: the next driver pressed while the go light was on - light off
+    if lane not in lights:
+        return
+    light_plan(lane, [(0, 0)])
+
+
 def lane_light_check(lane):
     # before or after a race: two quick flashes to show the button and light work
     if lane not in lights or lane in light_seq or light_bounce(lane):
@@ -368,19 +392,21 @@ def results_data():
                      "place": pm.get(lane),
                      "t_us": ft,
                      "status": lane_status(lane, order, legs),
-                     "presses_us": [x - t0 for x in hits[lane]]})
+                     "presses_us": [x - t0 for x in hits[lane]],
+                     "outs_us": [x - t0 for x in outs.get(lane, [])],
+                     "early_us": [x - t0 for x in early.get(lane, [])]})
     ch = {}
     for lane, a in adj.items():
         ch[str(lane)] = ("place %d" % a[1]) if isinstance(a, tuple) else a
     for lane in ties:
         k = str(lane)
         ch[k] = (ch[k] + ", dead heat") if k in ch else "dead heat"
-    return {"ev": "results", "race": race_no, "version": version, "legs": legs,
+    return {"ev": "results", "race": race_no, "version": version, "legs": legs, "co": race_co,
             "legs_set": legs_set, "rows": rows, "changes": ch, "ties": sorted(ties)}
 
 
 def emit_all():
-    emit({"ev": "hello", "fw": "3.12", "estop_req": True, "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
+    emit({"ev": "hello", "fw": "3.13", "co_cmd": True, "co": co_on, "estop_req": True, "pin_reset": True, "lanes": sorted(lane_in), "lanes_max": len(LANE_PINS), "lanes_cmd": True, "race": race_no,
           "min_leg_s": MIN_LEG_US // 1_000_000, "minleg_cmd": True, "app_start": True, "ties": True, "test": True,
           "clock": True, "beat": True, "batt": batt_on, "batt_cmd": True, "box_temp": True, "estop_cmd": True, "estop_fitted": estop_fitted})
     emit({"ev": "estop", "on": estop_on, "fitted": estop_fitted})
@@ -521,6 +547,11 @@ def show_log():
 
 # ---------------- Race state ----------------
 state = "IDLE"      # IDLE, ARMED, RACING, DONE
+outs = {}           # changeovers on: next driver's presses on the go light
+early = {}          # changeovers on: presses before the go light
+co_last, co_arrive, co_open = {}, {}, {}
+co_on = False       # changeovers switch - always off at power-up
+race_co = False     # was it on for this race
 armed_at_ms = 0
 go_at_ms = 0
 t0 = 0
@@ -556,8 +587,12 @@ reset_fired = False
 
 
 def reset_race():
-    global hits, adj, legs_set, ties, race_faults, held_since
+    global hits, adj, legs_set, ties, race_faults, held_since, outs, early, co_last, co_arrive, co_open, race_co
     hits = {lane: [] for lane in lane_in}
+    outs = {lane: [] for lane in lane_in}
+    early = {lane: [] for lane in lane_in}
+    co_last, co_arrive, co_open = {}, {}, {}
+    race_co = co_on
     adj = {}
     ties = set()
     legs_set = 0
@@ -793,7 +828,7 @@ def read_batt():
 
 
 def command(line):
-    global adj, legs_set, version, ties, MIN_LEG_US, hits, last_fault_report, estop_fitted, batt_on, batt_adc, BATT_DIVIDER, last_batt
+    global adj, legs_set, version, ties, MIN_LEG_US, hits, last_fault_report, estop_fitted, batt_on, batt_adc, BATT_DIVIDER, last_batt, co_on
     w = line.strip().lower().split()
     if not w:
         return
@@ -803,6 +838,18 @@ def command(line):
         return
     if c == "clock":
         set_clock(w)
+        return
+    if c == "co":                           # changeovers switch: co on / co off (between races only)
+        if len(w) < 2 or w[1] not in ("on", "off"):
+            print("co on  or  co off")
+            return
+        if state in ("ARMED", "RACING"):
+            print("Changeovers can only be switched between races.")
+            emit({"ev": "co_state", "on": co_on, "msg": "Not during a race"})
+            return
+        co_on = w[1] == "on"
+        print("Changeovers %s." % ("ON - 1 s on, 2 s off, then the go light for the next driver" if co_on else "off"))
+        emit({"ev": "co_state", "on": co_on})
         return
     if c == "minleg":                       # gap between a crew's counted presses, in seconds
         try:
@@ -1051,9 +1098,41 @@ def handle_go(t, app=False):
         print("GO ignored - press SET first.")
 
 
+def handle_lane_co(lane, t):
+    # changeovers on: arrival / changeover / early, by time since this lane's last arrival press
+    last = co_last.get(lane)
+    if last is not None and t - last < CO_BOUNCE_US:
+        return                            # double tap
+    co_last[lane] = t
+    arr = co_arrive.get(lane)
+    since = None if arr is None else t - arr
+    if since is not None and since < (CO_ON_MS + CO_WAIT_MS) * 1000:
+        early.setdefault(lane, []).append(t)   # before the go light: the app decides (early tag-out or a re-press)
+        emit({"ev": "co", "lane": lane, "kind": "early", "t_us": t - t0})
+        print("Lane %d early press   %s s  (%s s after the arrival)" % (lane, fmt(t - t0), fmt(since)))
+        return
+    if since is not None and since < (CO_ON_MS + CO_WAIT_MS + CO_GO_MS) * 1000 and co_open.get(lane):
+        outs.setdefault(lane, []).append(t)    # the next driver pressed on the go light: a changeover
+        co_open[lane] = False
+        co_light_out(lane)
+        emit({"ev": "co", "lane": lane, "kind": "out", "t_us": t - t0})
+        print("Lane %d changeover   %s s  (%s s after the arrival)" % (lane, fmt(t - t0), fmt(since)))
+        return
+    hits[lane].append(t)                  # an arrival (or a finish / halfway): counts as a leg
+    co_arrive[lane] = t
+    co_open[lane] = True
+    n = len(hits[lane])
+    emit({"ev": "hit", "lane": lane, "n": n, "t_us": t - t0})
+    print("Lane %d hit %d   %s s" % (lane, n, fmt(t - t0)))
+    co_light_arrive(lane)
+
+
 def handle_lane(lane, t):
     if state != "RACING":
         lane_light_check(lane)            # before / after a race: flash to show it works
+        return
+    if co_on:
+        handle_lane_co(lane, t)
         return
     prev = hits[lane][-1] if hits[lane] else t0
     if t - prev < MIN_LEG_US:

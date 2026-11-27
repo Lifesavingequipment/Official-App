@@ -1,12 +1,13 @@
 {
- "app": "1.30.0",
- "pico": "3.12",
- "sha256": "2d6e45a0edbd59b9c9bc91399d8950e4898a192666a42abef0856ad88b9abc27",
- "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
+ "app": "1.31.0",
+ "pico": "3.13",
+ "sha256": "9fe523f7cd6fc7cffa549b29bb93261c6330c202206a76744cda40d69dc46301",
+ "pico_sha256": "77fc68420c545dca0f90c82675ee0af3eee5eca935901d4a26b048cff2d74e05",
  "notes": [
-  "System tab redesigned: search, Ready to race (kit problems show here too; shrinks to one line when all green), Screens and QR codes, Event, and a Kit owner folder with 7 pages",
-  "The ? button is for fixing problems: search the fixes, then Send a problem report",
-  "Problem reports are emailed to the kit owner from the kit's own Gmail; with no internet they wait and send later. Set up in Kit owner \u203a Advanced",
-  "Reports leave out passwords, crew names and officials' names"
+  "Changeovers switch (Teams / Taplin) on the Race screen for the timing desk and the Starter: off unless turned on, off again at power-up and for a new event",
+  "Changeovers on: a press lights the lane 1 s, off 2 s, then on until the next driver presses (up to 10 s). A press before the go light that's followed by more racing shows as 'early tag-out?' for the judges (DQ / It's fine)",
+  "The event is worked out from the presses (single, Mass, Teams, IRB Relay); leg names and changeover times in results and the spreadsheet",
+  "Timing box program v3.13 - update it from System \u203a Kit owner \u203a Updates",
+  "Fixed: a rare freeze when the timing box refused a lanes or E-stop change"
  ]
 }

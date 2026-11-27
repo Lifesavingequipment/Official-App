@@ -30,7 +30,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.30.0"
+APP_VERSION = "1.31.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -96,7 +96,7 @@ S = {
     "batt_cmd": False, "batt_on": False,             # Pico v3.9: battery reading switched on from the app
     "box_temp": None, "box_temp_at": None, "box_max": None, "box_max_at": "",   # Pico v3.10: inside-box temperature
     "race_go_wall": None,                            # computer clock time of GO (for video)
-    "practice": False, "backup": None,
+    "practice": False, "backup": None, "co": False, "co_cmd": False,
     "estop": False, "estop_fitted": False, "estop_cmd": False, "estop_req": False,    # emergency stop (timing box v3.7)
     "estop_at": None, "estop_stopped": None,
 }
@@ -698,6 +698,8 @@ def new_event(d):
         program.update({"mode": None, "items": [], "lh_sig": "", "ver": program.get("ver", 0) + 1, "manual": [], "seq": 0,
                         "last_block": [], "breaks": {}, "timing": {}})
         clear_officials(keep=d.get("_tok"))
+        S["co"] = False                             # new event: changeovers back off
+        pico_co()
         SETUP["done"] = False                       # the Get started steps show again for the next event
         BRAND["event"] = ""
         S.update(heat=None, race_heat=None, results=None, race_event=None, event="")
@@ -2272,6 +2274,8 @@ def allowed(role, path, data):
                                              "/api/program", "/api/heat", "/api/template")):
             return None
         return "Only the timing desk can do that"
+    if path.split("?")[0] == "/api/co":
+        return None if role == "starter" else "Only the Starter or the timing desk can switch changeovers"
     if role == "starter":
         if path.startswith("/api/cmd"):
             return None if cmd in STARTER_CMDS else "Only the Admin can change results"
@@ -3612,8 +3616,9 @@ def to_hundredths(d):
     for r in rows:
         if r.get("t_us") is not None:
             r["t_us"] -= r["t_us"] % CS
-        if r.get("presses_us"):
-            r["presses_us"] = [x - x % CS for x in r["presses_us"]]
+        for k in ("presses_us", "outs_us", "early_us"):
+            if r.get(k):
+                r[k] = [x - x % CS for x in r[k]]
         if MODE["v"] == "basic" and not r.get("presses_us") and not r.get("place") and r.get("status") not in ("DQ", "DNF"):
             r["status"] = "DNF"
     ties = set(d.get("ties") or [])
@@ -3627,6 +3632,8 @@ def to_hundredths(d):
             ties.add(r["lane"])
         prev = r
     d["ties"] = sorted(ties)
+    if d.get("co"):
+        co_review(d)
     return d
 
 
@@ -3639,7 +3646,7 @@ def history_csv():
     w.writerow(["saved_at", "race", "event", "division", "round", "heat", "version", "final", "legs", "lane", "crew", "place",
                 "time_s", "behind_s", "status", "dq_code", "presses_s", "officials_changes", "changes_by", "note", "video_go",
                 "venue", "air_c", "wind_kmh", "wind_dir", "gust_kmh", "swell_m", "swell_period_s", "swell_dir", "water_c",
-                "tide_m", "tide", "next_tide", "uv", "conditions_from"])
+                "tide_m", "tide", "next_tide", "uv", "conditions_from", "changeovers", "co_event", "changeover_s", "early_tag_s"])
     for h in history:
         ch = "; ".join("lane %s %s" % (k, v) for k, v in sorted(h.get("changes", {}).items()))
         if h.get("legs_set"):
@@ -3665,7 +3672,9 @@ def history_csv():
                         ht.get("no", ""), h.get("version"), final, h.get("legs"),
                         r.get("lane"), crews.get(str(r.get("lane")), ""), r.get("place") or "", fmt_s(t), bh, r.get("status"),
                         fl.get("dq", {}).get(str(r.get("lane")), "") if r.get("status") == "DQ" else "",
-                        ";".join(fmt_s(x) for x in r.get("presses_us", [])), ch, by, fl.get("note", ""), go] + cc)
+                        ";".join(fmt_s(x) for x in r.get("presses_us", [])), ch, by, fl.get("note", ""), go] + cc
+                       + ["on" if h.get("co") else "", h.get("co_event", "") if h.get("co_event") != "single" else "",
+                          ";".join(fmt_s(x) for x in r.get("co_us", [])), fmt_s(r.get("early_tag_us"))])
     return out.getvalue()
 
 
@@ -3721,13 +3730,20 @@ def handle_line(line):
                 ser.write(("clock %s\r\n" % datetime.now().strftime("%Y %m %d %H %M %S")).encode())
             except (serial.SerialException, OSError):
                 pass
+        S["co_cmd"] = bool(d.get("co_cmd"))
         pico_minleg()
         pico_lanes()
+        if S["co_cmd"] and bool(d.get("co")) != S["co"]:
+            pico_co()                       # only if the box disagrees with the app's switch
+    elif ev == "co_state":
+        S["co"] = bool(d.get("on"))
+        if d.get("msg"):
+            note_held("Changeovers not switched - " + str(d["msg"]))
     elif ev == "lanes":
         S["lanes"] = [int(x) for x in d.get("lanes") or []]
         S["lanes_max"] = int(d.get("max") or S["lanes_max"])
         if d.get("refused"):
-            note("Lanes not changed - the timing box was in a race or the button test. Try again between races.")
+            note_held("Lanes not changed - the timing box was in a race or the button test. Try again between races.")
     elif ev == "minleg":
         S["min_leg_s"] = d.get("s", 15)
     elif ev == "state":
@@ -3832,7 +3848,7 @@ def handle_line(line):
             messages.append([datetime.now().strftime("%H:%M:%S"), "Emergency stop released"])
         S["estop"] = on
         if d.get("refused"):
-            note("E-stop setting not changed - the timing box was in a race. Try again between races.")
+            note_held("E-stop setting not changed - the timing box was in a race. Try again between races.")
     elif ev == "recall":
         messages.append([datetime.now().strftime("%H:%M:%S"), "RECALL - race cancelled"])
     elif ev == "results":
@@ -3874,6 +3890,12 @@ def note(text):
     print(text)
     with lock:
         messages.append([datetime.now().strftime("%H:%M:%S"), text])
+
+
+def note_held(text):
+    """note() for code that already holds the lock (the Pico line handler) - taking it again would hang"""
+    print(text)
+    messages.append([datetime.now().strftime("%H:%M:%S"), text])
 
 
 STOPPING = threading.Event()      # set before a restart: the Pico link closes its own port, then says so
@@ -4019,6 +4041,74 @@ def lanes_action(d):
     return "ok"
 
 
+def pico_co():
+    # the changeovers switch lives in the app (off at power-up); the timing box follows it (v3.13 or later)
+    if ser and S.get("co_cmd"):
+        try:
+            ser.write(("co %s\r\n" % ("on" if S["co"] else "off")).encode())
+        except (serial.SerialException, OSError):
+            pass
+
+
+def co_set(on):
+    if S["state"] in ("ARMED", "RACING"):
+        return "Switch changeovers between races"
+    if S["test"]:
+        return "Not during the button test"
+    if ser and not S.get("co_cmd"):
+        return "The timing box needs program v3.13 or newer for changeovers (System › Kit owner › Updates)"
+    S["co"] = bool(on)
+    pico_co()
+    return "ok"
+
+
+CO_EVENTS = {"H": "single", "HH": "Mass Rescue", "HOH": "Teams Rescue", "HOHHOHOHOH": "IRB Relay"}
+CO_LEGS = {"Mass Rescue": ["Out", "Back"], "Teams Rescue": ["Crew 1", "Crew 2"],
+           "IRB Relay": ["Tube", "Mass – out", "Mass – back", "Teams – crew 1", "Teams – crew 2", "Rescue"]}
+
+
+def co_review(d):
+    """changeovers on: each lane's changeover times, an early press followed by more racing (= early tag-out),
+    and which event the presses look like - only named when most lanes agree"""
+    rows = d.get("rows") or []
+    sigs = {}
+    for r in rows:
+        hs, outs, early = r.get("presses_us") or [], r.get("outs_us") or [], r.get("early_us") or []
+        ev = sorted([(t, "H") for t in hs] + [(t, "O") for t in outs])
+        sig = "".join(k for _, k in ev)
+        if hs:
+            sigs[sig] = sigs.get(sig, 0) + 1
+        co = []
+        for o in outs:                       # changeover = next driver's press minus the arrival before it
+            arr = max([h for h in hs if h <= o], default=None)
+            if arr is not None:
+                co.append(o - arr)
+        r["co_us"] = co
+        later = sorted(hs + outs)
+        tag = next((e for e in early if any(t > e for t in later)), None)
+        if tag is not None:
+            r["early_tag_us"] = tag
+        else:
+            r.pop("early_tag_us", None)
+    n = sum(sigs.values())
+    if sigs:
+        sig, k = max(sigs.items(), key=lambda kv: kv[1])
+        name = CO_EVENTS.get(sig)
+        if name and (k >= 0.75 * n):
+            d["co_event"] = name
+            d["co_legs"] = CO_LEGS.get(name, [])
+            return d
+    d.pop("co_event", None)
+    d.pop("co_legs", None)
+    return d
+
+
+def co_name_word(txt):
+    t = str(txt or "").lower()
+    return ("IRB Relay" if re.search(r"relay|taplin", t) else "Teams Rescue" if "team" in t else "Mass Rescue" if "mass" in t
+            else "single" if re.search(r"tube|rescue|assembly", t) else "")
+
+
 def pico_minleg():
     # practice: crews can press again after 1 s; racing: 15 s (timing box v3.0 or later)
     if ser and S.get("minleg_cmd"):
@@ -4091,7 +4181,7 @@ def snapshot(role="master", local=True, tok=None):
         program_sync()
         d = {k: S[k] for k in ("connected", "port", "fw", "lanes", "lanes_max", "lanes_cmd", "state", "race", "faults", "live",
                                "results", "at_prompt", "min_leg_s", "event", "race_event", "app_start",
-                               "heat", "race_heat")}
+                               "heat", "race_heat", "co", "co_cmd")}
         d["draw"] = draw_info()
         for k in ("ties", "has_test", "test", "test_seen", "last_test", "faults_racing"):
             d[k] = S[k]
@@ -4181,6 +4271,8 @@ def basic_order(rec, f=None):
             lab = c.upper()
         elif x.get("status") in ("DQ", "DNF"):
             lab = x["status"]
+        elif x.get("early_tag_us") is not None and str(lane) not in ch and not c:
+            lab = "Checking"
         elif x.get("place"):
             lab = ""
         elif n and n != legs and str(lane) not in ch and not c:
@@ -4644,6 +4736,10 @@ class H(BaseHTTPRequestHandler):
             self.send(200, json.dumps({"result": rflag_action(data)}))
         elif self.path.startswith("/api/note"):
             self.send(200, json.dumps({"result": save_note(data.get("race"), data.get("text"), data.get("who"))}))
+        elif self.path.split("?")[0] == "/api/co":
+            with lock:
+                r = co_set(data.get("on"))
+            self.send(200, json.dumps({"result": r}))
         elif self.path.startswith("/api/practice"):
             with lock:
                 S["practice"] = bool(data.get("on"))
@@ -4749,6 +4845,10 @@ touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callou
 .ev small{display:block;font-weight:600;font-size:14px}
 @media (min-width:900px){}
 .start{display:flex;gap:10px;margin-top:14px}
+.cosw{display:flex;align-items:center;gap:10px;justify-content:space-between;background:#fff;border:1px solid var(--line);border-radius:14px;padding:8px 12px;margin-top:10px}
+.cosw small{display:block;color:var(--mute);font-weight:500;font-size:13px}.cosw.on{border:2px solid #e2a63a;background:#fff8e8}
+.copill{display:inline-block;background:#fdf3d8;color:#8a5300;border:1px solid #e2a63a;border-radius:99px;padding:4px 14px;font-weight:800;margin-top:10px}
+.conudge{display:flex;align-items:center;gap:10px;justify-content:space-between;background:#fff8e8;border:1px solid #e2a63a;border-radius:14px;padding:8px 12px;margin-top:10px;font-weight:700}
 .start .btn{flex:1;font-size:26px;padding:26px 12px;min-height:84px}
 .btn.amber{background:var(--amber);border-color:var(--amber);color:#fff}.btn.green{background:var(--green);border-color:var(--green);color:#fff}
 .btn.sm{min-height:40px;padding:8px 14px;font-size:15px}
@@ -5772,7 +5872,7 @@ function finishOrder(r,f){   // after FINISH: place + lane, or Checking / DQ / D
   const odd=new Set(oddLanes(r,f).map(o=>o.lane)), calls=(f||{}).calls||{};
   const w=winT(r), ties=drawList(r);
   const o=(r.rows||[]).map(x=>{ const c=calls[String(x.lane)];
-    const lab=c==="dnf"||c==="dq"?c.toUpperCase():x.status==="DQ"||x.status==="DNF"?x.status:x.place?"":odd.has(x.lane)?"Checking":"DNF";
+    const lab=c==="dnf"||c==="dq"?c.toUpperCase():x.status==="DQ"||x.status==="DNF"?x.status:x.place&&!odd.has(x.lane)?"":odd.has(x.lane)?"Checking":"DNF";
     return {lane:x.lane,place:lab?null:x.place,label:lab,eq:ties.includes(x.lane),n:(x.presses_us||[]).length,txt:lab?"":f1(x.t_us,w)}; });
   const rk={Checking:0,DQ:1,DNF:2};
   return o.sort((a,b)=>(a.place==null)-(b.place==null)||(a.place||0)-(b.place||0)||(rk[a.label]??3)-(rk[b.label]??3)||a.lane-b.lane);
@@ -6192,6 +6292,14 @@ function setWarnings(){
   return w;
 }
 let setAsk=0;
+// changeovers switch (Teams / Taplin): the timing desk and the Starter, between races only
+function coRow(racing){ if(!st.co_cmd&&!st.co) return "";
+  if(racing) return st.co?`<div class="copill">Changeovers on</div>`:"";
+  const name=st.heat?(st.heat.div||"")+" "+(st.heat.event||""):"";
+  const nudge=!st.co&&!isBasic()&&/team|relay|taplin/i.test(name)?`<div class="conudge"><span>Teams or relay race – turn changeovers on?</span><button class="btn sm amber" onclick="setCo(true)">Turn on</button></div>`:"";
+  return nudge+`<div class="cosw ${st.co?"on":""}"><span><b>Changeovers</b><small>${st.co?"On – light 1 s on, 2 s off, then on until the next driver presses":"Off – one press per arrival"}</small></span>
+    <button class="btn sm ${st.co?"amber":""}" onclick="setCo(${!st.co})">${st.co?"Turn off":"Turn on"}</button></div>`; }
+async function setCo(on){ const r=await post("/api/co",{on:on}); if(r!=="ok"){ toast(r); return; } toast(on?"Changeovers on":"Changeovers off"); await poll(); }
 function controls(){
   const s=st.state, app=st.app_start;
   let h="";
@@ -6211,8 +6319,9 @@ function controls(){
       return h+`<div class="card confirm"><h2>Check before SET</h2>${w.map(x=>`<p style="margin:6px 0">• ${esc(x)}</p>`).join("")}
         <div class="row"><button class="btn amber" id="bsetok">SET anyway</button><button class="btn" id="bsetno">Cancel</button></div></div>`;
     setAsk=0;
-    return h+`<div class="start"><button class="btn amber" id="bset">SET<small>${esc(what)}</small></button></div>`;
+    return h+coRow(false)+`<div class="start"><button class="btn amber" id="bset">SET<small>${esc(what)}${st.co?" · changeovers on":""}</small></button></div>`;
   }
+  h+=coRow(true);
   if(s==="ARMED"){
     if(app) h+=`<div class="start"><button class="btn green" id="bgo">GO</button></div>`;
     return h+`<div class="card"><button class="btn hold" id="hold"><i></i><span>Hold to CANCEL (before GO)</span></button></div>`;
@@ -6356,16 +6465,22 @@ function wall(go,us){ const d=new Date(go*1000+us/1000), p=(n,w)=>String(n).padS
 // a lane whose press count differs from the most common one (the race's legs) – fewer or more.
 // It stays flagged until the judges answer: DNF, DQ or It's fine (before SET on the timing box; after SET as a call)
 function oddLanes(r,f){
-  if(!r||!r.legs||!r.rows) return [];
+  if(!r||!r.rows) return [];
   const ch=r.changes||{}, calls=((f||r.flags||{}).calls)||{};
   return r.rows.filter(x=>{ const n=(x.presses_us||[]).length;
-    return n>0&&n!==r.legs&&!(String(x.lane) in ch)&&!calls[String(x.lane)]&&!["DQ","DNF","PLACED"].includes(x.status); })
-    .map(x=>({lane:x.lane,n:x.presses_us.length,row:x}));
+    if(String(x.lane) in ch||calls[String(x.lane)]||["DQ","DNF","PLACED"].includes(x.status)) return false;
+    if(x.early_tag_us!=null) return true;          // changeovers: the next driver pressed before the go light
+    return !!r.legs&&n>0&&n!==r.legs; })
+    .map(x=>({lane:x.lane,n:(x.presses_us||[]).length,row:x,early:x.early_tag_us!=null}));
 }
 function pressWord(n){ return n===1?"once":n===2?"twice":n+" times"; }
 function oddHtml(r,f,onBox,act){
   const odd=oddLanes(r,f); if(!odd.length) return "";
   return odd.map(o=>{ const cn=crewOf(r.heat,o.lane), fewer=o.n<r.legs, x=o.row;
+    if(o.early){ const e=x.early_tag_us, arr=Math.max(...(x.presses_us||[]).filter(t=>t<=e),0);
+      const b=(what,lab)=>`<button class="btn sm" onclick="${onBox&&what==="dq"?`cmd('dq ${o.lane}')`:`rCall(${r.race},${o.lane},'${what}')`}">${lab}</button>`;
+      return `<div class="bad-warn oddl">Lane ${o.lane}${cn?" ("+esc(cn)+")":""}: early tag-out? The next driver pressed ${ft(e-arr)} s after the arrival, before the go light${r.go_wall?" – video "+wall(r.go_wall,e):""}.
+        ${act?`<div class="row">${b("dq","DQ")}${b("fine","It's fine")}</div>`:`<div>Judges to check.</div>`}</div>`; }
     const how=fewer?"Not placed yet.":`Timed at press ${r.legs}${x.t_us!=null?" ("+ft(x.t_us)+")":""}; its last press was ${ft(x.presses_us[x.presses_us.length-1])}.`;
     const b=(what,lab)=>`<button class="btn sm" onclick="${onBox?`cmd('${what==="fine"?"ok":what} ${o.lane}')`:`rCall(${r.race},${o.lane},'${what}')`}">${lab}</button>`;
     return `<div class="bad-warn oddl">Lane ${o.lane}${cn?" ("+esc(cn)+")":""} pressed ${pressWord(o.n)} – the others pressed ${pressWord(r.legs)}. ${how}
@@ -6383,11 +6498,18 @@ function ranked(res){
     return Object.assign({},r,{gap:gap,tooClose:gap!=null&&gap<TOO_CLOSE_US});
   });
 }
+function coNote(res){ if(!res||!res.co) return "";
+  const hn=res.heat?((res.heat.div||"")+" "+(res.heat.event||"")).toLowerCase():"", want=/relay|taplin/.test(hn)?"IRB Relay":/team/.test(hn)?"Teams Rescue":/mass/.test(hn)?"Mass Rescue":/tube|rescue|assembly/.test(hn)?"single":"";
+  const ev=res.co_event, nice=e=>e==="single"?"a single-leg race":e;
+  if(want&&ev&&want!==ev) return `<p class="bad-warn">Changeovers on – the presses look like ${esc(nice(ev))}, but the heat is ${esc(nice(want))}. Check the lanes.</p>`;
+  return `<p class="mute" style="margin:4px 0">Changeovers on${ev&&ev!=="single"?" · "+esc(ev):""}</p>`; }
 function resultsTable(res, tappable){
-  let h=`<div style="overflow-x:auto"><table><tr><th>Place</th><th>Crew</th><th>Time</th>${tappable?"<th></th>":""}</tr>`;
+  let h=coNote(res)+`<div style="overflow-x:auto"><table><tr><th>Place</th><th>Crew</th><th>Time</th>${tappable?"<th></th>":""}</tr>`;
   for(const r of ranked(res)){
-    let splits=""; if(res.legs>1&&r.presses_us.length>=res.legs&&r.status==="TIMED"){ let last=0;
-      splits=r.presses_us.slice(0,res.legs).map((t,i)=>{const x="Leg\u00a0"+(i+1)+"\u00a0"+ft(t-last); last=t; return x;}).join(" · "); }
+    let splits=""; const nm=res.co_legs&&res.co_legs.length===res.legs?res.co_legs:null;
+    if(res.legs>1&&r.presses_us.length>=res.legs&&r.status==="TIMED"){ let last=0;
+      splits=r.presses_us.slice(0,res.legs).map((t,i)=>{const x=(nm?nm[i]:"Leg\u00a0"+(i+1))+"\u00a0"+ft(t-last); last=t; return x;}).join(" · "); }
+    if((r.co_us||[]).length) splits+=(splits?" · ":"")+"Changeover"+(r.co_us.length>1?"s":"")+"\u00a0"+r.co_us.map(x=>ft(x)).join(", ");
     const ch=res.changes[String(r.lane)];
     const extra="";      // a lane with extra presses is flagged above the table instead
     const vid=res.go_wall&&r.t_us!=null&&r.tooClose?`<div class="vid">video ${wall(res.go_wall,r.t_us)}</div>`:"";
@@ -8202,7 +8324,7 @@ function pageKey(){
   // redraw only when something shown has changed, so taps and open sections aren't lost
   if(!st) return JSON.stringify([tab,linkDown,tab==="history"?hist:0]);
   const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes,st.pi_temp&&[st.pi_temp.level,Math.round(st.pi_temp.temp),st.pi_temp.max,st.pi_temp.throttled,st.pi_temp.under_volt,st.pi_temp.volt],st.batt,st.batt_cfg,st.storage,st.box&&Math.round(st.box.temp),st.batt_use,st.phones,clockBad()];
-  k.push(st.mode,st.prev,prevView,modeInfoOpen,st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags,st.unconfirmed);
+  k.push(st.co,st.co_cmd,st.mode,st.prev,prevView,modeInfoOpen,st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags,st.unconfirmed);
   if(tab==="race") k.push(st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,finishSent&&Date.now()-finishSent<5000,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
     st.state==="RACING"&&(st.elapsed||0)<5);
   else if(tab==="results") k.push(st.results);
