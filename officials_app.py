@@ -17,6 +17,8 @@ Start:  python officials_app.py
 
 import json, os, re, sys, threading, time, socket, csv, io, urllib.request, urllib.parse, secrets, shutil, glob, hashlib, base64, zipfile, platform, subprocess
 from collections import deque
+import smtplib
+from email.message import EmailMessage
 from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -28,7 +30,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.29.2"
+APP_VERSION = "1.30.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -38,6 +40,9 @@ DATA = os.path.join(BASE, "timing_data")
 os.makedirs(DATA, exist_ok=True)
 HIST_FILE = os.path.join(DATA, "history.jsonl")
 SETTINGS_FILE = os.path.join(DATA, "settings.json")
+OUTBOX = os.path.join(DATA, "outbox")                     # problem reports waiting for internet
+REPORT = {"to": "", "from": "", "pw": "", "last": "", "recent": {}}
+report_lock = threading.Lock()
 DRAW_FILE = os.path.join(DATA, "liveheats_draw.json")
 FLAGS_FILE = os.path.join(DATA, "race_flags.json")
 ROLES_FILE = os.path.join(DATA, "crew_roles.json")     # roles team managers set where LiveHeats had none
@@ -159,6 +164,9 @@ def load_settings():
             apply_events(s["events"])
         if isinstance(s.get("upd_key"), str):
             UPD_KEY["v"] = s["upd_key"][:300]
+        if isinstance(s.get("report"), dict):
+            for k in ("to", "from", "pw", "last"):
+                REPORT[k] = str(s["report"].get(k, ""))[:200]
         if isinstance(s.get("kit"), str) and s["kit"].strip():
             KIT["text"] = s["kit"][:2000]
         if find_event(s.get("event", "")):
@@ -209,7 +217,8 @@ def save_settings():
                        "access_day": access_day[0], "regulars": regulars, "net": NET, "last_test": S["last_test"],
                        "setup_done": SETUP["done"], "brand": BRAND, "owner_pin": OWNER["pin"], "events": EVENTS[1:],
                        "kit": KIT["text"], "upd_key": UPD_KEY["v"], "pico_prev": PICO_UPD["prev"],
-                       "club_codes": CLUB_CODES, "coaches": COACHES, "lanes_use": LANES["use"], "mode": MODE["v"]}, fh)
+                       "club_codes": CLUB_CODES, "coaches": COACHES, "lanes_use": LANES["use"], "mode": MODE["v"],
+                       "report": {k: REPORT[k] for k in ("to", "from", "pw", "last")}}, fh)
     except OSError:
         pass                    # still used for this session
 
@@ -537,10 +546,10 @@ def fetch_url(name, timeout=20):
 def upd_error(e):
     code = getattr(e, "code", None)
     if code in (401, 403) and UPD_KEY["v"]:
-        return "The updates key was refused - it may have expired. The owner adds a new one under Setup › Advanced › Updates key."
+        return "The updates key was refused - it may have expired. The owner adds a new one under System › Kit owner › Updates › Updates key."
     if code == 404:
         return ("Updates not found - check the updates key can read the repository." if UPD_KEY["v"] else
-                "Updates not found - if the repository is private, the owner adds an updates key under Setup › Advanced.")
+                "Updates not found - if the repository is private, the owner adds an updates key under System › Kit owner › Updates.")
     return "Couldn't check for updates - is this computer on the internet? (%s)" % str(e)[:80]
 
 
@@ -1249,7 +1258,7 @@ def update_view():
 
 
 # ---------------- hire kits: owner lock, branding, events, Windows firewall, packs ----------------
-OWNER_MSG = "Locked by the owner – unlock with the owner PIN (System › Setup)"
+OWNER_MSG = "Locked by the owner – unlock with the owner PIN (System › Kit owner › Owner lock and hire)"
 
 
 def owner_ok():
@@ -2082,6 +2091,25 @@ def diagnostics():
         for k in ("master_pin", "owner_pin", "upd_key"):
             if s.get(k):
                 s[k] = "(set)"
+        if isinstance(s.get("report"), dict) and s["report"].get("pw"):
+            s["report"]["pw"] = "(set)"
+        for k in ("officials", "regulars", "coaches", "club_codes"):     # names and club codes stay on the kit
+            if s.get(k):
+                s[k] = "(%d)" % len(s[k])
+        s.pop("heat", None)
+        hist = []
+        try:
+            with open(HIST_FILE, encoding="utf-8") as fh:
+                for ln in fh:
+                    try:
+                        h = json.loads(ln)
+                    except ValueError:
+                        continue
+                    if isinstance(h.get("heat"), dict):
+                        h["heat"] = {k: v for k, v in h["heat"].items() if k not in ("crews", "members", "athletes", "checks")}
+                    hist.append(json.dumps(h))
+        except OSError:
+            pass
         if isinstance(s.get("net"), dict) and s["net"].get("pass"):
             s["net"]["pass"] = "(set)"
         info = ["IRB timing problem report", "Made: %s" % datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -2092,7 +2120,7 @@ def diagnostics():
                 "Update: %s" % json.dumps(update_view()), "Officials: %d   Requests: %d" % (len(officials), len(requests_)),
                 "", "Recent messages:"] + ["  ".join(str(x) for x in (m if isinstance(m, (list, tuple)) else [m])) for m in list(messages)]
     logs = sorted(glob.glob(os.path.join(DATA, "pico_log_*.txt")))[-3:]
-    extra = {"report.txt": "\n".join(info), "settings.json": json.dumps(s, indent=1)}
+    extra = {"report.txt": "\n".join(info), "settings.json": json.dumps(s, indent=1), "history.jsonl": "\n".join(hist[-400:])}
     if IS_LINUX and shutil.which("journalctl"):
         for name, args in (("pi_restarts.txt", ["journalctl", "--list-boots", "--no-pager"]),
                            ("app_log_before_restart.txt", ["journalctl", "-b", "-1", "-u", "irb-timing", "-n", "300", "--no-pager"]),
@@ -2108,7 +2136,123 @@ def diagnostics():
                 extra["pi_power.txt"] = subprocess.run(["vcgencmd", "get_throttled"], capture_output=True, text=True, timeout=5).stdout
             except (OSError, subprocess.SubprocessError):
                 pass
-    return zip_bytes([HIST_FILE, FLAGS_FILE, PROGRAM_FILE] + logs, extra)
+    return zip_bytes([FLAGS_FILE] + logs, extra)
+
+
+# ---------- problem reports: emailed to the kit owner from the kit's own Gmail; queued until there's internet ----------
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def smtp_send(subject, body, attach=None, fname=None):
+    host, port = os.environ.get("IRB_SMTP", "smtp.gmail.com:465").rsplit(":", 1)
+    msg = EmailMessage()
+    msg["Subject"], msg["From"], msg["To"] = subject, REPORT["from"], REPORT["to"]
+    msg.set_content(body)
+    if attach:
+        msg.add_attachment(attach, maintype="application", subtype="zip", filename=fname)
+    cls = smtplib.SMTP if os.environ.get("IRB_SMTP_PLAIN") else smtplib.SMTP_SSL
+    with cls(host, int(port), timeout=25) as sm:
+        sm.login(REPORT["from"], REPORT["pw"])
+        sm.send_message(msg)
+
+
+def report_ready():
+    return bool(REPORT["to"] and REPORT["from"] and REPORT["pw"])
+
+
+def report_setup(d):
+    to, fr, pw = str(d.get("to", "")).strip()[:120], str(d.get("from", "")).strip()[:120], re.sub(r"\s+", "", str(d.get("pw", "")))[:64]
+    if not to and not fr:
+        REPORT.update({"to": "", "from": "", "pw": "", "last": ""})
+        save_settings()
+        return "ok"
+    if not EMAIL_RE.match(to):
+        return "Enter the email address reports go to"
+    if not EMAIL_RE.match(fr):
+        return "Enter the kit's Gmail address"
+    if not pw and fr == REPORT["from"]:
+        pw = REPORT["pw"]
+    if not pw:
+        return "Enter the app password"
+    REPORT.update({"to": to, "from": fr, "pw": pw})
+    save_settings()
+    try:
+        smtp_send("IRB kit – test email", "Problem reports from this IRB timing kit (%s) will come to this address." % (BRAND.get("club") or "no club set"))
+    except smtplib.SMTPAuthenticationError:
+        return "Saved, but Gmail didn't accept the login – check the kit's Gmail address and the app password"
+    except Exception as e:
+        return "Saved, but the test didn't send (%s) – it needs internet" % type(e).__name__
+    REPORT["last"] = "test sent %s" % datetime.now().strftime("%d %b %H:%M")
+    save_settings()
+    report_flush()
+    return "ok"
+
+
+def report_queued():
+    try:
+        return len(glob.glob(os.path.join(OUTBOX, "*.json")))
+    except OSError:
+        return 0
+
+
+def report_new(who, note):
+    os.makedirs(OUTBOX, exist_ok=True)
+    rid = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + secrets.token_hex(2)
+    with open(os.path.join(OUTBOX, rid + ".zip"), "wb") as fh:
+        fh.write(diagnostics())
+    meta = {"who": who, "note": note, "at": datetime.now().strftime("%a %d %b %Y %H:%M"), "club": BRAND.get("club", ""),
+            "event": BRAND.get("event", ""), "app": APP_VERSION, "fw": S["fw"], "race": S["race"], "mode": MODE["v"]}
+    with open(os.path.join(OUTBOX, rid + ".json"), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh)
+    for old in sorted(glob.glob(os.path.join(OUTBOX, "*.json")))[:-20]:      # keep the newest 20
+        for f in (old, old[:-5] + ".zip"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+
+def report_flush():
+    """send what's waiting; stops at the first failure (no internet) and tries again later"""
+    if not report_ready():
+        return 0
+    n = 0
+    for mf in sorted(glob.glob(os.path.join(OUTBOX, "*.json"))):
+        try:
+            with open(mf, encoding="utf-8") as fh:
+                m = json.load(fh)
+            zf = mf[:-5] + ".zip"
+            with open(zf, "rb") as fh:
+                z = fh.read()
+        except (OSError, ValueError):
+            continue
+        body = "Problem report from an IRB timing kit\n\nFrom: %s\nWhen: %s\nClub: %s\nEvent: %s\nMode: %s · race %s · app v%s · timing box v%s\n\nWhat happened:\n%s\n" % (
+            m.get("who"), m.get("at"), m.get("club") or "-", m.get("event") or "-", m.get("mode"), m.get("race"), m.get("app"), m.get("fw"), m.get("note") or "(no note)")
+        try:
+            smtp_send("IRB kit problem report – %s – %s" % (m.get("club") or "kit", m.get("at")), body, z, os.path.basename(zf).replace(".zip", "_IRB_report.zip"))
+        except Exception:
+            break
+        for f in (mf, zf):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        n += 1
+        REPORT["last"] = "report sent %s" % datetime.now().strftime("%d %b %H:%M")
+    if n:
+        save_settings()
+    return n
+
+
+def report_loop():
+    while True:
+        time.sleep(int(os.environ.get("IRB_REPORT_EVERY", "120")))
+        try:
+            if report_queued():
+                with report_lock:
+                    report_flush()
+        except Exception:
+            pass
 
 
 def allowed(role, path, data):
@@ -3871,7 +4015,7 @@ def lanes_action(d):
         pico_lanes()
         return "ok"
     if ser:
-        return "Saved - the timing box needs program v3.6 or newer to switch lanes off (System › Setup › Timing box program)"
+        return "Saved - the timing box needs program v3.6 or newer to switch lanes off (System › Kit owner › Updates)"
     return "ok"
 
 
@@ -4008,6 +4152,7 @@ def snapshot(role="master", local=True, tok=None):
             d["firewall"] = {"state": FIREWALL["state"], "busy": FIREWALL["busy"]}
             d["kit"] = KIT["text"]
             d["upd_key"] = bool(UPD_KEY["v"])
+            d["report"] = {"to": REPORT["to"], "from": REPORT["from"], "last": REPORT["last"], "queued": report_queued()}
             d["wifi"] = {k: WIFI[k] for k in ("on", "mode", "name", "ip", "hotspot", "hs_ssid", "hs_ip", "saved", "busy", "msg")}
             d["inet"] = inet_view()
             d["power"] = {"on": IS_LINUX, "pi": IS_PI}
@@ -4256,6 +4401,35 @@ class H(BaseHTTPRequestHandler):
                         r = fn(data)
                 self.send(200, json.dumps({"result": r}))
                 return
+        if self.path.startswith("/api/report"):
+            if "setup" in data:
+                if self.role() != "master":
+                    r = "Only the timing desk can do that"
+                elif not owner_ok():
+                    r = "Unlock with the owner PIN first"
+                else:
+                    with report_lock:
+                        r = report_setup(data["setup"] if isinstance(data["setup"], dict) else {})
+                self.send(200, json.dumps({"result": r}))
+                return
+            role, key, now = self.role(), self.token() or self.client_address[0], time.time()
+            if now - REPORT["recent"].get(key, 0) < 600:
+                r = "One report every 10 minutes – the last one is on its way"
+            else:
+                REPORT["recent"][key] = now
+                if role == "master":
+                    who = "Timing desk"
+                elif role != "viewer":
+                    with lock:
+                        o = officials.get(self.token()) or {}
+                    who = "%s · %s" % (o.get("name") or str(data.get("name", ""))[:40] or "Official", ROLE_NAME.get(role, role))
+                else:
+                    who = str(data.get("who", ""))[:80] or "Someone on the results screen"
+                with report_lock:
+                    report_new(who, str(data.get("note", ""))[:1000])
+                    r = "sent" if report_flush() else "queued"
+            self.send(200, json.dumps({"result": r}))
+            return
         if self.path.startswith("/api/updkey"):
             r = key_action(data) if self.role() == "master" else "Only the timing desk can do that"
             self.send(200, json.dumps({"result": r}))
@@ -4322,7 +4496,7 @@ class H(BaseHTTPRequestHandler):
             else:
                 with lock:
                     if not (ser and S["batt_cmd"]):
-                        r = "The timing box needs program v3.9 or newer (System › Setup › Updates)"
+                        r = "The timing box needs program v3.9 or newer (System › Kit owner › Updates)"
                     elif "cal" in data:
                         try:
                             v = float(data["cal"])
@@ -4343,7 +4517,7 @@ class H(BaseHTTPRequestHandler):
             else:
                 with lock:
                     if not (ser and S["estop_cmd"]):
-                        r = "The timing box needs program v3.7 or newer for the emergency stop (System › Setup › Updates)"
+                        r = "The timing box needs program v3.7 or newer for the emergency stop (System › Kit owner › Updates)"
                     elif S["estop_req"] and not data.get("fitted"):
                         r = "The emergency stop is always on – it can't be switched off"
                     elif S["state"] in ("ARMED", "RACING"):
@@ -4704,6 +4878,28 @@ body.board header,body.board #nextbar,body.board #racewarn{display:none}
 .rst{display:inline-flex;gap:4px;flex-wrap:wrap;vertical-align:middle}
 .rst i{font:800 normal 12px var(--f);border-radius:99px;padding:2px 9px;border:2px solid var(--line);color:var(--mute);background:#fff;white-space:nowrap}
 .rst i.on{background:var(--green);border-color:var(--green);color:#fff}
+.sysq{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:99px;padding:4px 14px;margin-bottom:12px}
+.sysq span{font-size:20px;color:var(--mute)}.sysq input{border:0;outline:0;flex:1;font-size:17px;padding:8px 0;background:transparent;min-width:0}
+.sysw{display:grid;gap:0 16px}.sysw>div{min-width:0}
+@media (min-width:900px){.sysw{grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start}}
+@media (max-width:899px){.sysw.pg .sysm{display:none}}
+.sysback{background:none;border:0;color:var(--blue);font:700 17px var(--f);padding:4px 0;margin-bottom:6px;cursor:pointer}
+.spt{font-size:24px;margin:0}.sptg{color:var(--mute);margin:0 0 10px;font-size:14px}
+.rdyh{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}.rdyh h2{margin:0}
+.rpill{background:#fdf3d8;color:#8a5300;border-radius:99px;padding:3px 12px;font-weight:800;font-size:14px;white-space:nowrap}.rpill.ok{background:#e3f6ea;color:var(--green)}
+.card.rdy.todo{border:2px solid #e2a63a}
+.rdyline{display:flex;align-items:center;gap:10px;width:100%;background:none;border:0;padding:0;font:inherit;color:inherit;text-align:left;cursor:pointer}
+.rdyline .mute{margin-left:auto;font-size:14px}.rdyline .tick{color:var(--green);font-weight:900}
+.scrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)}.card h2+.scrow{border-top:0}
+.sci{width:24px;text-align:center;color:var(--mute);font-size:18px}.scn{flex:1;font-weight:700}.scb{display:flex;gap:6px}
+.erow{display:flex;align-items:center;gap:10px;width:100%;background:none;border:0;border-top:1px solid var(--line);padding:11px 0;font:inherit;color:inherit;text-align:left;cursor:pointer;min-height:48px}
+.card h2+.erow,.slist>.erow:first-child{border-top:0}.erow .en{font-weight:700;flex:0 1 auto}.erow .en small{display:block;font-weight:500;color:var(--mute);font-size:13px}
+.erow .ev{margin-left:auto;color:var(--mute);font-size:14px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%}.erow .ev.bad{color:var(--red)}
+.erow .cv,.rdyline .cv{color:var(--mute);font-size:20px}.erow.nob{cursor:default}.erow.nob .ev{max-width:none;flex:0 0 auto}.erow.nob .btn{flex:0 0 auto}
+.khead{display:flex;align-items:center;gap:10px;width:100%;background:none;border:0;padding:0;font:inherit;color:inherit;text-align:left;cursor:pointer}
+.khead small{display:block;color:var(--mute);font-size:13px;font-weight:500}.kic{font-size:18px;color:var(--mute);width:20px}.kcard .erow:first-of-type{margin-top:8px}
+.shd{color:var(--mute);font-size:14px;margin:4px 2px 6px}.ftag{font-size:11px;background:#eef0f3;color:var(--mute);border-radius:99px;padding:2px 8px;margin-right:8px;font-weight:700}
+.fix.about{margin-top:10px}#hlpq{width:100%;font-size:17px;padding:10px 14px;border:1px solid var(--line);border-radius:99px;margin:4px 0 8px;box-sizing:border-box}
 .sysnav{display:flex;gap:8px;margin-bottom:10px}.sysnav .btn{flex:1;padding:8px 12px}
 .sysnav.quiet{align-items:center;justify-content:space-between;max-width:none}.sysnav.quiet .btn{flex:0 0 auto;white-space:nowrap;padding:6px 18px}.sysnav.quiet>.mute{font-weight:700;font-size:18px;color:var(--ink,#111)}
 .syscols>div>.card:first-child{margin-top:0}
@@ -5264,6 +5460,8 @@ a{color:var(--blue)}a:hover{color:var(--ink)}
 .bd .card{border:0;box-shadow:var(--sh);border-radius:20px}
 /* v1.10.3: clearer separation – each Setup section is its own card; marshalling heats get a header band and one row per crew */
 .card.slist{background:none;box-shadow:none;padding:0}
+.sysp .card.slist,#sysres .card.slist{background:#fff;padding:6px 16px;border:1px solid var(--line);margin-bottom:12px}.sysp .srow{border-bottom:1px solid var(--line);padding:10px 0}.sysp .slist>.srow:last-child{border-bottom:0}
+@media (min-width:900px){.sysp .srow{grid-template-columns:150px minmax(0,1fr) auto}}
 .ssec{background:#fff;border:0!important;border-radius:20px;box-shadow:var(--sh);margin:0 0 14px;padding:0 18px;overflow:hidden}
 .ssec .ssh{padding:16px 0}
 .ssec.open .ssh{border-bottom:1px solid var(--line);margin-bottom:2px}
@@ -5457,7 +5655,7 @@ function cmd(c,expect){ return post("/api/cmd",{cmd:c,expect:expect}); }
 document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{ tab=b.dataset.t;
   document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("on",x===b));
   ["race","results","program","marshal","history","system"].forEach(s=>$(s).hidden=(s!==tab)); closeSheet(); lastKey=""; render(); rememberTab(); });
-function rememberTab(){ if(!location.hash&&tabRestored) try{ sessionStorage.setItem("irb_tab",JSON.stringify({tab:tab,sys:sysView,rv:rView})); }catch(e){} }
+function rememberTab(){ if(!location.hash&&tabRestored) try{ sessionStorage.setItem("irb_tab",JSON.stringify({tab:tab,sys:sysPage||"today",rv:rView})); }catch(e){} }
 const TABS={master:["race","history","program","marshal","system"],admin:["history","program","system"],
   starter:["race","system"],marshal:["marshal","system"],viewer:["race"]};
 let tabRole="", tabRestored=false;
@@ -5551,7 +5749,7 @@ function wizard(){
       ${on?`<div class="wsb">${x.body()}</div>`:""}</div>`; });
   const ready=need.every(x=>x.ok);
   h+=`<div class="row" style="justify-content:space-between;align-items:center">${ready?`<span class="ok">Ready to race ✓</span>`:`<span class="mute">${need.filter(x=>!x.ok).length} must-do step${need.filter(x=>!x.ok).length===1?"":"s"} left</span>`}
-    <span class="row" style="margin:0"><button class="btn ${ready?"pri":""}" onclick="brandDo({setup_done:true},${ready?"'Ready to race'":"'You can come back from System › Setup'"})">${ready?"Done – go to racing":"Skip for now"}</button></span></div></div>`;
+    <span class="row" style="margin:0"><button class="btn ${ready?"pri":""}" onclick="brandDo({setup_done:true},${ready?"'Ready to race'":"'You can come back from System › Event'"})">${ready?"Done – go to racing":"Skip for now"}</button></span></div></div>`;
   return h;
 }
 async function brandDo(d,ok){ try{ const j=await (await fetch("/api/brand",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)})).json();
@@ -5634,7 +5832,7 @@ function renderModePick(){
   const card=(m,t,sub)=>`<div class="card modepick"><button class="btn ${m==="basic"?"pri":""} mbig" onclick="setMode('${m}')">${t}<small>${sub}</small></button>
     <button class="btn sm minfo" aria-label="About ${t}" onclick="modeInfoOpen=modeInfoOpen==='${m}'?'':'${m}';lastKey='';render()">?</button>
     ${modeInfoOpen===m?`<p class="mute" style="margin:10px 2px 0">${modeInfo(m)}</p>`:""}</div>`;
-  $("race").innerHTML=`<div class="wizwrap"><div class="card"><h2 style="margin:0 0 4px">How will this kit be used?</h2><p class="mute" style="margin:0">You can change this later in System › Setup.</p></div>
+  $("race").innerHTML=`<div class="wizwrap"><div class="card"><h2 style="margin:0 0 4px">How will this kit be used?</h2><p class="mute" style="margin:0">You can change this later in System › Event.</p></div>
     ${card("basic","Basic","Time races and see the finish order")}${card("full","Full","LiveHeats, program, marshalling, officials' phones, screens")}</div>`;
 }
 async function setMode(m,sure){
@@ -5739,10 +5937,10 @@ const HELP={
 const TROUBLE=[
  ["Phones and tablets",[
   ["No internet at the beach (LiveHeats, updates)","The timing works without internet – only LiveHeats and updates need it.",[
-    "With a USB Wi-Fi adapter in the Pi: System › Setup › Internet Wi-Fi › Choose, then join the club's Wi-Fi. The timing hotspot stays on.",
+    "With a USB Wi-Fi adapter in the Pi: System › Kit owner › Wi-Fi and phones › Internet › Choose, then join the club's Wi-Fi. The timing hotspot stays on.",
     "Says 'needs a sign-in page'? That Wi-Fi wants you to accept terms in a browser – pick a different Wi-Fi, or sign in on the Pi's own screen.",
     "Says 'check the password'? Join again and tick Show password to check it.",
-    "No USB Wi-Fi adapter? Switch the Pi to another Wi-Fi under System › Setup › Wi-Fi – but phones lose the app until it's back on the hotspot."]],
+    "No USB Wi-Fi adapter? Switch the Pi to another Wi-Fi under System › Kit owner › Wi-Fi and phones – but phones lose the app until it's back on the hotspot."]],
   ["Forgot the timing desk PIN","Nobody can get in as the timing desk, and the Pi is in its sealed box.",[
     "The kit owner's PIN also works as the timing desk PIN: Officials › Use the timing desk PIN.",
     "No owner nearby? At the timing box, between races: hold FINISH and GO down together for 15 seconds until it beeps 3 times.",
@@ -5754,13 +5952,13 @@ const TROUBLE=[
     "Opened inside Messenger, Facebook or the Google app (an X at the top, no address bar)? Open it in Chrome, Samsung Internet or Safari instead.",
     "Android + Chrome: phone Settings › Apps › Chrome › Permissions › Nearby devices (or Local network) › Allow. Close Chrome fully and open it again. Do the same for the Google app if you scan with Google Lens.",
     "Still not in Chrome? Chrome › Settings › Privacy and security › turn off Always use secure connections. Or use Samsung Internet.",
-    "No phone at all can connect? On the timing computer: System › Setup › Phones › Allow phones, and answer Yes on the Windows prompt.",
+    "No phone at all can connect? On the timing computer: System › Kit owner › Wi-Fi and phones › Allow phones, and answer Yes on the Windows prompt.",
     "Check the address on the join card matches the one under System. If the computer's address has changed, print a new join card."],true],
   ["Raspberry Pi: the IRB Timing Wi-Fi isn't there","Phones can't see the timing hotspot, or it was switched to home Wi-Fi.",[
     "Give the Pi a minute after switching on – the hotspot starts by itself.",
     "Still missing? Switch the Pi's power off at the wall, wait 10 seconds, switch it on. It always starts on the timing hotspot.",
     "Then join IRB Timing on the phone and open {HS}.",
-    "To switch Wi-Fi or power the Pi off without opening the case: System › Setup › Wi-Fi or Power (timing desk only)."]],
+    "To switch Wi-Fi or power the Pi off without opening the case: System › Kit owner › Wi-Fi and phones, or Battery and power (timing desk only)."]],
   ["\"No link to the timing computer\"","A red banner on a phone or tablet.",[
     "The device has dropped off the timing Wi-Fi, gone out of range, or its screen slept.",
     "Move closer to the Wi-Fi router, check Wi-Fi is on, then reload the page.",
@@ -5784,7 +5982,7 @@ const TROUBLE=[
     "Unplug the USB cable, wait 5 seconds, plug it back in. The app finds the box by itself.",
     "Try another USB port. Still not? Close the app window and start the app again."],true],
   ["Two buttons \"went off together\"","A red fault in the button test, e.g. Lane 1 and Lane 2 under 1 ms apart.",[
-    "Check System › Setup › Advanced › Versions says timing box program v2.9 or later – it ignores electrical spikes between wires.",
+    "Check System › Kit owner › Advanced › Versions says timing box program v2.9 or later – it ignores electrical spikes between wires.",
     "Each button needs its own ground wire straight to the ground block. A ground that runs through another button makes both go off together.",
     "Check the two signal wires aren't touching – at the Pico, Lane 1 (pin 4) and Lane 2 (pin 5) sit side by side: look for a solder bridge or a stray strand.",
     "Fix it, then end the test and start a new one."]],
@@ -5831,17 +6029,17 @@ const TROUBLE=[
   ["Updates won't install","\"Couldn't check for updates\" or \"Locked by the owner\".",[
     "The computer needs internet just while updating.",
     "Locked by the owner: only the kit owner installs updates.",
-    "\"The updates key was refused\": the owner adds a new key under Setup › Advanced.",
-    "After an update, Go back (System › Setup) puts the previous version back."]],
+    "\"The updates key was refused\": the owner adds a new key under System › Kit owner › Updates.",
+    "After an update, Go back (System › Kit owner › Updates) puts the previous version back."]],
   ["LiveHeats won't load","",[
     "This computer needs internet just while loading.",
     "Copy the event link from the browser's address bar on liveheats.com.",
     "The last draw loaded stays usable without internet."],true],
   ["Backup failed","",[
     "The USB stick needs a folder called IRB_backup at the top level.",
-    "Plug it in, then System › Setup › Back up now."]],
+    "Plug it in, then System › Kit owner › Results and backup › Back up now."]],
   ["Still stuck","",[
-    "On the timing computer: System › Setup › Problem report › Download.",
+    "Tap ? › Send a problem report – it goes to the kit owner. Or System › Kit owner › Results and backup › Problem report › Download.",
     "Send the file to whoever you hired the kit from – it has no passwords in it."],true]]]];
 const FIXES=TROUBLE.flatMap(s=>s[1]).filter(x=>x[3]).map(x=>[x[0],x[2].join(" ")]);
 // the hotspot's real address (it can be changed on the Pi) for help texts
@@ -5869,12 +6067,19 @@ function screensHtml(){ if(!st||!st.official) return "";
     <div class="row" style="margin-top:0">${a("/#board","Results screen")}${a("/#marshalling","Marshalling screen")}${a("/#team","Team Manager")}
     ${st.role==="admin"?`<button class="btn sm" onclick="closeSheet();goTab('marshal')">Marshal screen</button>`:""}
     ${st.role==="master"?`<button class="btn sm" onclick="closeSheet();printGuides()">Print role guides</button>`:""}</div>`; }
+function helpFixes(q){ q=(q||"").trim().toLowerCase(); const w=q.split(/\s+/).filter(Boolean);
+  const L=FIXES.filter(([a,b])=>w.every(x=>(a+" "+b).toLowerCase().includes(x)));
+  return L.length?L.map(([a,b])=>`<details class="fix"><summary>${esc(a)}</summary><p>${esc(hsFix(b))}</p></details>`).join(""):`<p class="mute">Nothing found – try one word, like wifi, battery or button.</p>`; }
 function openHelp(){
   const names={race:"Race",results:"Confirm",program:"Program",history:"Results",marshal:"Marshal",system:"System"};
-  $("sheetin").innerHTML=`<h2>${names[tab]||"Help"} – what this screen is for</h2><ul class="helpl">${(HELP[tab]||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
-    <p class="mute">The <b>Next</b> bar at the top always shows the next thing to do.</p>${screensHtml()}
-    <h2 style="margin-top:14px">Something not working?</h2>${FIXES.map(([q,a])=>`<details class="fix"><summary>${esc(q)}</summary><p>${esc(hsFix(a))}</p></details>`).join("")}
-    <div class="row"><button class="btn pri" onclick="closeSheet()">OK</button><button class="btn" onclick="closeSheet();location.hash='#fix'">All troubleshooting ›</button></div>`;
+  $("sheetin").innerHTML=`<h2>Something not working?</h2>
+    <input type="search" id="hlpq" placeholder="Search, e.g. phone won't connect" oninput="$('hlpl').innerHTML=helpFixes(this.value)" autocomplete="off">
+    <div id="hlpl">${helpFixes("")}</div>
+    <details class="fix about"><summary>About the ${esc(names[tab]||"")} screen</summary><ul class="helpl">${(HELP[tab]||[]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
+      <p class="mute">The <b>Next</b> bar at the top always shows the next thing to do.</p></details>
+    <div class="card" style="margin-top:12px"><b>Still stuck?</b><p class="mute" style="margin:4px 0 8px">Send a problem report to the kit owner, with the kit's logs.</p>
+      <button class="btn pri" onclick="reportSheet(${st&&!st.official?"true":"false"})">${st&&!st.official?"Report a kit problem":"Send a problem report"}</button></div>
+    <div class="row"><button class="btn" onclick="closeSheet()">Close</button><button class="btn" onclick="closeSheet();location.hash='#fix'">All troubleshooting ›</button></div>`;
   $("sheet").classList.add("on");
 }
 // ---------- one status for every race: Raced → Confirmed → Entered ----------
@@ -5885,7 +6090,7 @@ function dayChecks(){
   c.push({ok:st.connected&&!st.faults.length,label:"Timing box connected",hint:!st.connected?"Plug the timing box's USB cable into this computer":st.faults.length?"Check wiring: "+st.faults.join(", "):"Wiring OK"});
   { const e=st.estop||{};
     if(st.connected) c.push({ok:!!(e.req&&!e.on),label:"Emergency stop",hint:!e.req?"Update the timing box program to v3.12 – the emergency stop is required to race"
-      :e.on?"STOP – pressed or not connected. Twist to release, or check GP28 (pin 34) to GND":"Connected and released",btn:!e.req?"Updates":"",act:"sysView='setup';lastKey='';render()"}); }
+      :e.on?"STOP – pressed or not connected. Twist to release, or check GP28 (pin 34) to GND":"Connected and released",btn:!e.req?"Updates":"",act:"sysGo('upd')"}); }
   if(!isBasic()&&st.loc&&st.loc.venues.length) c.push({ok:!!st.loc.venue,opt:true,label:"Venue",hint:st.loc.venue?st.loc.venue.name:"Choose today's venue",btn:st.loc.venue?"":"Choose",act:"venueSheet()"});
   if(!isBasic()) c.push({ok:pg.mode!=null,label:"Heats for today",hint:pg.mode==="on"?"Program on":pg.mode==="off"?"No program – heats chosen by hand":"Choose the program, or No program",btn:"Program",act:"goTab('program')"});
   if(st.has_test){ const today=lt&&lt.date===st.today, bad=today&&(lt.missing.length||(lt.clash||[]).length);
@@ -5896,7 +6101,7 @@ function dayChecks(){
       :bad?"Found "+lt.missing.map(x=>x+" – no press").concat((lt.clash||[]).map(x=>x+" – went off together")).join(" · ")+". Fix and test again":"Done today at "+lt.at+", all buttons working",
       btn:can?(today?"Test again":"Start button test"):"",act:"cmd('test on')"}); }
   if(st.firewall&&st.firewall.state===false) c.push({opt:true,ok:false,label:"Phones can connect",hint:"Windows is blocking phones",btn:"Allow",act:"post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))"});
-  c.push({opt:true,ok:!!(st.join&&st.join.ssid),label:"Join card ready",hint:st.join&&st.join.ssid?"Wi-Fi: "+st.join.ssid:"Add the Wi-Fi name and password",btn:st.join&&st.join.ssid?"":"Setup",act:"sysView='setup';lastKey='';render()"});
+  c.push({opt:true,ok:!!(st.join&&st.join.ssid),label:"Join card ready",hint:st.join&&st.join.ssid?"Wi-Fi: "+st.join.ssid:"Add the Wi-Fi name and password",btn:st.join&&st.join.ssid?"":"Add",act:"sysGo('net')"});
   c.push({opt:true,ok:!!(st.backup&&st.backup.ok),label:"Backup stick",hint:st.backup?(st.backup.ok?"Copied to "+st.backup.where:st.backup.msg):"Not checked yet",btn:st.backup&&st.backup.ok?"":"Check",act:"post('/api/backup',{}).then(()=>{lastKey='';render()})"});
   return c;
 }
@@ -6833,9 +7038,10 @@ function renderTeamResults(){
       ${out.length?`<div class="mute">${out.map(x=>esc(crewOf(r.heat,x.lane)||"Lane "+x.lane)+" "+x.status).join(" · ")}</div>`:""}</div>`; }
   return h+`</div>`;
 }
+function tmReport(){ return `<p class="mute" style="text-align:center;margin:18px 0 6px;font-size:14px"><a href="#" onclick="reportSheet(true);return false">Report a kit problem</a></p>`; }
 function renderTeam(){
   const c=tmClub();
-  if(tmView!=="club"){ $("race").innerHTML=`<div class="tmv">${brandBar()}${tmTabs()}${tmView==="program"?renderTeamProgram():renderTeamResults()}</div>${homeBtn()}`; return; }
+  if(tmView!=="club"){ $("race").innerHTML=`<div class="tmv">${brandBar()}${tmTabs()}${tmView==="program"?renderTeamProgram():renderTeamResults()}${tmReport()}</div>${homeBtn()}`; return; }
   const typeIt=`<div class="row" style="margin-top:0"><input type="text" id="tmclub" list="tmlist" value="${esc(c)}" placeholder="Your club, e.g. Kurrawa" style="flex:1 1 220px">
     <datalist id="tmlist">${tmClubs.map(x=>`<option value="${esc(x)}">`).join("")}</datalist>
     <button class="btn pri" onclick="try{localStorage.setItem('irb_club',$('tmclub').value.trim())}catch(e){};tmAt=0;loadTeam().then(()=>{lastKey='';render()})">Show</button></div>`;
@@ -6865,7 +7071,7 @@ function renderTeam(){
   for(const r of tmData.results) h+=`<div class="prow" style="cursor:default"><span class="pn">${r.place?(r.tie?"=":"")+r.place:"–"}</span>
     <div><div class="pl">${esc(r.crew||"Lane "+r.lane)}</div><div class="ps">${esc(r.heat&&r.heat.div?heatLabel(r.heat):"Race "+r.race)}</div></div>
     <span style="text-align:right"><span class="tm2">${r.place?ft(r.t_us):esc(r.status)}</span><br>${r.protest?`<span class="chip prot">Under protest</span>`:`<span class="chip ${r.final?"now":"next"}">${r.final?"Final":"Provisional"}</span>`}</span></div>`;
-  $("race").innerHTML=h+`</div></div>`+homeBtn();
+  $("race").innerHTML=h+`</div>${tmReport()}</div>`+homeBtn();
 }
 let queue=[];
 async function loadHist(){ try{ hist=await (await fetch("/api/history")).json(); queue=await (await fetch("/api/queue")).json(); histAt=Date.now(); }catch(e){} }
@@ -7102,7 +7308,7 @@ function pinCard(){
   if(role==="master"&&st.access) return officialsCard()+joinCard();
   if(role!=="viewer") return `<div class="card"><h2>This device: ${ROLE_NAME[role]}${st.me?" · "+esc(st.me.name):""}</h2>
     <p class="mute">Approved by the timing desk for today. Access ends when the timing desk closes the event.</p>
-    <div class="row"><button class="btn" onclick="lockDevice()">Log out</button></div></div>`+joinCard();
+    <div class="row"><button class="btn" onclick="lockDevice()">Log out</button></div></div>`;
   return `<div class="card"><h2>View only</h2><div class="row"><button class="btn pri" onclick="openRequest()">Officials – ask for access</button></div></div>`;
 }
 let offOpen=false;
@@ -7179,7 +7385,7 @@ function wxCard(){
   const w=L.wx, n=(w&&w.now)||{}, t=nextTides(w), old=w&&Date.now()-w.at>45*60000;
   let h=`<div class="card wxc"><div class="wxtop"><div class="wxv">${venueLine(L)}</div><button class="btn sm" onclick="venueSheet()">Change</button></div>`;
   if(L.newspot&&st.role==="master") h+=`<div class="wxnew">Not at a saved venue. <button class="btn sm" onclick="hereSave()">Save this spot</button></div>`;
-  else if(!L.venues.length) h+=`<p class="mute" style="margin:6px 0 0">No saved venues yet – add them under Setup › Venue and location${L.gps.state==="3d"?", or save this spot":""}.</p>`;
+  else if(!L.venues.length) h+=`<p class="mute" style="margin:6px 0 0">No saved venues yet – add them under Event › Venue and weather${L.gps.state==="3d"?", or save this spot":""}.</p>`;
   if(w){
     const tn=L.tide_now;
     const line=[n.wind!=null?`Wind ${Math.round(n.wind)} km/h ${compass(n.wind_dir)}`:"",n.swell!=null?`Swell ${r1(n.swell)} m`:"",n.water!=null?`Water ${Math.round(n.water)}°`:"",
@@ -7239,13 +7445,11 @@ function locRows(master){
   let h=row("Venue today",venueLine(L)+(L.how==="auto"?"":`<br><span class="mute">${L.gps.state==="3d"?"Chosen by an official – GPS takes over again tomorrow":"Remembered until it's changed"}</span>`),`<button class="btn" onclick="venueSheet()">Change</button>`);
   if(master) h+=row("Saved venues",L.venues.length?L.venues.map(v=>`<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin:2px 0"><span>${esc(v.name)} <span class="mute">${v.lat.toFixed(4)}, ${v.lon.toFixed(4)} · ${v.radius>=1000?(v.radius/1000)+" km":v.radius+" m"}</span></span><button class="btn sm" onclick="venueEdit('${v.id}')">Edit</button></div>`).join(""):`<span class="mute">None yet</span>`,
       `<button class="btn" onclick="venueEdit()">Add</button>${L.gps.state==="3d"?`<button class="btn" onclick="hereSave()">Save this spot</button>`:""}`);
-  h+=row("GPS",esc(gpsText(L.gps))+(L.gps_msg?`<br><span class="mute">${esc(L.gps_msg)}</span>`:L.gps.state==="none"?`<br><span class="mute">Optional. A USB GPS picks the venue for you and keeps the clock right without internet. Plug it in after setting it up.</span>`:L.gps.state==="nofix"?`<br><span class="mute">Needs a clear view of the sky – a few minutes the first time.</span>`:""),
-      master&&L.gps.state==="none"?`<button class="btn" onclick="post('/api/loc',{gps_setup:true}).then(()=>toast('Setting up GPS…'))">Set up GPS</button>`:"");
   h+=row("Weather and tides",L.wx?`Forecast ${hm(L.wx.at)}${L.wx.for?" for "+esc(L.wx.for):""}${L.wx_msg?` <span class="mute">– ${esc(L.wx_msg)}</span>`:""}<br>${L.wx.tide_src==="worldtides"
         ?`Tide times from WorldTides${L.wx.tide_station?" – "+esc(L.wx.tide_station)+" station":" (model – no station within 50 km)"}, saved to ${new Date(L.wx.tides_until).toLocaleDateString([], {weekday:"short",day:"numeric",month:"short"})}`
         :`<span class="mute">Tide times approximate${L.keys.worldtides?"":" – add a WorldTides key for proper tide times"}</span>`}${L.tide_msg?`<br><span class="bad">${esc(L.tide_msg)}</span>`:""}${L.keys.worldtides?`<br><span class="mute">WorldTides credits used by this kit: ${L.tide_calls} (about 1 per venue every 5 days)</span>`:""}`
       :`<span class="mute">${esc(L.wx_msg||"Needs internet and a venue")}</span>`,
-      `<button class="btn" onclick="post('/api/loc',{refresh:true}).then(()=>toast('Refreshing…'))">Refresh</button>${master?`<button class="btn" onclick="tideKey()">Tide key</button>`:""}`);
+      `<button class="btn" onclick="post('/api/loc',{refresh:true}).then(()=>toast('Refreshing…'))">Refresh</button>`);
   return h;
 }
 function hereSave(){ const f=st.loc.fix; $("sheetin").innerHTML=`<h2>Save this spot</h2><p class="mute">GPS: ${f?f.lat.toFixed(5)+", "+f.lon.toFixed(5)+" (±"+f.acc+" m)":"no fix"}</p><label>Venue name<input id="hn" placeholder="North Kirra SLSC"></label>
@@ -7411,7 +7615,7 @@ function askUpdate(){ $("sheetin").innerHTML=`<h2>Update to v${esc(st.update.lat
 function askRollback(){ $("sheetin").innerHTML=`<h2>Go back to the previous version?</h2><p>Only if the new version has a problem. The app restarts in a few seconds.</p>
   <div class="row"><button class="btn red" onclick="closeSheet();updDo({rollback:true},'Going back – restarting…')">Yes, go back</button><button class="btn" onclick="closeSheet()">Cancel</button></div>`; $("sheet").classList.add("on"); }
 function restartWait(){ const was=st.app; let n=0;
-  try{ sessionStorage.setItem("irb_back",JSON.stringify({tab:tab,sys:sysView,was:was})); }catch(e){}   // come back here after the restart
+  try{ sessionStorage.setItem("irb_back",JSON.stringify({tab:tab,sys:sysPage||"upd",was:was})); }catch(e){}   // come back here after the restart
   const iv=setInterval(async()=>{ n++;
     try{ const s=await (await fetch("/api/state",{cache:"no-store"})).json(); if(s.app!==was||n>40){ clearInterval(iv); location.reload(); } }catch(e){} },1000); }
 function backAfterRestart(ok){
@@ -7555,7 +7759,7 @@ const GUIDES=[
     "Team managers: System › Today › Club codes › Print club codes. Hand each club its slip at check-in – it lets their team manager set Driver, Crew and Patient for their own crews.",
     "Watch the blue Next bar at the top. It always shows the next thing to do.",
     "After each race, check it on the Results tab and press Confirm results (or let the Admin do it).",
-    "End of day: every race ticked on the Results tab, then System › Setup › Start new event. That saves everything.",
+    "End of day: every race ticked on the Results tab, then System › Event › Start a new event. That saves everything.",
     "Something wrong? Press ? on any screen for fixes."]],
   ["Starter","SET, GO and FINISH.",[
     "Scan the join card: 1 for the Wi-Fi, 2 for the app. Tap Officials, type your name and show the code to the timing desk.",
@@ -7586,11 +7790,11 @@ const PI_DESK=["Timing desk","Your phone or tablet. You run the day – the Pi s
     "Officials scan the join card and tap Officials. Their name and a 3-digit code show under System – check the code on their phone, then tap their job.",
     "Team managers: System › Today › Club codes › Print club codes. Hand each club its slip at check-in – it lets their team manager set Driver, Crew and Patient for their own crews.",
     "Watch the blue Next bar at the top. After each race, check it on the Results tab and press Confirm results (or let the Admin do it).",
-    "End of day: every race ticked on the Results tab, System › Setup › Start new event, then System › Setup › Power off. When the green light stops, switch off at the wall."]];
+    "End of day: every race ticked on the Results tab, System › Event › Start a new event, then System › Kit owner › Battery and power › Power off. When the green light stops, switch off at the wall."]];
 const PI_PIN=["Timing desk PIN","Getting in – and what to do if it's forgotten.",[
     "The timing desk PIN lets a phone or tablet do everything the Pi's own screen can, so the box never needs opening.",
     "A new kit has no PIN: the first phone to open the app is asked to set one.",
-    "Change it: System › Setup › Advanced › Timing desk PIN. Other timing desk phones then need the new PIN.",
+    "Change it: System › Kit owner › Advanced › Timing desk PIN. Other timing desk phones then need the new PIN.",
     "Forgot it? The kit owner's PIN also logs in as timing desk – ask the owner.",
     "Or, at the timing box, between races: hold FINISH and GO down together for 15 seconds until it beeps 3 times. The PIN is cleared and timing desk phones are logged out. The next phone to open the app sets a new PIN.",
     "6 wrong PINs in 10 minutes blocks more tries for up to 10 minutes. The owner's PIN and the FINISH + GO reset still work."]];
@@ -7601,13 +7805,145 @@ function printGuides(){ let p=$("printcard"); if(!p){ p=document.createElement("
       <p class="gfoot">Stuck? Ask the timing desk. App address: ${esc((st.join||{}).url||"")}</p></div>`).join("")
     +`<div class="guide">${top}<h1>Hire kit checklist</h1><p class="gsub">Tick each item out, and back in when you pack up.</p>
       <table class="gkit"><tr><th>Item</th><th>Out</th><th>Back</th></tr>${(st.kit||"").split("\n").map(x=>x.trim()).filter(Boolean).map(x=>`<tr><td>${esc(x)}</td><td>☐</td><td>☐</td></tr>`).join("")}</table>
-      <h2>Packing up</h2><ol><li>Every race ticked on the Results tab.</li><li>System › Setup › Results to take home › Today – save the zip.</li>
-      <li>System › Setup › Start new event.</li><li>Battery on charge. Everything back in the box.</li></ol></div>`+troublePages(top);
+      <h2>Packing up</h2><ol><li>Every race ticked on the Results tab.</li><li>System › Kit owner › Results and backup › Results to take home › Today – save the zip.</li>
+      <li>System › Event › Start a new event.</li><li>Battery on charge. Everything back in the box.</li></ol></div>`+troublePages(top);
   try{ window.print(); }catch(e){ toast("Printing isn't available here"); } }
+// ================= System tab: Ready to race · Screens and QR codes · Event · Kit owner =================
+let sysPage=null, kitOpen=false, sysQ="", readyOpen=null, sysPages={};
+function sysFind(n){ for(const [id,p] of Object.entries(sysPages||{})) if(p.h&&p.h.includes('class="sn">'+n)){ sysGo(id); return id; } return null; }   // open the page that holds a setting
+function sysGo(p){ sysPage=p; sysQ=""; lastKey=""; render(); try{ window.scrollTo(0,0); }catch(e){} }
+// anything wrong anywhere on the kit shows in Ready to race, with the button to fix it. soft = worth knowing, not a problem
+function kitIssues(){ const I=[], u=st.update||{}, pu=st.pico_upd||{};
+  if(st.practice) I.push({label:"Practice is on",hint:"Races aren't saved",btn:"Turn off",act:"post('/api/practice',{on:false})"});
+  if(st.backup&&!st.backup.ok) I.push({label:"Backup problem",hint:st.backup.msg||"Check the backup stick",btn:"Open",act:"sysGo('results')"});
+  const b=st.batt; if(b!=null){ const w=battWord(b); if(w[1]!=="good") I.push({label:`Battery ${b.toFixed(1)} V`,hint:w[0],btn:"Open",act:"sysGo('power')"}); }
+  const p=st.pi_temp; if(p){ const w=tempWord(p); if(w&&w[1]!=="good") I.push({label:"Pi temperature "+p.temp.toFixed(0)+" °C",hint:w[0],btn:"Open",act:"sysGo('power')"});
+    if(p.volt!=null){ const v=voltWord(p); if(v[1]==="bad") I.push({label:"Pi power supply "+p.volt.toFixed(2)+" V",hint:v[0]+" – check the 5 V converter and cable",btn:"Open",act:"sysGo('power')"}); } }
+  const bx=st.box; if(bx&&bx.temp!=null){ const w=boxWord(bx.temp); if(w[1]!=="good") I.push({label:"Inside the box "+bx.temp.toFixed(0)+" °C",hint:w[0],btn:"Open",act:"sysGo('power')"}); }
+  const d=st.storage; if(d){ const w=diskWord(d); if(w[1]!=="good") I.push({label:"Storage "+d.free_gb.toFixed(1)+" GB free",hint:w[0],btn:"Open",act:"sysGo('power')"}); }
+  if(st.now_ms&&clockBad()) I.push({label:"Clock is wrong",hint:"Race times and dates will be off",btn:"Open",act:"sysGo('power')"});
+  if(st.firewall&&st.firewall.state===false) I.push({label:"Windows is blocking phones",hint:"Phones can't open the app",btn:"Open",act:"sysGo('net')"});
+  if(st.power&&st.power.pi&&st.access&&!st.access.master_pin) I.push({label:"Timing desk PIN not set",hint:"The first phone to open the app will be asked to choose one",btn:"Open",act:"sysGo('adv')"});
+  if(u.newer) I.push({soft:true,label:"Update ready",hint:"Timing app v"+u.latest,btn:"Open",act:"sysGo('upd')"});
+  else if(pu.newer&&st.connected) I.push({soft:true,label:"Update ready",hint:"Timing box program v"+pu.latest,btn:"Open",act:"sysGo('upd')"});
+  return I; }
+function reqHtml(){ const a=st.access; if(!a||!a.requests.length) return "";
+  return a.requests.map(r=>`<div class="req"><div><b style="font-size:20px">${esc(r.name)}</b><span class="code">${esc(r.code)}</span>
+      <div class="mute">Wants to join · check the code on their phone matches${r.usual?" · usually "+ROLE_NAME[r.usual]:""}</div></div>
+    <div class="row" style="margin-top:8px">${LV.map(l=>`<button class="btn ${r.usual===l?"pri":""}" onclick="approve('${r.id}','${l}')">${ROLE_NAME[l]}</button>`).join("")}
+      <button class="btn red" onclick="offDo({decline:'${r.id}'},'Declined')">Decline</button></div>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="rem_${r.id}" ${r.usual?"checked":""} style="width:auto"> Remember ${esc(r.name)} for next time</label></div>`).join(""); }
+function readyCard(master,test){
+  const c=dayChecks(), need=c.filter(x=>!x.ok&&!x.opt), iss=master?kitIssues():[], hard=iss.filter(x=>!x.soft), req=master&&st.access?st.access.requests.length:0;
+  const allOk=!need.length&&!hard.length&&!req&&!st.test, open=allOk?!!readyOpen:true;
+  if(!open) return `<div class="card rdy one"><button class="rdyline" onclick="readyOpen=true;lastKey='';render()"><span class="tick">✓</span><b>Ready to race</b><span class="mute">All checks done${iss.length?" · "+iss.length+" to look at":""}</span><span class="cv">▾</span></button></div>`;
+  const n=need.length+hard.length+req;
+  let h=`<div class="card rdy ${allOk?"":"todo"}"><div class="rdyh"><h2>Ready to race</h2><span class="rpill ${allOk?"ok":""}">${allOk?"All done":n+" to fix"}</span></div>`;
+  for(const x of c) h+=`<div class="chk1 ${x.ok?"ok":""} ${x.opt?"opt":""}"><span class="mk">${x.ok?"✓":x.opt?"–":"!"}</span>
+    <span class="tx">${esc(x.label)}${x.opt?" <span class='mute' style='font-weight:500'>(optional)</span>":""}<small>${esc(x.hint)}</small></span>
+    ${master&&x.btn&&!x.ok?`<button class="btn sm" onclick="${x.act}">${x.btn}</button>`:""}</div>`;
+  for(const x of iss) h+=`<div class="chk1 ${x.soft?"opt":""}"><span class="mk">${x.soft?"i":"!"}</span><span class="tx">${esc(x.label)}<small>${esc(x.hint)}</small></span>
+    <button class="btn sm" onclick="${x.act}">${x.btn}</button></div>`;
+  if(req) h+=reqHtml();
+  if(test) h+=test;
+  if(!master) h+=`<p class="mute" style="margin:8px 0 0;font-size:14px">Only the timing desk can change these.</p>`;
+  if(allOk) h+=`<div class="row"><button class="btn sm" onclick="readyOpen=false;lastKey='';render()">Hide</button></div>`;
+  return h+`</div>`; }
+function appBase(){ return (((st.join||{}).url)||location.origin).replace(/#.*$/,"").replace(/\/+$/,""); }
+function screensCard(master){
+  const b=appBase(), r=(icon,t,act)=>`<div class="scrow"><span class="sci" aria-hidden="true">${icon}</span><span class="scn">${t}</span><span class="scb">${act}</span></div>`;
+  const qo=(h,t)=>`<button class="btn sm" onclick="qrSheet('${b}/${h}','${t}')">QR</button><a class="btn sm" href="/${h}" target="_blank" style="text-decoration:none">Open</a>`;
+  let h=`<div class="card"><h2>Screens and QR codes</h2>`;
+  h+=r("⌗","Join card",`<button class="btn sm" onclick="joinSheet()">QR</button>`);
+  h+=r("▭","Results screen",qo("#board","Results screen"));
+  if(!isBasic()){ h+=r("⚑","Marshalling screen",qo("#marshalling","Marshalling screen")); h+=r("☺","Team Manager",qo("#team","Team Manager")); }
+  if(master&&!isBasic()) h+=r("⎙","Print role guides",`<button class="btn sm" onclick="printGuides()">Print</button>`);
+  return h+`</div>`; }
+function qrSheet(url,title){ $("sheetin").innerHTML=`<h2>${esc(title)}</h2><p class="mute" style="margin-top:0">Scan with a TV, tablet or phone on the kit's Wi-Fi.</p>
+  <div style="text-align:center">${qrSvg(url,260)}<div style="font-weight:700;margin-top:6px">${esc(url)}</div></div>
+  <div class="row"><a class="btn pri" href="${esc(url.replace(/^https?:\/\/[^/]+/,""))||"/"}" target="_blank" style="text-decoration:none">Open here</a><button class="btn" onclick="closeSheet()">Close</button></div>`; $("sheet").classList.add("on"); }
+function joinSheet(){ const j=st.join||{};
+  $("sheetin").innerHTML=`<h2>Join card</h2>${j.ssid?"":`<p class="warn" style="margin-top:0">${st.role==="master"?"Add the Wi-Fi name and password (Kit owner › Wi-Fi and phones) to put a Wi-Fi code on the card.":"Ask the timing desk to add the Wi-Fi for the Wi-Fi code."}</p>`}
+    ${joinCodes(200)}<div class="row"><button class="btn pri" onclick="downloadCard()">Download</button><button class="btn" onclick="printCard()">Print</button><button class="btn" onclick="closeSheet()">Close</button></div>`; $("sheet").classList.add("on"); }
+function eventCard(P,racing){
+  const b=st.brand||{}, r=(n,v,act,extra)=>`<button class="erow" onclick="${act}"><span class="en">${n}</span><span class="ev">${v}</span><span class="cv">›</span></button>`;
+  let h=`<div class="card ecard"><h2>Event</h2>`;
+  h+=r("Club and event",esc(b.club?b.club+(b.event?" · "+b.event:""):"Not set"),"brandSheet()");
+  h+=`<div class="erow nob"><span class="en">Mode</span><span class="ev">${isBasic()?"Basic":"Full"}</span><button class="btn sm" ${racing?"disabled":""} onclick="setMode('${isBasic()?"full":"basic"}')">Switch to ${isBasic()?"Full":"Basic"}</button></div>`;
+  h+=r("Lanes",st.lanes.length&&st.fw?st.lanes.length+" lanes":"–",racing||st.test?"toast('Change lanes between races')":"lanesSheet()");
+  if(P.venue.h) h+=r("Venue and weather",esc(P.venue.s),"sysGo('venue')");
+  if(P.officials.h&&!isBasic()) h+=r("Officials",esc(P.officials.s),"sysGo('officials')");
+  if(P.clubs.h) h+=r("Club codes",esc(P.clubs.s),"sysGo('clubs')");
+  if(!isBasic()) h+=`<div class="erow nob"><span class="en">Practice <span class="mute" style="font-weight:500">(results not saved)</span></span><span class="ev ${st.practice?"bad":""}">${st.practice?"On":"Off"}</span><button class="btn sm ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Turn off":"Turn on"}</button></div>`;
+  h+=r(`<span class="mute">Start a new event</span>`,(st.past_events||[]).length?"Last: "+esc(st.past_events[0]):"",racing?"toast('Finish the race first')":"askNewEvent()");
+  return h+`</div>`; }
+function kitCard(P){
+  let h=`<div class="card kcard"><button class="khead" onclick="kitOpen=!kitOpen;lastKey='';render()"><span class="kic" aria-hidden="true">${kitOpen?"▾":"▸"}</span><span><b>Kit owner</b><small>Updates, Wi-Fi, backup, power, hire</small></span></button>`;
+  if(kitOpen) for(const id of ["box","upd","net","results","power","owner","adv"]){ const p=P[id]; if(!p.h) continue;
+    h+=`<button class="erow" onclick="sysGo('${id}')"><span class="en">${esc(p.t)}</span><span class="ev">${esc(p.s||"")}</span><span class="cv">›</span></button>`; }
+  return h+`</div>`; }
+// ---------- one search for settings and fixes ----------
+function sysIndex(){ const out=[], P=sysPages||{};
+  const KW={net:"wifi wi-fi hotspot internet phones password network join",box:"timing box emergency stop e-stop wiring restart log pico usb",upd:"update updates version upgrade key go back",
+    results:"backup usb stick zip results take home download problem report",power:"battery power voltage volts temperature heat storage clock shut down restart turn off charge",
+    owner:"owner lock pin hire reset kit list checklist",adv:"app address ip pin desk tide key worldtides gps name screen versions report email gmail",
+    venue:"venue weather tide tides surf swell uv wind location beach",officials:"officials approve phones roles close event starter marshal",clubs:"club codes team managers"};
+  for(const [id,p] of Object.entries(P)){ if(!p.h) continue;
+    const names=[...p.h.matchAll(/class="sn">([^<]+)</g)].map(m=>m[1]), txt=(p.t+" "+names.join(" ")+" "+(KW[id]||"")).toLowerCase();
+    out.push({kind:"set",id:id,title:p.t,where:p.g==="kit"?"Kit owner":"Event",txt:txt,names:names}); }
+  const ev=[["Club and event","brandSheet()","club event name logo"],["Mode","","basic full mode"],["Lanes","lanesSheet()","lanes number how many"],["Practice","","practice training not saved"],["Start a new event","askNewEvent()","new event clear fresh start"],
+    ["Join card","joinSheet()","join card qr wifi wi-fi password scan"],["Results screen","qrSheet(appBase()+'/#board','Results screen')","results screen tv board big screen"]];
+  for(const [t,act,k] of ev) out.push({kind:"set",title:t,act:act||"sysQ='';sysSearch()",where:/Join|Results screen/.test(t)?"Screens and QR codes":"Event",txt:(t+" "+k).toLowerCase(),names:[]});
+  FIXES.forEach(([q,a],i)=>out.push({kind:"fix",i:i,title:q,txt:(q+" "+a).toLowerCase()}));
+  return out; }
+function sysResults(){ const q=sysQ.trim().toLowerCase(); if(!q) return "";
+  const words=q.split(/\s+/).map(w=>w.replace(/^wi-?fi$/,"wi")), hit=x=>words.every(w=>x.txt.includes(w)||(w==="wi"&&/wi-?fi/.test(x.txt)));
+  const all=sysIndex().filter(hit), set=all.filter(x=>x.kind==="set").slice(0,8), fix=all.filter(x=>x.kind==="fix").slice(0,8);
+  let h="";
+  if(set.length) h+=`<div class="shd">Settings</div><div class="card slist">`+set.map(x=>{ const sub=x.names.filter(n=>words.some(w=>n.toLowerCase().includes(w))).slice(0,3).join(" · ");
+    return `<button class="erow" onclick="${x.act?x.act:`sysGo('${x.id}')`}"><span class="en">${esc(x.title)}<small>${esc(x.where)}${sub?" › "+esc(sub):""}</small></span><span class="cv">›</span></button>`; }).join("")+`</div>`;
+  if(fix.length) h+=`<div class="shd">Fixes</div><div class="card slist">`+fix.map(x=>`<details class="fix"><summary><span class="ftag">Fix</span>${esc(x.title)}</summary><p>${esc(hsFix(FIXES[x.i][1]))}</p></details>`).join("")+`</div>`;
+  if(!h) h=`<div class="card"><p class="mute" style="margin:0">Nothing found for “${esc(sysQ)}”. Try one word, like wifi, battery or button.</p></div>`;
+  return h+`<div class="row"><button class="btn" onclick="sysQ='';lastKey='';render()">Clear search</button></div>`; }
+function sysSearch(){ const r=$("sysres"), b=$("sysbody"); if(!r) return; r.innerHTML=sysResults(); if(b) b.style.display=sysQ?"none":""; }
+// ---------- kit-owner location settings (GPS, tide key) ----------
+function locKitRows(){ const L=st.loc, row=(n,v,b)=>`<div class="srow"><div class="sn">${n}</div><div class="ss">${v}</div><div class="sb">${b||""}</div></div>`;
+  return row("GPS",esc(gpsText(L.gps))+(L.gps_msg?`<br><span class="mute">${esc(L.gps_msg)}</span>`:L.gps.state==="none"?`<br><span class="mute">Optional. A USB GPS picks the venue for you and keeps the clock right without internet. Plug it in after setting it up.</span>`:""),
+      L.gps.state==="none"?`<button class="btn" onclick="post('/api/loc',{gps_setup:true}).then(()=>toast('Setting up GPS…'))">Set up GPS</button>`:"")
+    +row("Tide key",L.keys.worldtides?`<span class="ok">Set</span><span class="mute"> · proper tide times from WorldTides</span>`:`<span class="mute">Not set – tide times are approximate</span>`,`<button class="btn" onclick="tideKey()">${L.keys.worldtides?"Change":"Add"}</button>`); }
+// ---------- problem reports: emailed to the kit owner, queued until there's internet ----------
+function reportRow(row,ownLocked){ const r=st.report||{};
+  return row("Problem report email",r.from&&r.to?`<span class="ok">Sends from ${esc(r.from)}</span><span class="mute"> to ${esc(r.to)}</span>${r.last?`<div class="mute" style="font-size:13px">Last: ${esc(r.last)}</div>`:""}`
+      :`<span class="mute">Not set – reports wait on the kit until the owner's email and the kit's Gmail are added</span>`,
+    ownLocked?`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`:`<button class="btn" onclick="reportSetSheet()">${r.from?"Change":"Set up"}</button>`); }
+function reportSetSheet(){ const r=st.report||{};
+  $("sheetin").innerHTML=`<h2>Problem report email</h2><p class="mute" style="margin-top:0">Reports go to the kit owner. The kit sends them from its own Gmail.</p>
+    <label>Send reports to<input id="rpt" type="email" value="${esc(r.to||"")}" placeholder="owner@yourbusiness.com"></label>
+    <ol class="mute" style="font-size:14px;padding-left:18px"><li>Make a Gmail for the kits and turn on 2-Step Verification.</li><li>Google Account › Security › App passwords › make one called “IRB kit”.</li><li>Enter the Gmail and the 16-letter app password here.</li></ol>
+    <label>Kit's Gmail<input id="rpf" type="email" value="${esc(r.from||"")}" placeholder="irbkit@gmail.com"></label>
+    <label>App password<input id="rpp" type="password" placeholder="${r.from?"(saved – leave empty to keep)":"16 letters"}"></label>
+    <div class="row"><button class="btn pri" id="rpgo">Save and send a test</button><button class="btn" onclick="closeSheet()">Cancel</button>${r.from?`<button class="btn red" onclick="post('/api/report',{setup:{from:'',pw:''}}).then(()=>{closeSheet();toast('Removed')})">Remove</button>`:""}</div><p class="bad" id="rpmsg"></p>`;
+  $("sheet").classList.add("on");
+  $("rpgo").onclick=async()=>{ $("rpmsg").textContent="Sending a test…"; const x=await post("/api/report",{setup:{to:$("rpt").value.trim(),from:$("rpf").value.trim(),pw:$("rpp").value.replace(/\s+/g,"")}});
+    if(x!=="ok"){ $("rpmsg").textContent=x; return; } closeSheet(); toast("Saved – test email sent"); }; }
+function reportSheet(tm){
+  $("sheetin").innerHTML=`<h2>${tm?"Report a kit problem":"Send a problem report"}</h2>
+    ${tm?`<p class="warn" style="margin-top:0">For protests or results questions, see the referee.</p>`:""}
+    <p class="mute" style="margin-top:0">Goes to the kit owner with the kit's logs – no passwords or crew names.</p>
+    <label>What happened? <span class="mute">(optional)</span><textarea id="rpn" rows="3" placeholder="Lane 4 button stopped working after race 12"></textarea></label>
+    <div class="row"><button class="btn pri" id="rpsend">Send</button><button class="btn" onclick="closeSheet()">Cancel</button></div><p class="bad" id="rpmsg"></p>`;
+  $("sheet").classList.add("on");
+  $("rpsend").onclick=async()=>{ $("rpsend").disabled=true;
+    let who=""; if(tm){ try{ who="Team Manager"+(localStorage.getItem("irb_club")?" – "+localStorage.getItem("irb_club"):""); }catch(e){ who="Team Manager"; } }
+    let j; try{ j=await (await fetch("/api/report",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({note:$("rpn").value.slice(0,1000),who:who,name:myName()})})).json(); }catch(e){ j={result:"No link to the timing computer"}; }
+    if(j.result!=="sent"&&j.result!=="queued"){ $("rpmsg").textContent=j.result; $("rpsend").disabled=false; return; }
+    closeSheet(); toast(j.result==="sent"?"Sent to the kit owner ✓":"Saved – it sends when the kit next has internet",5000); }; }
 function renderSystem(){
   if(!st){ $("system").innerHTML=""; return; }
-  const master=st.role==="master", setupOk=st.official;
-  if(!setupOk) sysView="today";
+  const master=st.role==="master";
+  if(sysView&&sysView!=="today"){ if(sysView==="setup") kitOpen=true; else sysPage=sysView; sysView="today"; }   // old links: "setup" opens the Kit owner folder
+  if(!master) sysPage=null;
+  const qf=document.activeElement&&document.activeElement.id==="sysq"?document.activeElement.selectionStart:null;
   const items=st.lanes.map(l=>"Lane "+l).concat(["SET","GO"]);
   // timing box: connection + wiring in one card; the full table only when something's wrong
   const box=`<div class="card"><h2>Timing box</h2>${st.connected?`<p class="ok" style="margin:0">Connected</p>
@@ -7616,122 +7952,122 @@ function renderSystem(){
       :`<p class="bad" style="margin:0">Not connected – plug the timing box's USB cable into this computer and close Thonny.</p>`}</div>`;
   const test=st.connected&&st.has_test&&(master||st.role==="starter")?testCard():"";
   const batt=healthCard();
-  const quiet=master&&sysView==="today"&&racedToday()&&!((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected));
-  let h=quiet?`<div class="sysnav quiet"><span class="mute">Today</span><button class="btn sm sysgo" aria-label="Setup – not needed during racing" onclick="sysView='setup';lastKey='';render()">Setup ›</button></div>`
-    :setupOk?`<div class="sysnav"><button class="btn ${sysView==="today"?"pri":""}" onclick="sysView='today';lastKey='';render()">Today</button>
-    <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected))?' <span class="badge">1</span>':""}</button></div>`:"";
-  let c="";
-  if(sysView==="today"){
-    if(master&&isBasic()) c=sysCols((st.test?test:"")+dayCard(), batt, joinCard()+`<div class="card"><h2>Results screen</h2>
-      <p class="mute" style="margin-top:0">The same finish order, read-only, for a TV, laptop or tablet on the kit's Wi-Fi. Phones that scan the join card see it too.</p>
-      <div class="row"><a class="btn pri" href="/#board" target="_blank" style="text-decoration:none">Open the results screen</a></div></div>`);
-    else if(master&&st.access) c=sysCols((st.test?test:"")+dayCard(), officialsCard()+clubCard()+batt, wxCard()+joinCard());   // the button test lives in the checklist; screens are under ?
-    else c=sysCols(box+test, pinCard()+(st.role==="admin"?clubCard():""), (st.role==="admin"?wxCard():"")+batt);
-  } else {
-    // Setup: one tidy list – a line per item, status in the middle, button on the right
-    const a=st.access||{net:{ssid:"",pass:"",addr:""},auto_url:"",master_pin:"",regulars:[]};
-    const racing=st.state==="ARMED"||st.state==="RACING";
-    const row=(name,status,btns,cls)=>`<div class="srow ${cls||""}"><div class="sn">${name}</div><div class="ss">${status}</div><div class="sb">${btns||""}</div></div>`;
-    let L="";
-    const G={event:"",box:"",upd:"",net:"",results:"",system:"",adv:""};
-    const ownLocked=!!(st.owner&&st.owner.set&&!st.owner.open);
-    if(master) G.event+=row("Mode", isBasic()?`<b>Basic</b> <span class="mute">– finish-line display: SET, GO, FINISH and the finish order</span>`:`<b>Full</b> <span class="mute">– LiveHeats, program, marshalling, officials' phones, screens</span>`,
-      `<button class="btn" ${racing?"disabled":""} onclick="setMode('${isBasic()?"full":"basic"}')">Switch to ${isBasic()?"Full":"Basic"}</button>`);
-    if(master) G.event+=row("Get started", st.setup_done?`<span class="mute">The setup steps for a new carnival</span>`:`<b class="okb">Showing on the Race tab</b>`,
-      st.setup_done?`<button class="btn" onclick="brandDo({setup_done:false},'Get started is on the Race tab');goTab('race')">Open</button>`:`<button class="btn" onclick="goTab('race')">Go there</button>`);
-    if(master) G.event+=row("Club and event", (st.brand||{}).club?`<b>${esc(st.brand.club)}</b>${st.brand.event?`<span class="mute"> · ${esc(st.brand.event)}</span>`:""}${st.brand.logo?` <span class="mute">· logo</span>`:""}`:`<span class="mute">Not set – shown on the screens and join card</span>`,
-      `<button class="btn" onclick="brandSheet()">Change</button>`);
-    if(master&&st.update&&ownLocked){ const u=st.update;
-      G.upd+=row("Timing app", `v${esc(u.current)}${u.newer?` · <b class="okb">v${esc(u.latest)} is out</b>`:""} · <span class="mute">the owner installs updates</span>`,
-        `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`); }
-    else if(master&&st.update){ const u=st.update;
-      G.upd+=row("Timing app", u.newer?`<b class="okb">New version v${esc(u.latest)} available</b>${u.notes.length?`<ul class="snotes">${u.notes.map(n=>`<li>${esc(n)}</li>`).join("")}</ul>`:""}`
-          :`v${esc(u.current)}${u.latest?` · <span class="ok">up to date</span>${u.checked?" (checked "+esc(u.checked)+")":""}`:""}${u.msg?`<div class="warn" style="margin-top:4px">${esc(u.msg)}</div>`:""}`,
-        (u.newer?`<button class="btn pri" ${racing||updBusy?"disabled":""} onclick="askUpdate()">Update</button>`:"")
-        +`<button class="btn" ${updBusy?"disabled":""} onclick="updDo({check:true},'Checked')">Check</button>`
-        +(u.prev?`<button class="btn" ${racing||updBusy?"disabled":""} onclick="askRollback()">Go back${u.prev!=="earlier"?" to v"+esc(u.prev):""}</button>`:""), u.newer?"hi":""); }
-    if(master&&st.power&&st.power.pi&&st.access&&!st.access.master_pin) G.system+=row("Timing desk PIN", `<b class="bad">Not set</b><span class="mute"> – the first phone to open the app will be asked to choose one. Set it now if you're at the Pi's screen.</span>`,
-      ownLocked?`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`:`<button class="btn pri" onclick="advOpen=true;lastKey='';render();setTimeout(()=>{const e=$('mpin');if(e){e.scrollIntoView({block:'center'});e.focus();}},50)">Set PIN</button>`,"hi");
-    if(master&&st.wifi&&st.wifi.on) G.net+=(st.inet&&st.inet.two)?hotspotRow(row)+inetRow(row):wifiRow(row,racing);
-    if(master&&st.access&&st.wifi&&st.wifi.on&&st.wifi.hotspot){ if(!(st.inet&&st.inet.two)) G.net+=hsRow(row,racing,ownLocked); }
-    else if(master&&st.access) G.net+=row("Wi-Fi for join card", `<div class="sin"><input type="text" id="wssid" value="${esc(a.net.ssid)}" placeholder="Wi-Fi name">
-        <input type="text" id="wpass" value="${esc(a.net.pass)}" placeholder="Password"></div>`,
-      `<button class="btn" onclick="offDo({net:{ssid:$('wssid').value,pass:$('wpass').value,addr:a_addr()}},'Saved')">Save</button>`);
-    G.results+=row("Backup", st.backup?`<span class="${st.backup.ok?"ok":"bad"}">${st.backup.ok?"Copied "+esc(st.backup.at):esc(st.backup.msg)}</span>`:`<span class="mute">USB stick with an <b>IRB_backup</b> folder</span>`,
-      master?`<button class="btn" onclick="post('/api/backup',{}).then(()=>toast('Backup done'))">Back up now</button>`:"");
-    if(master&&!isBasic()) G.event+=row("Practice mode", st.practice?`<b class="bad">ON – races aren't saved</b>`:`<span class="mute">Off · for training, races aren't saved</span>`,
-      `<button class="btn ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Turn off":"Turn on"}</button>`);
-    G.box+=row("Timing box", st.connected?(st.faults.length?`<span class="bad">Wiring fault: ${esc(st.faults.join(", "))}</span>`
-        :`<span class="ok">Connected · wiring OK</span>`):`<span class="bad">Not connected – plug its USB cable into this computer</span>`, "");
-    if(master&&st.connected){ const e=st.estop||{};
-      G.box+=row("Emergency stop", e.req?(e.on?`<span class="bad">STOP – pressed or not connected. Twist the button to release, or check its wiring: GP28 (pin 34) to GND, normally-closed contact</span>`
-          :`<span class="ok">Always on · all clear</span> <span class="mute">– required to race. Pressing it stops every race, flashes every light and sounds the siren</span>`)
-        :!e.cmd?`<span class="mute">Needs timing box program v3.12 – update it under Updates</span>`
-        :e.on?`<span class="bad">PRESSED – twist the button on the box to release</span>`
-        :e.fitted?`<span class="ok">Fitted · all clear</span> <span class="mute">– pressing it stops every race, flashes every light and sounds the siren</span>`
-        :`<span class="mute">Not fitted – turn on once a latching E-stop is wired to GP28 (normally-closed contact to GND)</span>`,
-        e.cmd&&!e.on&&!e.req?`<button class="btn" ${racing?"disabled":""} onclick="estopFit(${!e.fitted})">${e.fitted?"Not fitted":"It's fitted"}</button>`:""); }
-    if(master) G.event+=row("Lanes", lanesWord(), `<button class="btn" ${racing||st.test?"disabled":""} onclick="lanesSheet()">Change</button>`);
-    if(master&&st.pico_upd) G.upd+=picoRow(row,racing,ownLocked);
-    if(master&&st.firewall&&st.firewall.state!=null) G.net+=row("Phones", st.firewall.state?`<span class="ok">Windows lets phones connect</span>`:`<span class="bad">Windows is blocking phones${st.firewall.busy?" – answer Yes on the Windows prompt":""}</span>`,
-      st.firewall.state||st.firewall.busy?"":`<button class="btn pri" onclick="post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))">Allow phones</button>`);
-    if(master) G.results+=row("Results to take home", `<span class="mute">Results spreadsheet, program and race log as a zip file</span>`,
-      `<a class="btn" href="/event_pack.zip" download>Today</a>${(st.past_events||[]).length?`<button class="btn" onclick="packSheet()">Saved events</button>`:""}`);
-    if(master) G.results+=row("Problem report", `<span class="mute">If something went wrong, send this file to the kit owner – no passwords in it</span>`,
-      `<a class="btn" href="/diagnostics.zip" download>Download</a><button class="btn" onclick="post('/api/diagnostics',{}).then(()=>toast('Checked the USB stick'))">Save to USB</button>`);
-    if(master&&st.owner) G.system+=row("Owner lock", !st.owner.set?`<span class="mute">Off · set an owner PIN before hiring the kit out – it locks updates and advanced settings</span>`
-        :st.owner.open?`<b class="okb">Unlocked</b><span class="mute"> · locks again in ${st.owner.mins} min</span>`:`<b>On</b><span class="mute"> · updates and advanced settings are locked</span>`,
-      !st.owner.set?`<button class="btn" onclick="ownerSheet('set')">Set PIN</button>`:st.owner.open?`<button class="btn" onclick="ownDo({lock:true},'Locked')">Lock now</button><button class="btn" onclick="ownerSheet('set')">Change PIN</button>`
-        :`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
-    if(master) G.event+=row("New event", (st.past_events||[]).length?`<span class="mute">Last saved: ${esc(st.past_events[0])}</span>`:`<span class="mute">Saves today, then clears for a fresh start</span>`,
-      `<button class="btn red" ${racing?"disabled":""} onclick="askNewEvent()">Start new event</button>`);
-    { const c=st.batt_cfg||{};
-      if(master&&st.connected) G.system+=row("Battery reading", !c.cmd?`<span class="mute">Needs timing box program v3.9 – update it above</span>`
-        :c.on?`<span class="ok">On</span> <span class="mute">· GP26 through a 100k/10k divider · calibrate it to a multimeter so it reads exactly</span>`
-        :`<span class="mute">Off – wire a 100k and a 10k resistor in series from battery + to GND, the middle to GP26 (pin 31), battery − to the Pico's GND, then turn it on</span>`,
-        c.cmd?(c.on?`<button class="btn" onclick="battCalSheet()">Calibrate</button><button class="btn" onclick="battSet(false)">Turn off</button>`:`<button class="btn pri" onclick="battSet(true)">Turn on</button>`):""); }
-    if(master&&st.power&&st.power.on) G.system+=row("Power", `<span class="mute">Turn the timing ${st.power.pi?"Pi":"computer"} off safely – no need to open the case</span>`,
-      `<button class="btn" ${racing?"disabled":""} onclick="powerAsk('restart')">Restart</button><button class="btn red" ${racing?"disabled":""} onclick="powerAsk('off')">Power off</button>`);
-    {
-      let A="";
-      if(master&&st.access&&ownLocked) A+=row("App address and timing desk PIN", `<span class="mute">Locked by the owner</span>`, `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
-      if(master&&st.access&&!ownLocked) A+=row("App address", `<div class="sin"><input type="text" id="waddr" value="${esc(a.net.addr)}" placeholder="${esc(a.auto_url)}"></div>
-          <div class="mute" style="font-size:13px">Empty = ${esc(a.auto_url)} · set it once the router gives this computer a fixed address</div>`,
-          `<button class="btn" onclick="offDo({net:{ssid:a_ssid(),pass:a_pass(),addr:$('waddr').value}},'Saved')">Save</button>`)
-        +row("Timing desk PIN", `<div class="sin"><input type="text" id="mpin" inputmode="numeric" value="${esc(a.master_pin)}" placeholder="off" style="max-width:140px"></div>
-          <div class="mute" style="font-size:13px">Lets a phone or tablet do everything the ${st.power&&st.power.pi?"Pi's own screen":"timing computer"} can · stays unlocked until Close event, New event or a new PIN · empty = off</div>`, `<button class="btn" onclick="offDo({master_pin:$('mpin').value},'Saved')">Save</button>`)
-        +(a.regulars&&a.regulars.length?row("Remembered officials", a.regulars.map(r=>`<span class="rchip">${esc(r.name)} · ${ROLE_NAME[r.role]}
-          <button class="btn sm" onclick="offDo({forget:'${esc(r.name).replace(/'/g,"")}'},'Forgotten')">✕</button></span>`).join(" "),""):"");
-      if(st.local||!st.me) A+=row("Your name", `<div class="sin"><input type="text" id="myname" value="${esc(myName())}" placeholder="Name or initials" style="max-width:200px"></div>`,
-        `<button class="btn" onclick="setMyName($('myname').value);toast('Saved');lastKey='';render()">Save</button>`);
-      A+=row("Screen", `<span class="mute">${wakeMsg}</span>`, "");
-      if(st.connected) G.box+=row("Timing box messages", `<div class="msgs" style="max-height:120px;overflow:auto">${st.messages.map(m=>esc(m[0]+"  "+m[1])).join("\n")||"—"}</div>`, "");
-      if(master&&!ownLocked) G.upd+=row("Updates key", st.upd_key?`<span class="ok">Set</span><span class="mute"> · updates come from the private repository</span>`
-          :`<span class="mute">Not set – only needed once the GitHub repository is private</span>`,
-        ownLocked?"":`<button class="btn" onclick="keySheet()">${st.upd_key?"Change":"Add"}</button>${st.upd_key?`<button class="btn" onclick="askYes('Remove the updates key? Updates stop working if the repository is private.',()=>keyDo(''),'Yes, remove')">Remove</button>`:""}`);
-      if(master) G.system+=row("Hire-out reset", !(st.owner&&st.owner.set)?`<span class="mute">Set an owner PIN first – then this gets the kit ready for the next hirer</span>`
-          :`<span class="mute">Ready for the next hirer: saves today, then clears results, officials, the timing desk PIN, the join-card Wi-Fi and the club name</span>`,
-        st.owner&&st.owner.set?`<button class="btn red" ${racing?"disabled":""} onclick="hireSheet()">Reset for next hire</button>`:"");
-      if(master) G.system+=row("Hire kit list", `<span class="mute">${esc((st.kit||"").split("\n").length)} items · printed with the role guides</span>`, ownLocked?"":`<button class="btn" onclick="kitSheet()">Edit</button>`);
-      if(master&&st.connected&&!ownLocked) G.box+=row("Restart timing program", `<span class="mute">Only if the screen says the timing program stopped – clears any race in progress</span>`,
-        `<button class="btn red" onclick="askYes('Restart the timing program in the timing box? Any race in progress is cleared.',()=>cmd('restart'),'Yes, restart')">Restart</button>`);
-      if(!master) A+=row("Versions", `App v${esc(st.app)} · timing box program v${esc(st.fw||"?")}${st.port?" on "+esc(st.port):""}`, "");
-      G.adv=A;
-    }
-    { const b=st.brand||{}, u=st.update||{}, w=st.wifi||{}, i=st.inet||{}, pu=st.pico_upd||{};
-      const updBad=u.newer||(pu.newer&&st.connected)||!!pu.busy;
-      const sysBad=!!(st.power&&st.power.pi&&st.access&&!st.access.master_pin);   // kit health warnings show on Today and the Race tab
-      L=sec("event","Today's event",[b.club||"Club not set",st.lanes.length&&st.fw?st.lanes.length+" lanes":"",st.practice?"PRACTICE MODE ON":""].filter(Boolean).join(" · "),G.event,st.practice)
-       +sec("box","Timing box",!st.connected?"Not connected":st.faults.length?"Wiring fault: "+st.faults.length:"Connected · wiring OK"+(st.fw?" · v"+st.fw:""),G.box,!st.connected||st.faults.length)
-       +sec("upd","Updates",pu.busy?"Updating the timing box…":["App v"+st.app+(u.newer?" → v"+u.latest+" available":" up to date"),st.connected&&pu.current?"Timing box v"+pu.current+(pu.newer?" → v"+pu.latest+" available":" up to date"):"Timing box not connected"].join(" · "),G.upd,updBad)
-       +(G.net?sec("net","Wi-Fi and phones",w.on?[w.mode==="hotspot"?"On the timing hotspot":w.mode==="wifi"?"Home Wi-Fi: "+w.name:"No Wi-Fi",w.hs_ssid?"hotspot "+w.hs_ssid:"",i.two?(i.name?"internet via "+i.name:"no internet Wi-Fi"):""].filter(Boolean).join(" · "):"Join card Wi-Fi and phones",G.net,false):"")
-       +(st.loc&&!isBasic()?sec("loc","Venue and location",[st.loc.venue?st.loc.venue.name:"no venue",gpsText(st.loc.gps)].join(" · "),locRows(master),false):"")
-       +sec("results","Results and backup",st.backup?(st.backup.ok?"Backed up "+st.backup.at:"Backup problem"):"Results zip, USB backup, problem report",G.results,st.backup&&!st.backup.ok)
-       +sec("system","Battery, power and owner lock",[(st.batt_cfg||{}).on?"battery reading on":"",st.owner&&st.owner.set?(st.owner.open?"owner lock unlocked":"owner lock on"):"owner lock off","hire kit list"].filter(Boolean).join(" · "),G.system,sysBad)
-       +sec("adv","Advanced","App address, timing desk PIN, your name",G.adv,false); }
-    c=`<div class="card slist">${L}</div>`;
+  const racing=st.state==="ARMED"||st.state==="RACING";
+  let G={};
+  if(master){
+      const a=st.access||{net:{ssid:"",pass:"",addr:""},auto_url:"",master_pin:"",regulars:[]};
+      const racing=st.state==="ARMED"||st.state==="RACING";
+      const row=(name,status,btns,cls)=>`<div class="srow ${cls||""}"><div class="sn">${name}</div><div class="ss">${status}</div><div class="sb">${btns||""}</div></div>`;
+      let L="";
+      G={event:"",box:"",upd:"",net:"",results:"",power:"",owner:"",adv:""};
+      const ownLocked=!!(st.owner&&st.owner.set&&!st.owner.open);
+      if(master&&st.update&&ownLocked){ const u=st.update;
+        G.upd+=row("Timing app", `v${esc(u.current)}${u.newer?` · <b class="okb">v${esc(u.latest)} is out</b>`:""} · <span class="mute">the owner installs updates</span>`,
+          `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`); }
+      else if(master&&st.update){ const u=st.update;
+        G.upd+=row("Timing app", u.newer?`<b class="okb">New version v${esc(u.latest)} available</b>${u.notes.length?`<ul class="snotes">${u.notes.map(n=>`<li>${esc(n)}</li>`).join("")}</ul>`:""}`
+            :`v${esc(u.current)}${u.latest?` · <span class="ok">up to date</span>${u.checked?" (checked "+esc(u.checked)+")":""}`:""}${u.msg?`<div class="warn" style="margin-top:4px">${esc(u.msg)}</div>`:""}`,
+          (u.newer?`<button class="btn pri" ${racing||updBusy?"disabled":""} onclick="askUpdate()">Update</button>`:"")
+          +`<button class="btn" ${updBusy?"disabled":""} onclick="updDo({check:true},'Checked')">Check</button>`
+          +(u.prev?`<button class="btn" ${racing||updBusy?"disabled":""} onclick="askRollback()">Go back${u.prev!=="earlier"?" to v"+esc(u.prev):""}</button>`:""), u.newer?"hi":""); }
+      if(master&&st.power&&st.power.pi&&st.access&&!st.access.master_pin) G.adv+=row("Timing desk PIN", `<b class="bad">Not set</b><span class="mute"> – the first phone to open the app will be asked to choose one. Set it now if you're at the Pi's screen.</span>`,
+        ownLocked?`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`:`<button class="btn pri" onclick="setTimeout(()=>{const e=$('mpin');if(e){e.scrollIntoView({block:'center'});e.focus();}},50)">Set PIN</button>`,"hi");
+      if(master&&st.wifi&&st.wifi.on) G.net+=(st.inet&&st.inet.two)?hotspotRow(row)+inetRow(row):wifiRow(row,racing);
+      if(master&&st.access&&st.wifi&&st.wifi.on&&st.wifi.hotspot){ if(!(st.inet&&st.inet.two)) G.net+=hsRow(row,racing,ownLocked); }
+      else if(master&&st.access) G.net+=row("Wi-Fi for join card", `<div class="sin"><input type="text" id="wssid" value="${esc(a.net.ssid)}" placeholder="Wi-Fi name">
+          <input type="text" id="wpass" value="${esc(a.net.pass)}" placeholder="Password"></div>`,
+        `<button class="btn" onclick="offDo({net:{ssid:$('wssid').value,pass:$('wpass').value,addr:a_addr()}},'Saved')">Save</button>`);
+      G.results+=row("Backup", st.backup?`<span class="${st.backup.ok?"ok":"bad"}">${st.backup.ok?"Copied "+esc(st.backup.at):esc(st.backup.msg)}</span>`:`<span class="mute">USB stick with an <b>IRB_backup</b> folder</span>`,
+        master?`<button class="btn" onclick="post('/api/backup',{}).then(()=>toast('Backup done'))">Back up now</button>`:"");
+      G.box+=row("Timing box", st.connected?(st.faults.length?`<span class="bad">Wiring fault: ${esc(st.faults.join(", "))}</span>`
+          :`<span class="ok">Connected · wiring OK</span>`):`<span class="bad">Not connected – plug its USB cable into this computer</span>`, "");
+      if(master&&st.connected){ const e=st.estop||{};
+        G.box+=row("Emergency stop", e.req?(e.on?`<span class="bad">STOP – pressed or not connected. Twist the button to release, or check its wiring: GP28 (pin 34) to GND, normally-closed contact</span>`
+            :`<span class="ok">Always on · all clear</span> <span class="mute">– required to race. Pressing it stops every race, flashes every light and sounds the siren</span>`)
+          :!e.cmd?`<span class="mute">Needs timing box program v3.12 – update it under Updates</span>`
+          :e.on?`<span class="bad">PRESSED – twist the button on the box to release</span>`
+          :e.fitted?`<span class="ok">Fitted · all clear</span> <span class="mute">– pressing it stops every race, flashes every light and sounds the siren</span>`
+          :`<span class="mute">Not fitted – turn on once a latching E-stop is wired to GP28 (normally-closed contact to GND)</span>`,
+          e.cmd&&!e.on&&!e.req?`<button class="btn" ${racing?"disabled":""} onclick="estopFit(${!e.fitted})">${e.fitted?"Not fitted":"It's fitted"}</button>`:""); }
+      if(master&&st.pico_upd) G.upd+=picoRow(row,racing,ownLocked);
+      if(master&&st.firewall&&st.firewall.state!=null) G.net+=row("Phones", st.firewall.state?`<span class="ok">Windows lets phones connect</span>`:`<span class="bad">Windows is blocking phones${st.firewall.busy?" – answer Yes on the Windows prompt":""}</span>`,
+        st.firewall.state||st.firewall.busy?"":`<button class="btn pri" onclick="post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))">Allow phones</button>`);
+      if(master) G.results+=row("Results to take home", `<span class="mute">Results spreadsheet, program and race log as a zip file</span>`,
+        `<a class="btn" href="/event_pack.zip" download>Today</a>${(st.past_events||[]).length?`<button class="btn" onclick="packSheet()">Saved events</button>`:""}`);
+      if(master) G.results+=row("Problem report", `<span class="mute">Logs and settings for the kit owner – no passwords, no crew names</span>${(st.report||{}).queued?`<div class="mute" style="font-size:13px">${st.report.queued} waiting to send – they go when the kit next has internet</div>`:""}`,
+        `<button class="btn" onclick="reportSheet()">Send</button><a class="btn" href="/diagnostics.zip" download>Download</a><button class="btn" onclick="post('/api/diagnostics',{}).then(()=>toast('Checked the USB stick'))">Save to USB</button>`);
+      if(master&&st.owner) G.owner+=row("Owner lock", !st.owner.set?`<span class="mute">Off · set an owner PIN before hiring the kit out – it locks updates and advanced settings</span>`
+          :st.owner.open?`<b class="okb">Unlocked</b><span class="mute"> · locks again in ${st.owner.mins} min</span>`:`<b>On</b><span class="mute"> · updates and advanced settings are locked</span>`,
+        !st.owner.set?`<button class="btn" onclick="ownerSheet('set')">Set PIN</button>`:st.owner.open?`<button class="btn" onclick="ownDo({lock:true},'Locked')">Lock now</button><button class="btn" onclick="ownerSheet('set')">Change PIN</button>`
+          :`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
+      { const c=st.batt_cfg||{};
+        if(master&&st.connected) G.power+=row("Battery reading", !c.cmd?`<span class="mute">Needs timing box program v3.9 – update it above</span>`
+          :c.on?`<span class="ok">On</span> <span class="mute">· GP26 through a 100k/10k divider · calibrate it to a multimeter so it reads exactly</span>`
+          :`<span class="mute">Off – wire a 100k and a 10k resistor in series from battery + to GND, the middle to GP26 (pin 31), battery − to the Pico's GND, then turn it on</span>`,
+          c.cmd?(c.on?`<button class="btn" onclick="battCalSheet()">Calibrate</button><button class="btn" onclick="battSet(false)">Turn off</button>`:`<button class="btn pri" onclick="battSet(true)">Turn on</button>`):""); }
+      if(master&&st.power&&st.power.on) G.power+=row("Power", `<span class="mute">Turn the timing ${st.power.pi?"Pi":"computer"} off safely – no need to open the case</span>`,
+        `<button class="btn" ${racing?"disabled":""} onclick="powerAsk('restart')">Restart</button><button class="btn red" ${racing?"disabled":""} onclick="powerAsk('off')">Power off</button>`);
+      {
+        let A="";
+        if(master&&st.access&&ownLocked) A+=row("App address and timing desk PIN", `<span class="mute">Locked by the owner</span>`, `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
+        if(master&&st.access&&!ownLocked) A+=row("App address", `<div class="sin"><input type="text" id="waddr" value="${esc(a.net.addr)}" placeholder="${esc(a.auto_url)}"></div>
+            <div class="mute" style="font-size:13px">Empty = ${esc(a.auto_url)} · set it once the router gives this computer a fixed address</div>`,
+            `<button class="btn" onclick="offDo({net:{ssid:a_ssid(),pass:a_pass(),addr:$('waddr').value}},'Saved')">Save</button>`)
+          +row("Timing desk PIN", `<div class="sin"><input type="text" id="mpin" inputmode="numeric" value="${esc(a.master_pin)}" placeholder="off" style="max-width:140px"></div>
+            <div class="mute" style="font-size:13px">Lets a phone or tablet do everything the ${st.power&&st.power.pi?"Pi's own screen":"timing computer"} can · stays unlocked until Close event, New event or a new PIN · empty = off</div>`, `<button class="btn" onclick="offDo({master_pin:$('mpin').value},'Saved')">Save</button>`)
+          +""; if(master&&st.access&&a.regulars&&a.regulars.length) G.net+=(row("Officials' phones", a.regulars.map(r=>`<span class="rchip">${esc(r.name)} · ${ROLE_NAME[r.role]}
+            <button class="btn sm" onclick="offDo({forget:'${esc(r.name).replace(/'/g,"")}'},'Forgotten')">✕</button></span>`).join(" ")+`<div class="mute" style="font-size:13px;margin-top:4px">These officials rejoin without asking again</div>`,""));
+        if(st.local||!st.me) A+=row("Your name", `<div class="sin"><input type="text" id="myname" value="${esc(myName())}" placeholder="Name or initials" style="max-width:200px"></div>`,
+          `<button class="btn" onclick="setMyName($('myname').value);toast('Saved');lastKey='';render()">Save</button>`);
+        A+=row("Screen", `<span class="mute">${wakeMsg}</span>`, "");
+        if(st.connected) G.box+=row("Timing box log", `<div class="msgs" style="max-height:120px;overflow:auto">${st.messages.map(m=>esc(m[0]+"  "+m[1])).join("\n")||"—"}</div>`, "");
+        if(master&&!ownLocked) G.upd+=row("Updates key", st.upd_key?`<span class="ok">Set</span><span class="mute"> · updates come from the private repository</span>`
+            :`<span class="mute">Not set – only needed once the GitHub repository is private</span>`,
+          ownLocked?"":`<button class="btn" onclick="keySheet()">${st.upd_key?"Change":"Add"}</button>${st.upd_key?`<button class="btn" onclick="askYes('Remove the updates key? Updates stop working if the repository is private.',()=>keyDo(''),'Yes, remove')">Remove</button>`:""}`);
+        if(master) G.owner+=row("Hire-out reset", !(st.owner&&st.owner.set)?`<span class="mute">Set an owner PIN first – then this gets the kit ready for the next hirer</span>`
+            :`<span class="mute">Ready for the next hirer: saves today, then clears results, officials, the timing desk PIN, the join-card Wi-Fi and the club name</span>`,
+          st.owner&&st.owner.set?`<button class="btn red" ${racing?"disabled":""} onclick="hireSheet()">Reset for next hire</button>`:"");
+        if(master) G.owner+=row("Hire kit list", `<span class="mute">${esc((st.kit||"").split("\n").length)} items · printed with the role guides</span>`, ownLocked?"":`<button class="btn" onclick="kitSheet()">Edit</button>`);
+        if(master&&st.connected&&!ownLocked) G.box+=row("Restart timing program", `<span class="mute">Only if the screen says the timing program stopped – clears any race in progress</span>`,
+          `<button class="btn red" onclick="askYes('Restart the timing program in the timing box? Any race in progress is cleared.',()=>cmd('restart'),'Yes, restart')">Restart</button>`);
+        if(master&&st.loc&&!isBasic()) A+=locKitRows();
+        if(master) A+=reportRow(row,ownLocked);
+        A+=row("Versions", `App v${esc(st.app)} · timing box program v${esc(st.fw||"?")}${st.port?" on "+esc(st.port):""}`, "");
+        G.adv=A+G.adv;
+      }
   }
-  $("system").innerHTML=h+c;
+  const u=st.update||{}, pu=st.pico_upd||{}, w=st.wifi||{}, L=st.loc, ol=!!(st.owner&&st.owner.set&&!st.owner.open);
+  // the pages: Event ones change per carnival, Kit owner ones are set once
+  const P={
+    venue:{t:"Venue and weather",g:"event",s:L&&L.venue?L.venue.name:"No venue",h:L&&!isBasic()?locRows(master):""},
+    officials:{t:"Officials",g:"event",s:st.access?st.access.officials.length+" signed in":"",h:st.access?officialsCard():""},
+    clubs:{t:"Club codes",g:"event",s:(st.clubs||[]).length+" clubs",h:clubCard()},
+    box:{t:"Timing box and emergency stop",g:"kit",s:!st.connected?"Not connected":st.faults.length?"Wiring fault":"v"+(st.fw||"?")+" · OK",h:G.box},
+    upd:{t:"Updates",g:"kit",s:u.newer?"App v"+u.latest+" ready":pu.newer&&st.connected?"Timing box v"+pu.latest+" ready":"Up to date",h:G.upd},
+    net:{t:"Wi-Fi and phones",g:"kit",s:w.on?(w.mode==="hotspot"?"Hotspot on":w.mode==="wifi"?"Wi-Fi: "+(w.name||""):"No Wi-Fi"):(st.join&&st.join.ssid?"Join card: "+st.join.ssid:""),h:G.net},
+    results:{t:"Results and backup",g:"kit",s:st.backup?(st.backup.ok?"Backed up "+st.backup.at:"Backup problem"):"Take-home zip, backup stick",h:G.results},
+    power:{t:"Battery and power",g:"kit",s:st.batt!=null?st.batt.toFixed(1)+" V":"",h:healthCard()+(G.power?`<div class="card slist">${G.power}</div>`:"")},
+    owner:{t:"Owner lock and hire",g:"kit",s:st.owner&&st.owner.set?(st.owner.open?"Unlocked":"Locked"):"No owner PIN",h:G.owner},
+    adv:{t:"Advanced",g:"kit",s:"App address, desk PIN, tide key, reports",h:G.adv},
+  };
+  sysPages=P;
+  const srch=`<div class="sysq"><span aria-hidden="true">⌕</span><input id="sysq" type="search" placeholder="Search settings and fixes" value="${esc(sysQ)}" oninput="sysQ=this.value;sysSearch()" autocomplete="off"></div>`;
+  const top=(master?srch:"")+`<div id="sysres">${sysQ?sysResults():""}</div>`, hide=sysQ?' style="display:none"':"";
+  const ready=readyCard(master,st.test?test:"");
+  let rest=screensCard(master);
+  if(master){
+    if(!isBasic()&&L) rest+=wxCard();
+    rest+=eventCard(P,racing)+kitCard(P);
+  } else rest+=(st.role==="admin"?clubCard()+(L?wxCard():""):"")+pinCard();
+  const pg=master&&sysPage&&P[sysPage]&&P[sysPage].h?P[sysPage]:null;
+  let c;
+  if(pg){
+    const body=/^\s*<div class="card/.test(pg.h)?pg.h:`<div class="card slist">${pg.h}</div>`;
+    c=`<div class="sysw pg"><div class="sysm">${top}<div id="sysbody"${hide}>${ready}${rest}</div></div>
+      <div class="sysp"><button class="sysback" onclick="sysGo(null)">‹ System</button><h1 class="spt">${esc(pg.t)}</h1><div class="sptg">${pg.g==="kit"?"Kit owner":"Event"}</div>${body}</div></div>`;
+  } else c=top+`<div class="sysw" id="sysbody"${hide}><div>${ready}</div><div>${rest}</div></div>`;
+  $("system").innerHTML=c;
+  if(qf!=null){ const q=$("sysq"); if(q){ q.focus(); try{ q.setSelectionRange(qf,qf); }catch(e){} } }
   const cnt=st.test_count||{};
   if(st.test) document.querySelectorAll(".tests div").forEach(d=>{ const n=d.dataset.t;
     if((cnt[n]||0)>(prevCounts[n]||0)){ d.classList.remove("flash"); void d.offsetWidth; d.classList.add("flash"); } });
@@ -7873,7 +8209,7 @@ function pageKey(){
   else if(tab==="history") k.push(hist,queue,enterAsk,rView,rFilter,rDoneOpen,st.results,st.res_flags,st.confirmed,st.state,innerWidth>=1100);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
-  else k.push(st.loc,wxOpen,sysView,dayOpen,hxOpen,joinOpen,racedToday(),updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.lanes,st.lanes_use,st.lanes_max,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
+  else k.push(sysPage,kitOpen,sysQ,readyOpen,st.report,st.access&&st.access.requests,st.batt,st.pi_temp,st.box,st.storage,st.backup,st.practice,st.past_events,st.join,st.brand,st.mode,st.loc,wxOpen,sysView,dayOpen,hxOpen,joinOpen,racedToday(),updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.lanes,st.lanes_use,st.lanes_max,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
   return JSON.stringify(k);
 }
 function brandBar(){ const b=(st&&st.brand)||{}; if(!b.club&&!b.event&&!b.logo) return "";
@@ -8162,6 +8498,7 @@ def main():
     threading.Thread(target=firewall_check, daemon=True).start()     # Windows: can phones get in?
     threading.Thread(target=temp_loop, daemon=True).start()          # Pi temperature (box in the sun)
     loc_load()
+    threading.Thread(target=report_loop, daemon=True).start()        # problem reports waiting for internet
     threading.Thread(target=loc_loop, daemon=True).start()           # venue, GPS, weather and tides
     threading.Thread(target=resil_setup, daemon=True).start()        # Pi: watchdogs + logs kept (once)
     threading.Thread(target=watchdog_loop, daemon=True).start()      # Pi: "still alive" to systemd
