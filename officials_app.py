@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.27.2"
+APP_VERSION = "1.28.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -4852,6 +4852,7 @@ border:2px solid var(--line);border-radius:10px;padding:.25em .7em;line-height:1
 .bd .rr .pl{font-weight:900;font-size:1.1em}.bd .rr .lnno{color:var(--mute);font-weight:800}
 .bd .rr .tm{font:800 1em var(--fn);white-space:nowrap}
 .bd .rr.first{border-color:var(--green);border-width:3px}
+.bd .rr.empty{opacity:.55}.bd .rr.moving{position:relative;z-index:2}
 .bd .pill.final{background:var(--green)}.bd .pill.prov{background:var(--amber)}
 @media (min-width:900px){.bd .two{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:14px;align-items:start}}
 .bd .next .card div{padding:2px 0}
@@ -7770,7 +7771,7 @@ function powerAsk(a){ const off=a==="off", what=st.power.pi?"Pi":"timing compute
 function powerGone(off,what){ $("sheetin").innerHTML=off?`<h2>Powering off…</h2><p>Wait about 20 seconds until the ${what}'s green light stops flashing, then switch the power off at the wall.</p><p class="mute">To start again: switch the power on. The timing app and hotspot start by themselves in about a minute.</p>`
     :`<h2>Restarting…</h2><p>The app comes back in about a minute.</p>`;
   $("sheet").classList.add("on"); }
-let lastKey="";
+let lastKey="", boardCtx="", slideEnd=0;
 function pageKey(){
   // redraw only when something shown has changed, so taps and open sections aren't lost
   if(!st) return JSON.stringify([tab,linkDown,tab==="history"?hist:0]);
@@ -7793,19 +7794,22 @@ function boardResults(res,title,final){
   let h=`<div class="top"><div class="now">${esc(title)}</div>${fl.protest?`<span class="pill prot">Under protest</span>`:`<span class="pill ${final?"final":"prov"}">${final?"Final":"Provisional"}</span>`}</div><div class="res">`;
   for(const r of ranked(res)){
     const eq=(res.ties||[]).includes(r.lane)?"=":"", cn=crewOf(res.heat,r.lane);
-    h+=`<div class="rr ${r.place===1?"first":""}"><span class="pl ${r.place&&r.place<=3?"m"+r.place:""}">${r.place?eq+r.place:"–"}</span><span class="lnno">L${r.lane}</span>
+    h+=`<div class="rr ${r.place===1?"first":""}" data-lane="${r.lane}"><span class="pl ${r.place&&r.place<=3?"m"+r.place:""}">${r.place?eq+r.place:"–"}</span><span class="lnno">L${r.lane}</span>
       <span>${esc(cn||"Lane "+r.lane)}</span><span class="tm">${r.place?ft(r.t_us):esc(r.status)}</span></div>`;
   }
   return h+`</div>`;
 }
 function boardStart(ht,label,pill){
-  let h=`<div class="top"><div class="now">${esc(label)}${ht?": "+esc(heatLabel(ht)):""}</div>${pill||""}</div>`;
-  if(!ht) return h+`<p class="mute" style="margin:0">Lanes fill in when the officials choose the heat.</p>`;
-  h+=`<div class="lanes">`;
-  const lanes=new Set(st.lanes.concat(Object.keys(ht.crews||{}).map(Number)));
+  // same rows as the results, in lane order, so at the finish each row just slides to its place
+  const lbl=label?esc(label)+(ht?": ":""):"";
+  let h=`<div class="top"><div class="now">${lbl}${ht?esc(heatLabel(ht)):label?"":"Racing"}</div>${pill||""}</div>`;
+  if(!ht&&st.state!=="RACING") return h+`<p class="mute" style="margin:0">Lanes fill in when the officials choose the heat.</p>`;
+  h+=`<div class="res">`;
+  const lanes=new Set(st.lanes.concat(Object.keys((ht&&ht.crews)||{}).map(Number)));
   for(const l of [...lanes].sort((a,b)=>a-b)){
-    const hs=st.state==="RACING"?(st.live[String(l)]||[]):[], cn=crewOf(ht,l), sc=checkOf(ht,l)==="scratched";
-    h+=`<div class="ln ${cn&&!sc?"":"empty"}"><b>${l}</b><span>${esc(cn||"—")}${sc?" – scratched":""}</span>${hs.length?`<div class="t">${esc(ft(hs[hs.length-1]))}</div>`:""}</div>`;
+    const hs=st.state==="RACING"?(st.live[String(l)]||[]):[], cn=ht?crewOf(ht,l):"", sc=ht&&checkOf(ht,l)==="scratched";
+    h+=`<div class="rr ${sc||(ht&&!cn)?"empty":""}" data-lane="${l}"><span class="pl"></span><span class="lnno">L${l}</span>
+      <span>${esc(cn||"Lane "+l)}</span><span class="tm">${sc?"Scratched":hs.length?esc(ft(hs[hs.length-1])):""}</span></div>`;
   }
   return h+`</div>`;
 }
@@ -7854,13 +7858,28 @@ function renderBoard(){
     skip=res.race;
     h+=`<div class="two"><div>${boardResults(res,res.heat?heatLabel(res.heat):"Race "+res.race,st.confirmed)}</div><div>${moved?boardNext2(st.heat,nx[0]):boardNext2(nx[0],nx[1])}</div></div>`;
   } else if(s==="RACING"){
-    h+=`<div class="two"><div>${boardStart(st.race_heat||st.heat,"Racing",`<span class="pill racing">RACING <span id="clock">${clock(st.elapsed||0)}</span></span>`)}</div><div>${boardNext2(nx[0],nx[1])}</div></div>`;
+    h+=`<div class="two"><div>${boardStart(st.race_heat||st.heat,"",`<span class="pill racing">RACING <span id="clock">${clock(st.elapsed||0)}</span></span>`)}</div><div>${boardNext2(nx[0],nx[1])}</div></div>`;
   } else {
     // between races: the heat on the start, then the next two
     h+=`<div class="two"><div>${boardStart(st.heat,"On the start",s==="ARMED"?`<span class="pill armed">SET</span>`:"")}</div><div>${boardNext2(nx[0],nx[1])}</div></div>`;
   }
+  // rows slide from lane order to finishing order (and when a DQ/DNF changes places) instead of jumping
+  const ctx=s==="RACING"?"r"+(st.race+1):s==="DONE"&&st.results?"r"+st.results.race:"", before={};   // the timing box counts a race at its finish
+  if(ctx&&ctx===boardCtx) document.querySelectorAll(".bd .rr[data-lane]").forEach(e=>before[e.dataset.lane]=e.getBoundingClientRect().top);
+  boardCtx=ctx;
   $("race").innerHTML=h+boardRecent(skip)+stripHtml()+`</div>`+boardQr()+homeBtn();
   fitRecent();
+  if(Object.keys(before).length&&!matchMedia("(prefers-reduced-motion: reduce)").matches){
+    const mv=[];
+    document.querySelectorAll(".bd .rr[data-lane]").forEach(e=>{ const o=before[e.dataset.lane]; if(o==null) return;
+      const d=o-e.getBoundingClientRect().top; if(Math.abs(d)<2) return;
+      e.style.transition="none"; e.style.transform=`translateY(${d}px)`; mv.push(e); });
+    if(mv.length){ document.body.offsetHeight;
+      // a redraw part-way through carries on to the same end time, rather than starting the slide again
+      const now=Date.now(); if(now>=slideEnd) slideEnd=now+1400; const ms=Math.max(150,slideEnd-now);
+      mv.forEach(e=>{ e.classList.add("moving"); e.style.transition=`transform ${ms}ms cubic-bezier(.4,0,.2,1)`; e.style.transform="";
+        setTimeout(()=>{ e.classList.remove("moving"); e.style.transition=""; },ms+80); }); }
+  }
 }
 // ---------- EMERGENCY STOP: every screen, every role, until the button on the timing box is released ----------
 let esKey="", esWas=false;
