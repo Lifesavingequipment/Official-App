@@ -30,7 +30,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.31.0"
+APP_VERSION = "1.31.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -3752,7 +3752,7 @@ def handle_line(line):
             S["go_at"] = time.time()
             S["live"] = {}
             S["race_event"] = find_event(S["event"])   # the event is fixed at GO
-            S["race_heat"] = S["heat"]                 # and so is the heat
+            S["race_heat"] = S["heat"] if MODE["v"] != "basic" else None    # and so is the heat (Basic has none)
             S["race_go_wall"] = S["go_at"]
         if new == "DONE" and S["state"] == "RACING" and draw:
             threading.Thread(target=auto_reload, daemon=True).start()
@@ -3856,7 +3856,7 @@ def handle_line(line):
         ev_info = S["race_event"] or find_event(S["event"])
         if ev_info and ev_info["legs"]:
             d["event"] = ev_info["name"]          # just the name - legs come from the presses
-        heat = S["race_heat"] or S["heat"]
+        heat = (S["race_heat"] or S["heat"]) if MODE["v"] != "basic" else None
         if heat:
             d["heat"] = heat
         if S["race_go_wall"]:
@@ -5795,7 +5795,7 @@ function banner(){
   if(s==="RACING") return `<div class="banner b-racing"><div><div class="big">RACING</div>
     <div class="sub">Race ${r+1}${st.race_heat?" · "+esc(heatLabel(st.race_heat)):""}</div></div><div class="clock" id="clock">${clock(st.elapsed||0)}</div></div>`;
   if(s==="ARMED") return `<div class="banner b-armed"><div><div class="big">SET – waiting for GO</div>
-    <div class="sub">Race ${r+1}${st.heat?" · "+esc(heatLabel(st.heat)):""}</div></div></div>`;
+    <div class="sub">Race ${r+1}${st.heat&&!isBasic()?" · "+esc(heatLabel(st.heat)):""}</div></div></div>`;
   if(s==="DONE") return `<div class="banner b-done"><div><div class="big">Race ${r} finished</div>
     ${st.confirmed?`<div class="sub">Results confirmed ✓</div>`:""}</div></div>`;
   return `<div class="banner b-idle"><div><div class="big">Ready – press SET</div>
@@ -5915,7 +5915,7 @@ function renderBasicRace(){
     h=`<div class="bx">${bHead(p.race,"Previous race","i")}${bRows(p.order,false)}
       <div class="bxbar"><button class="btn bxprev" onclick="prevView=false;lastKey='';render()">‹ Back</button></div></div>`;
   } else { const n=bNow(true);
-    h=`<div class="bx">${n.head}${n.body}<div class="bxbar">${between&&st.prev?`<button class="btn bxprev" onclick="prevView=true;lastKey='';render()">Previous race</button>`:""}<div class="ctl bxctl">${controls()}</div></div></div>`; }
+    h=`<div class="bx">${n.head}${n.body}${coRow(!between)}<div class="bxbar">${between&&st.prev?`<button class="btn bxprev" onclick="prevView=true;lastKey='';render()">Previous race</button>`:""}<div class="ctl bxctl">${controls()}</div></div></div>`; }
   slideRender(".bx .bxo .bxr[data-lane]","bdesk",()=>{ $("race").innerHTML=h; wireControls(); });
 }
 function renderBasicBoard(){
@@ -6263,7 +6263,7 @@ function nextStep(){
   if(role==="master"&&pg.mode==="on"&&st.heat&&!(st.sent||{})[st.heat.heat_id]&&!((st.access||{}).officials||[]).some(o=>o.role==="marshal"))
     return {text:`Patients not marked as sent for Heat ${st.heat.no} – no Marshal is logged in`,tab:"marshal",btn:"Marshal",act:`mSel='${st.heat.heat_id}'`};
   const q=role==="master"&&(st.queue_n||0)>0?` · ${st.queue_n} to enter in LiveHeats`:"";
-  return {text:`Ready – press SET${st.heat?" for "+heatLabel(st.heat):""}${q}`,tab:"race",btn:"Race",dup:!q};
+  return {text:`Ready – press SET${st.heat&&!isBasic()?" for "+heatLabel(st.heat):""}${q}`,tab:"race",btn:"Race",dup:!q};
 }
 let nextKey="";
 let warnHtml="";
@@ -6288,7 +6288,7 @@ function setWarnings(){
   if(st.state==="DONE"&&st.results&&!st.confirmed) w.push(`Race ${st.results.race} results aren't confirmed yet.`);
   if(st.state==="DONE"&&st.results){ const odd=oddLanes(st.results,st.res_flags); if(odd.length) w.push(`Lane ${odd.map(o=>o.lane).join(", ")}: presses don't match the other crews – answer DNF, DQ or It's fine first.`); }
   if((st.draw||ph)&&!st.heat) w.push("No heat chosen – lanes will show without crew names.");
-  if(st.heat&&st.raced[st.heat.heat_id]!=null) w.push(`${heatLabel(st.heat)} was already raced (race ${st.raced[st.heat.heat_id]}).`);
+  if(st.heat&&!isBasic()&&st.raced[st.heat.heat_id]!=null) w.push(`${heatLabel(st.heat)} was already raced (race ${st.raced[st.heat.heat_id]}).`);
   return w;
 }
 let setAsk=0;
@@ -6313,15 +6313,15 @@ function controls(){
   }
   if(s==="IDLE"||s==="DONE"){
     if(st.faults.length) return h+`<div class="start"><button class="btn amber" disabled>SET – fix wiring first</button></div>`;
-    const what=st.heat?heatLabel(st.heat):"Race "+(st.race+1);
+    const what=st.heat&&!isBasic()?heatLabel(st.heat):"Race "+(st.race+1);     // Basic has no program: just the race number
     const w=setWarnings();
     if(setAsk&&Date.now()-setAsk<15000&&w.length)
       return h+`<div class="card confirm"><h2>Check before SET</h2>${w.map(x=>`<p style="margin:6px 0">• ${esc(x)}</p>`).join("")}
         <div class="row"><button class="btn amber" id="bsetok">SET anyway</button><button class="btn" id="bsetno">Cancel</button></div></div>`;
     setAsk=0;
-    return h+coRow(false)+`<div class="start"><button class="btn amber" id="bset">SET<small>${esc(what)}${st.co?" · changeovers on":""}</small></button></div>`;
+    return h+(isBasic()?"":coRow(false))+`<div class="start"><button class="btn amber" id="bset">SET<small>${esc(what)}${st.co?" · changeovers on":""}</small></button></div>`;
   }
-  h+=coRow(true);
+  if(!isBasic()) h+=coRow(true);        // Basic shows it above its buttons instead
   if(s==="ARMED"){
     if(app) h+=`<div class="start"><button class="btn green" id="bgo">GO</button></div>`;
     return h+`<div class="card"><button class="btn hold" id="hold"><i></i><span>Hold to CANCEL (before GO)</span></button></div>`;

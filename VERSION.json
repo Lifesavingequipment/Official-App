@@ -1,13 +1,10 @@
 {
- "app": "1.31.0",
+ "app": "1.31.1",
  "pico": "3.13",
- "sha256": "9fe523f7cd6fc7cffa549b29bb93261c6330c202206a76744cda40d69dc46301",
+ "sha256": "d631382ba3359ece3ae9faf1326faf873d2c8f141693459f387cc79482d37f31",
  "pico_sha256": "77fc68420c545dca0f90c82675ee0af3eee5eca935901d4a26b048cff2d74e05",
  "notes": [
-  "Changeovers switch (Teams / Taplin) on the Race screen for the timing desk and the Starter: off unless turned on, off again at power-up and for a new event",
-  "Changeovers on: a press lights the lane 1 s, off 2 s, then on until the next driver presses (up to 10 s). A press before the go light that's followed by more racing shows as 'early tag-out?' for the judges (DQ / It's fine)",
-  "The event is worked out from the presses (single, Mass, Teams, IRB Relay); leg names and changeover times in results and the spreadsheet",
-  "Timing box program v3.13 - update it from System \u203a Kit owner \u203a Updates",
-  "Fixed: a rare freeze when the timing box refused a lanes or E-stop change"
+  "Basic: SET and the Next bar show only the race number \u2013 no heat or event names, even if a program was loaded in Full",
+  "Basic: the Changeovers row sits above the buttons, full width"
  ]
 }
