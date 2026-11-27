@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.28.0"
+APP_VERSION = "1.29.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -3454,7 +3454,36 @@ def log_raw(line):
 
 
 def fmt_s(us):
-    return "" if us is None else "%d.%06d" % (us // 1_000_000, us % 1_000_000)
+    return "" if us is None else "%d.%02d" % (us // 1_000_000, (us % 1_000_000) // 10_000)
+
+
+CS = 10_000                                    # one hundredth of a second, in microseconds
+
+
+def to_hundredths(d):
+    """Times are kept to the hundredth (cut, not rounded, like a stopwatch). Crews on the same hundredth
+    share the place (=2, =2, 4). The raw presses stay in the timing box's log only.
+    Basic: a lane with no presses at all is a DNF – an empty lane or a crew that didn't finish."""
+    rows = d.get("rows") or []
+    for r in rows:
+        if r.get("t_us") is not None:
+            r["t_us"] -= r["t_us"] % CS
+        if r.get("presses_us"):
+            r["presses_us"] = [x - x % CS for x in r["presses_us"]]
+        if MODE["v"] == "basic" and not r.get("presses_us") and not r.get("place") and r.get("status") not in ("DQ", "DNF"):
+            r["status"] = "DNF"
+    ties = set(d.get("ties") or [])
+    placed = sorted([r for r in rows if r.get("place")],
+                    key=lambda r: (r["place"], r["t_us"] if r.get("t_us") is not None else 1 << 62, r["lane"]))
+    prev = None
+    for i, r in enumerate(placed):
+        same = prev is not None and (r["lane"] in ties or (r.get("t_us") is not None and r["t_us"] == prev.get("t_us")))
+        r["place"] = prev["place"] if same else i + 1
+        if same:
+            ties.add(r["lane"])
+        prev = r
+    d["ties"] = sorted(ties)
+    return d
 
 
 def history_csv():
@@ -3464,7 +3493,7 @@ def history_csv():
     out = io.StringIO()
     w = csv.writer(out)
     w.writerow(["saved_at", "race", "event", "division", "round", "heat", "version", "final", "legs", "lane", "crew", "place",
-                "time_s", "status", "dq_code", "presses_s", "officials_changes", "changes_by", "note", "video_go",
+                "time_s", "behind_s", "status", "dq_code", "presses_s", "officials_changes", "changes_by", "note", "video_go",
                 "venue", "air_c", "wind_kmh", "wind_dir", "gust_kmh", "swell_m", "swell_period_s", "swell_dir", "water_c",
                 "tide_m", "tide", "next_tide", "uv", "conditions_from"])
     for h in history:
@@ -3484,10 +3513,13 @@ def history_csv():
               c.get("tide_state", ""), ("%s %s" % (nt["type"], datetime.fromtimestamp(nt["t"] / 1000).strftime("%H:%M"))) if nt else "",
               c.get("uv") if c.get("uv") is not None else "",
               ("forecast %s" % datetime.fromtimestamp(c["forecast_at"] / 1000).strftime("%H:%M")) if c.get("forecast_at") else ""]
+        win = min(((r["place"], r["t_us"]) for r in h.get("rows", []) if r.get("place") and r.get("t_us") is not None), default=(0, None))[1]
         for r in h.get("rows", []):
+            t = r.get("t_us")
+            bh = fmt_s(t - t % CS - (win - win % CS)) if (r.get("place") and t is not None and win is not None and t - t % CS > win - win % CS) else ""
             w.writerow([h.get("saved_at"), h.get("race"), h.get("event") or "", ht.get("div", ""), ht.get("round", ""),
                         ht.get("no", ""), h.get("version"), final, h.get("legs"),
-                        r.get("lane"), crews.get(str(r.get("lane")), ""), r.get("place") or "", fmt_s(r.get("t_us")), r.get("status"),
+                        r.get("lane"), crews.get(str(r.get("lane")), ""), r.get("place") or "", fmt_s(t), bh, r.get("status"),
                         fl.get("dq", {}).get(str(r.get("lane")), "") if r.get("status") == "DQ" else "",
                         ";".join(fmt_s(x) for x in r.get("presses_us", [])), ch, by, fl.get("note", ""), go] + cc)
     return out.getvalue()
@@ -3660,6 +3692,7 @@ def handle_line(line):
     elif ev == "recall":
         messages.append([datetime.now().strftime("%H:%M:%S"), "RECALL - race cancelled"])
     elif ev == "results":
+        to_hundredths(d)
         ev_info = S["race_event"] or find_event(S["event"])
         if ev_info and ev_info["legs"]:
             d["event"] = ev_info["name"]          # just the name - legs come from the presses
@@ -4009,8 +4042,15 @@ def basic_order(rec, f=None):
             lab = "Checking"
         else:
             lab = "DNF"
-        out.append({"lane": lane, "place": x.get("place") if not lab else None, "label": lab})
+        out.append({"lane": lane, "place": x.get("place") if not lab else None, "label": lab, "n": n,
+                    "t": x.get("t_us") if not lab else None})
     out.sort(key=lambda o: (o["place"] is None, o["place"] or 0, {"Checking": 0, "DQ": 1, "DNF": 2}.get(o["label"], 3), o["lane"]))
+    cnt = {}
+    for o in out:
+        if o["place"]:
+            cnt[o["place"]] = cnt.get(o["place"], 0) + 1
+    for o in out:
+        o["eq"] = bool(o["place"]) and cnt[o["place"]] > 1      # a draw: "=" on everyone sharing the place
     return out
 
 
@@ -4852,7 +4892,7 @@ border:2px solid var(--line);border-radius:10px;padding:.25em .7em;line-height:1
 .bd .rr .pl{font-weight:900;font-size:1.1em}.bd .rr .lnno{color:var(--mute);font-weight:800}
 .bd .rr .tm{font:800 1em var(--fn);white-space:nowrap}
 .bd .rr.first{border-color:var(--green);border-width:3px}
-.bd .rr.empty{opacity:.55}.bd .rr.moving{position:relative;z-index:2}
+.bd .rr.empty{opacity:.55}.bd .tm{font-variant-numeric:tabular-nums}
 .bd .pill.final{background:var(--green)}.bd .pill.prov{background:var(--amber)}
 @media (min-width:900px){.bd .two{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:14px;align-items:start}}
 .bd .next .card div{padding:2px 0}
@@ -5273,6 +5313,11 @@ a{color:var(--blue)}a:hover{color:var(--ink)}
 .bxr{display:grid;grid-template-columns:70px 1fr auto;align-items:center;background:#fff;border:1px solid #e3e6eb;border-radius:12px;padding:8px 16px;font-size:24px;min-height:56px;box-shadow:var(--sh)}
 .bxo.one .bxr{font-size:30px;min-height:68px;grid-template-columns:90px 1fr auto}
 .bxr .pl{font-weight:800}.bxr .ln{font-weight:600}
+.bxe{display:flex;align-items:center;gap:10px;justify-content:flex-end}.bxtm{font-weight:800;font-variant-numeric:tabular-nums;color:#5b6472}
+.bxr.lead .bxtm{color:var(--ink,#111)}.bxr.lead{border-color:var(--green);border-width:2px}
+.bxbig{flex:1;display:flex;align-items:center;justify-content:center;min-height:30vh}.bxbig .bxc{font-size:clamp(70px,14vw,260px)!important}
+.bxr.moving,.rr.moving{position:relative;z-index:2}.bxr.arrive,.rr.arrive{animation:arrive .5s ease-out}
+@keyframes arrive{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
 .bxr.ck{background:#fff6dc;border-color:#f0c35a}.bxr.out{color:#8a919c}
 .bxr .mini{display:flex;gap:6px}.bxr .mini .btn{min-height:40px;padding:6px 14px}
 .ckt{font-size:15px;font-weight:700;background:#f0c35a;color:#3a2a00;border-radius:6px;padding:3px 10px}
@@ -5358,8 +5403,47 @@ document.addEventListener("DOMContentLoaded",iabBanner); setTimeout(iabBanner,50
 const TOO_CLOSE_US=10000;
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-function ft(us){ if(us==null) return "—"; const ms=Math.floor(us/1000), m=Math.floor(ms/60000),
-  s=Math.floor(ms/1000)%60, r=ms%1000; return (m?m+":"+String(s).padStart(2,"0"):s)+"."+String(r).padStart(3,"0"); }
+function ft(us){ if(us==null) return "—"; const cs=Math.floor(us/10000), m=Math.floor(cs/6000),     // hundredths, cut not rounded
+  s=Math.floor(cs/100)%60, r=cs%100; return (m?m+":"+String(s).padStart(2,"0"):s)+"."+String(r).padStart(2,"0"); }
+const cs_=us=>us==null?null:us-us%10000;
+// a draw shows "=" on every crew sharing the place (=5, =5, 7)
+function drawList(r){ const c={}; ((r&&r.rows)||[]).forEach(x=>{ if(x.place) c[x.place]=(c[x.place]||0)+1; }); return ((r&&r.rows)||[]).filter(x=>x.place&&c[x.place]>1).map(x=>x.lane); }
+const drawn=(r,l)=>drawList(r).includes(l);
+// F1 style: the leader shows a time, everyone else how far behind
+function winT(res){ const w=((res&&res.rows)||[]).filter(r=>r.place&&r.t_us!=null).sort((a,b)=>a.place-b.place||a.t_us-b.t_us)[0]; return w?cs_(w.t_us):null; }
+function f1(t,w){ if(t==null) return ""; t=cs_(t); return w==null||t<=w?ft(t):"+"+ft(t-w); }
+// live timing tower: most presses first; same number of presses – whoever pressed first.
+// Gap = behind the leader at the same press; "+1 lap" once the leader has pressed again before this crew caught up
+function tower(){
+  const L=st.lanes.map(l=>({lane:l,h:(st.live[String(l)]||[]).map(cs_)}));
+  const p=L.filter(x=>x.h.length).sort((a,b)=>b.h.length-a.h.length||a.h[a.h.length-1]-b.h[b.h.length-1]||a.lane-b.lane), ld=p[0];
+  return {pressed:p.map((x,i)=>{ const n=x.h.length, last=x.h[n-1]; let txt;
+      if(!i) txt=ft(last);
+      else { let k=0; for(let j=n;j<ld.h.length;j++) if(ld.h[j]<last) k++;
+        txt=k?`+${k} lap${k>1?"s":""}`:"+"+ft(last-ld.h[n-1]); }
+      return {lane:x.lane,pos:i+1,txt}; }),
+    waiting:L.filter(x=>!x.h.length).map(x=>x.lane)};
+}
+// rows slide to their new places (FLIP) – a redraw part-way through carries on to the same end time
+let slideEnd=0, slideCtx={};
+function slideCtxNow(){ const s=st.state; return s==="RACING"?"r"+(st.race+1):s==="DONE"&&st.results?"r"+st.results.race:""; }
+function slideRender(sel,key,draw){
+  const ctx=slideCtxNow(), before={}, same=ctx&&ctx===slideCtx[key];
+  if(same) document.querySelectorAll(sel).forEach(e=>{ const r=e.getBoundingClientRect(); before[e.dataset.lane]=[r.left,r.top]; });
+  slideCtx[key]=ctx;
+  draw();
+  if(!same||matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const mv=[];
+  document.querySelectorAll(sel).forEach(e=>{ const o=before[e.dataset.lane];
+    if(o==null){ e.classList.add("arrive"); return; }
+    const r=e.getBoundingClientRect(), dx=o[0]-r.left, dy=o[1]-r.top; if(Math.abs(dx)<2&&Math.abs(dy)<2) return;
+    e.style.transition="none"; e.style.transform=`translate(${dx}px,${dy}px)`; mv.push(e); });
+  if(!mv.length) return;
+  document.body.offsetHeight;
+  const now=Date.now(); if(now>=slideEnd) slideEnd=now+1000; const ms=Math.max(150,slideEnd-now);
+  mv.forEach(e=>{ e.classList.add("moving"); e.style.transition=`transform ${ms}ms cubic-bezier(.4,0,.2,1)`; e.style.transform="";
+    setTimeout(()=>{ e.classList.remove("moving"); e.style.transition=""; },ms+80); });
+}
 function clock(sec){ const m=Math.floor(sec/60), s=Math.floor(sec%60), t=Math.floor(sec*10)%10;
   return m+":"+String(s).padStart(2,"0")+"."+t; }
 function toast(t,ms){ const e=$("toast"); e.textContent=t; e.style.display="block"; clearTimeout(e._t);
@@ -5481,40 +5565,45 @@ function logoPick(inp){ const f=inp.files&&inp.files[0]; if(!f) return; const im
 function isBasic(){ return !!(st&&st.mode==="basic"); }
 let prevView=false;
 function nth(n){ const s=["th","st","nd","rd"], v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); }
-function liveOrder(){        // while racing: most presses leads; equal presses – whoever got there first
-  const L=st.lanes.map(l=>({lane:l,h:st.live[String(l)]||[]}));
-  const p=L.filter(x=>x.h.length).sort((a,b)=>b.h.length-a.h.length||a.h[a.h.length-1]-b.h[b.h.length-1]);
-  return p.map((x,i)=>({lane:x.lane,place:i+1,label:""})).concat(L.filter(x=>!x.h.length).map(x=>({lane:x.lane,place:null,label:"–"})));
+function liveOrder(){        // while racing: the timing tower; lanes not pressed yet at the bottom (desk only)
+  const tw=tower();
+  return tw.pressed.map(x=>({lane:x.lane,place:x.pos,label:"",txt:x.txt})).concat(tw.waiting.map(l=>({lane:l,place:null,label:"–",n:0})));
 }
 function finishOrder(r,f){   // after FINISH: place + lane, or Checking / DQ / DNF
   const odd=new Set(oddLanes(r,f).map(o=>o.lane)), calls=(f||{}).calls||{};
+  const w=winT(r), ties=drawList(r);
   const o=(r.rows||[]).map(x=>{ const c=calls[String(x.lane)];
     const lab=c==="dnf"||c==="dq"?c.toUpperCase():x.status==="DQ"||x.status==="DNF"?x.status:x.place?"":odd.has(x.lane)?"Checking":"DNF";
-    return {lane:x.lane,place:lab?null:x.place,label:lab}; });
+    return {lane:x.lane,place:lab?null:x.place,label:lab,eq:ties.includes(x.lane),n:(x.presses_us||[]).length,txt:lab?"":f1(x.t_us,w)}; });
   const rk={Checking:0,DQ:1,DNF:2};
   return o.sort((a,b)=>(a.place==null)-(b.place==null)||(a.place||0)-(b.place||0)||(rk[a.label]??3)-(rk[b.label]??3)||a.lane-b.lane);
 }
 function oddWhy(r,f){ return oddLanes(r,f).map(o=>`Lane ${o.lane} pressed ${pressWord(o.n)} – the others ${pressWord(r.legs)}`).join(" · "); }
-function bRows(order,act){
-  const two=order.length>5;
-  return `<div class="bxo ${two?"two":"one"}" style="--r:${Math.ceil(order.length/2)}">`+order.map(o=>{
+function bRows(order,act,total){
+  // the layout comes from the kit's lanes, not how many are showing, so 1–5 stay left and 6–10 right as the tower fills
+  const n=Math.max(order.length,total||0), two=n>5;
+  return `<div class="bxo ${two?"two":"one"}" style="--r:${two?Math.ceil(n/2):n}">`+order.map(o=>{
     const ck=o.label==="Checking", out=o.label==="DQ"||o.label==="DNF";
-    return `<div class="bxr ${ck?"ck":""} ${out?"out":""}"><span class="pl">${o.place?nth(o.place):o.label==="–"?"":ck?"":esc(o.label)}</span><span class="ln">Lane ${o.lane}</span>
-      <span class="bxe">${ck?(act?`<span class="mini"><button class="btn sm" onclick="cmd('dnf ${o.lane}')">DNF</button><button class="btn sm" onclick="cmd('dq ${o.lane}')">DQ</button><button class="btn sm" onclick="cmd('ok ${o.lane}')">OK</button></span>`:`<span class="ckt">Checking</span>`):o.label==="–"?`<span class="mute">–</span>`:""}</span></div>`; }).join("")+`</div>`;
+    return `<div class="bxr ${ck?"ck":""} ${out?"out":""} ${o.place===1?"lead":""}" data-lane="${o.lane}"><span class="pl">${o.place?(o.eq?"=":"")+nth(o.place):o.label==="–"?"":ck?"":esc(o.label)}</span><span class="ln">Lane ${o.lane}</span>
+      <span class="bxe">${o.txt?`<span class="bxtm">${esc(o.txt)}</span>`:""}${ck?(act?`<span class="mini"><button class="btn sm" onclick="cmd('dnf ${o.lane}')">DNF</button><button class="btn sm" onclick="cmd('dq ${o.lane}')">DQ</button><button class="btn sm" onclick="cmd('ok ${o.lane}')">OK</button></span>`:`<span class="ckt">Checking</span>`):o.label==="–"?`<span class="mute">–</span>`:""}</span></div>`; }).join("")+`</div>`;
 }
 function bHead(n,word,cls,right){ return `<div class="bxh"><div><span class="bxn">Race ${n}</span><span class="bst ${cls}">${word}</span></div>${right||""}</div>`; }
 function bPrevLine(p,phone){ if(!p) return "";
-  const t=p.order.map(o=>(o.place?nth(o.place)+" L"+o.lane:"L"+o.lane+" "+o.label)).join(" · ");
+  p={race:p.race,order:p.order.filter(o=>o.place||o.n)};      // lanes with no presses (empty, or didn't finish) stay off the TV
+  const t=p.order.map(o=>(o.place?(o.eq?"=":"")+nth(o.place)+" L"+o.lane:"L"+o.lane+" "+o.label)).join(" · ");
   return phone?`<div class="bxpv"><div class="mute">Previous – Race ${p.race}</div>${bRows(p.order,false).replace('bxo two','bxo one')}</div>`
     :`<div class="bxpv"><b>Previous – Race ${p.race}:</b> ${esc(t)}</div>`; }
 // what's on the screen right now (desk and TV share it)
 function bNow(act){
   const s=st.state;
   if(st.test) return {head:bHead(st.race+1,"Button test","a"),body:`<p class="bxmsg">Button test running – press every button.</p>`};
-  if(s==="RACING") return {head:bHead(st.race+1,"Racing","r",`<span class="bxc" id="clock">${clock(st.elapsed||0)}</span>`),body:bRows(liveOrder(),false)};
+  if(s==="RACING"){ let o=liveOrder(); if(!act) o=o.filter(x=>x.place);       // TV: the tower builds up as crews press
+    if(!o.length||(!act&&!o.some(x=>x.place))) return {head:bHead(st.race+1,"Racing","r"),body:`<div class="bxbig"><span class="bxc" id="clock">${clock(st.elapsed||0)}</span></div>`};
+    return {head:bHead(st.race+1,"Racing","r",`<span class="bxc" id="clock">${clock(st.elapsed||0)}</span>`),body:bRows(o,act,st.lanes.length)}; }
   if(s==="ARMED") return {head:bHead(st.race+1,"Set","a"),body:`<p class="bxmsg">Waiting for GO…</p>`};
   if(s==="DONE"&&st.results&&!st.results.practice){ const r=st.results, why=oddWhy(r,st.res_flags);
-    return {head:bHead(r.race,"Finish order","d",why?`<span class="bxwhy">${esc(why)}</span>`:""),body:bRows(finishOrder(r,st.res_flags),act)}; }
+    let o=finishOrder(r,st.res_flags); const tot=o.length; if(!act) o=o.filter(x=>x.place||x.n);    // no presses at all: DNF, not shown on the TV
+    return {head:bHead(r.race,"Finish order","d",why?`<span class="bxwhy">${esc(why)}</span>`:""),body:bRows(o,act,tot)}; }
   return {head:bHead(st.race+1,"Ready","i"),body:`<p class="bxmsg">${act?`Press SET to start Race ${st.race+1}.`:"Waiting for the start"}</p>`};
 }
 function renderBasicRace(){
@@ -5528,13 +5617,13 @@ function renderBasicRace(){
       <div class="bxbar"><button class="btn bxprev" onclick="prevView=false;lastKey='';render()">‹ Back</button></div></div>`;
   } else { const n=bNow(true);
     h=`<div class="bx">${n.head}${n.body}<div class="bxbar">${between&&st.prev?`<button class="btn bxprev" onclick="prevView=true;lastKey='';render()">Previous race</button>`:""}<div class="ctl bxctl">${controls()}</div></div></div>`; }
-  $("race").innerHTML=h; wireControls();
+  slideRender(".bx .bxo .bxr[data-lane]","bdesk",()=>{ $("race").innerHTML=h; wireControls(); });
 }
 function renderBasicBoard(){
   if(!st||linkDown||!st.connected){ $("race").innerHTML=banner(); return; }
   const phone=innerWidth<700, n=bNow(false), b=st.brand||{};
-  $("race").innerHTML=`<div class="bx bxtv ${phone?"ph":""} ${st.strip&&stripHtml()?"hasstrip":""}">${b.club?`<div class="bxclub">${esc(b.club)}${b.event?" · "+esc(b.event):""}</div>`:""}${n.head}${n.body}${bPrevLine(st.prev,phone)}${stripHtml()}
-    ${st.role==="viewer"&&!st.local?`<div class="bxoff"><a href="#" onclick="openRequest();return false">Officials</a></div>`:""}</div>`;
+  slideRender(".bxtv > .bxo .bxr[data-lane]","btv",()=>{ $("race").innerHTML=`<div class="bx bxtv ${phone?"ph":""} ${st.strip&&stripHtml()?"hasstrip":""}">${b.club?`<div class="bxclub">${esc(b.club)}${b.event?" · "+esc(b.event):""}</div>`:""}${n.head}${n.body}${bPrevLine(st.prev,phone)}${stripHtml()}
+    ${st.role==="viewer"&&!st.local?`<div class="bxoff"><a href="#" onclick="openRequest();return false">Officials</a></div>`:""}</div>`; });
 }
 function modeInfo(m){ return m==="basic"
   ?"Time races and see the finish order on the screen – no names, no times, nothing to set up. Crews press their lane button; the screen shows who finished in what order, and checks everyone did the same number of laps. Phones and a TV can show the same screen. Switch to Full any time in Setup."
@@ -5566,7 +5655,7 @@ function renderRace(){
     for(const l of st.lanes){
       let hits=(st.live[String(l)]||[]), txt="—", sub="No presses";
       if(st.state==="DONE"&&st.results){ const row=st.results.rows.find(x=>x.lane===l);
-        if(row){ const eq=(st.results.ties||[]).includes(l)?"=":"";
+        if(row){ const eq=drawn(st.results,l)?"=":"";
           txt=row.place?ft(row.t_us):row.status==="INCOMPLETE"?"Check presses":row.status; sub=row.place?"Place "+eq+row.place+(row.status!=="TIMED"?" · "+row.status:""):"No place"; } }
       else if(hits.length){ txt=ft(hits[hits.length-1]); sub=hits.length+" press"+(hits.length>1?"es":""); }
       const cn=crewOf(ht,l), mv=ht&&(ht.swaps||[]).filter(s=>s.includes(l)).length, ck=checkOf(ht,l);
@@ -6097,7 +6186,7 @@ function resultsTable(res, tappable){
     const extra="";      // a lane with extra presses is flagged above the table instead
     const vid=res.go_wall&&r.t_us!=null&&r.tooClose?`<div class="vid">video ${wall(res.go_wall,r.t_us)}</div>`:"";
     const dqc=r.status==="DQ"&&res.flags&&(res.flags.dq||{})[String(r.lane)]?` · ${esc(res.flags.dq[String(r.lane)])}`:"";
-    h+=`<tr class="${tappable?"tap":""}" data-lane="${r.lane}"><td><b>${r.place?((res.ties||[]).includes(r.lane)?"=":"")+r.place:""}</b></td><td class="cr"><span style="white-space:nowrap">Lane ${r.lane}</span>${crewOf(res.heat,r.lane)?`<div class="crew">${esc(crewOf(res.heat,r.lane))}</div>`:""}</td>
+    h+=`<tr class="${tappable?"tap":""}" data-lane="${r.lane}"><td><b>${r.place?(drawn(res,r.lane)?"=":"")+r.place:""}</b></td><td class="cr"><span style="white-space:nowrap">Lane ${r.lane}</span>${crewOf(res.heat,r.lane)?`<div class="crew">${esc(crewOf(res.heat,r.lane))}</div>`:""}</td>
       <td class="tm">${ft(r.t_us)}${r.gap!=null?`<div><span class="gap">+${ft(r.gap)}</span>${r.tooClose?`<span class="close">TOO CLOSE</span>`:""}</div>`:""}${splits?`<div class="split">${splits}</div>`:""}${extra}${r.status!=="TIMED"?`<div><span class="tag t-${r.status}">${r.status==="INCOMPLETE"?"CHECK PRESSES":r.status}${dqc}</span></div>`:""}${vid}${ch?`<div class="split">officials: ${esc(ch)}</div>`:""}</td>${
       tappable?`<td class="ed"><button class="btn sm">Edit</button></td>`:""}</tr>`;
   }
@@ -6739,7 +6828,7 @@ function renderTeamResults(){
   for(const r of hist){ const pl=r.rows.filter(x=>x.place).sort((a,b)=>a.place-b.place), out=r.rows.filter(x=>!x.place&&x.status);
     h+=`<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(r.heat&&r.heat.div?heatLabel(r.heat):"Race "+r.race)}</b>
       ${(r.flags||{}).protest?`<span class="chip prot">Under protest</span>`:`<span class="chip ${(r.flags||{}).confirmed?"now":"next"}">${(r.flags||{}).confirmed?"Final":"Provisional"}</span>`}</div>
-      ${pl.map(x=>`<div style="display:flex;gap:10px"><span class="pn">${((r.ties||[]).includes(x.lane)?"=":"")+x.place}</span><span style="flex:1">${esc(crewOf(r.heat,x.lane)||"Lane "+x.lane)}</span><span class="tm2">${ft(x.t_us)}</span></div>`).join("")}
+      ${pl.map(x=>`<div style="display:flex;gap:10px"><span class="pn">${(drawn(r,x.lane)?"=":"")+x.place}</span><span style="flex:1">${esc(crewOf(r.heat,x.lane)||"Lane "+x.lane)}</span><span class="tm2">${ft(x.t_us)}</span></div>`).join("")}
       ${out.length?`<div class="mute">${out.map(x=>esc(crewOf(r.heat,x.lane)||"Lane "+x.lane)+" "+x.status).join(" · ")}</div>`:""}</div>`; }
   return h+`</div>`;
 }
@@ -6802,7 +6891,7 @@ function entryCard(){
   let h=`<div class="card ent"><h2>To enter in LiveHeats${queue.length?` <span class="badge">${queue.length}</span>`:""}</h2>`;
   if(!queue.length) return h+`<p class="mute">All finished races are entered. ✓</p></div>`;
   if(entIdx>=queue.length) entIdx=queue.length-1;
-  const r=queue[entIdx], ties=r.ties||[], dq=(r.flags||{}).dq||{};
+  const r=queue[entIdx], ties=drawList(r), dq=(r.flags||{}).dq||{};
   h+=`<div class="entnav"><button class="btn sm" ${entIdx?"":"disabled"} onclick="entIdx--;lastKey='';render()">‹</button>
     <span>Race ${r.race} · ${entIdx+1} of ${queue.length}</span><button class="btn sm" ${entIdx<queue.length-1?"":"disabled"} onclick="entIdx++;lastKey='';render()">›</button></div>`;
   h+=`<div class="enthd">${r.heat?`<div class="entdiv">${esc(r.heat.div)}</div><div class="entrnd">${esc(r.heat.round)} · Heat ${r.heat.no}</div>`:`<div class="entdiv">Race ${r.race}</div><div class="mute">No heat was chosen for this race</div>`}</div>`;
@@ -6907,7 +6996,7 @@ function rDetail(race){
     if(can){ h+=`<details class="rmore"><summary>More – race note, undo all</summary><div class="row"><button class="btn" onclick="openNote(${r.race})">${f.note?"Edit race note":"Add race note"}</button><button class="btn" onclick="askYes('Undo every change made to this race?',()=>cmd('clear'),'Yes, undo all')">Undo ALL changes</button></div></details>`; }
   } else {
     // enter in LiveHeats (or read it back once done)
-    const ties=r.ties||[], dq=f.dq||{};
+    const ties=drawList(r), dq=f.dq||{};
     const rows=(r.rows||[]).slice().sort(rBy==="lane"?(a,b)=>a.lane-b.lane:(a,b)=>(a.place||99)-(b.place||99)||a.lane-b.lane);
     const calls=f.calls||{};
     const out=x=>{ const c=calls[String(x.lane)]; if(c==="dnf") return "DNF"; if(c==="dq") return "DQ";
@@ -6972,7 +7061,7 @@ async function rProtestEnd(race,outcome){
   await post("/api/note",{race:race,text:"Protest upheld – result changed in LiveHeats",who:myName()||"?"});
   await post("/api/confirm",{race:race,who:myName()||"?"}); histAt=0; await loadHist(); rView=race; lastKey=""; render();
   toast("Protest upheld – change the places in LiveHeats when you enter it",5000); }
-function rCopy(race){ const r=rRec(rAll().find(x=>x.race===race)||{}), ties=r.ties||[];
+function rCopy(race){ const r=rRec(rAll().find(x=>x.race===race)||{}), ties=drawList(r);
   const rows=(r.rows||[]).slice().sort((a,b)=>(a.place||99)-(b.place||99)||a.lane-b.lane);
   const t=`Race ${race}${r.heat?" – "+heatLabel(r.heat):""}\n`+rows.map(x=>`${x.place?(ties.includes(x.lane)?"=":"")+x.place:x.status}\tLane ${x.lane}\t${crewOf(r.heat,x.lane)||""}\t${x.place&&x.t_us!=null?ft(x.t_us):""}`).join("\n");
   const done=()=>toast("Copied – paste it where you need it");
@@ -7771,7 +7860,7 @@ function powerAsk(a){ const off=a==="off", what=st.power.pi?"Pi":"timing compute
 function powerGone(off,what){ $("sheetin").innerHTML=off?`<h2>Powering off…</h2><p>Wait about 20 seconds until the ${what}'s green light stops flashing, then switch the power off at the wall.</p><p class="mute">To start again: switch the power on. The timing app and hotspot start by themselves in about a minute.</p>`
     :`<h2>Restarting…</h2><p>The app comes back in about a minute.</p>`;
   $("sheet").classList.add("on"); }
-let lastKey="", boardCtx="", slideEnd=0;
+let lastKey="";
 function pageKey(){
   // redraw only when something shown has changed, so taps and open sections aren't lost
   if(!st) return JSON.stringify([tab,linkDown,tab==="history"?hist:0]);
@@ -7792,10 +7881,11 @@ function boardResults(res,title,final){
   // results in finishing order, big enough to read from the marshalling area
   const fl=((hist||[]).find(x=>x.race===res.race)||{}).flags||{};
   let h=`<div class="top"><div class="now">${esc(title)}</div>${fl.protest?`<span class="pill prot">Under protest</span>`:`<span class="pill ${final?"final":"prov"}">${final?"Final":"Provisional"}</span>`}</div><div class="res">`;
+  const w=winT(res);
   for(const r of ranked(res)){
-    const eq=(res.ties||[]).includes(r.lane)?"=":"", cn=crewOf(res.heat,r.lane);
+    const eq=drawn(res,r.lane)?"=":"", cn=crewOf(res.heat,r.lane);
     h+=`<div class="rr ${r.place===1?"first":""}" data-lane="${r.lane}"><span class="pl ${r.place&&r.place<=3?"m"+r.place:""}">${r.place?eq+r.place:"–"}</span><span class="lnno">L${r.lane}</span>
-      <span>${esc(cn||"Lane "+r.lane)}</span><span class="tm">${r.place?ft(r.t_us):esc(r.status)}</span></div>`;
+      <span>${esc(cn||"Lane "+r.lane)}</span><span class="tm">${r.place?f1(r.t_us,w):esc(r.status==="INCOMPLETE"?"Check presses":r.status)}</span></div>`;
   }
   return h+`</div>`;
 }
@@ -7805,11 +7895,15 @@ function boardStart(ht,label,pill){
   let h=`<div class="top"><div class="now">${lbl}${ht?esc(heatLabel(ht)):label?"":"Racing"}</div>${pill||""}</div>`;
   if(!ht&&st.state!=="RACING") return h+`<p class="mute" style="margin:0">Lanes fill in when the officials choose the heat.</p>`;
   h+=`<div class="res">`;
-  const lanes=new Set(st.lanes.concat(Object.keys((ht&&ht.crews)||{}).map(Number)));
-  for(const l of [...lanes].sort((a,b)=>a-b)){
-    const hs=st.state==="RACING"?(st.live[String(l)]||[]):[], cn=ht?crewOf(ht,l):"", sc=ht&&checkOf(ht,l)==="scratched";
-    h+=`<div class="rr ${sc||(ht&&!cn)?"empty":""}" data-lane="${l}"><span class="pl"></span><span class="lnno">L${l}</span>
-      <span>${esc(cn||"Lane "+l)}</span><span class="tm">${sc?"Scratched":hs.length?esc(ft(hs[hs.length-1])):""}</span></div>`;
+  const lanes=[...new Set(st.lanes.concat(Object.keys((ht&&ht.crews)||{}).map(Number)))].sort((a,b)=>a-b);
+  // before the first press: who's racing, in lane order. Then the timing tower, re-ordered on every press
+  const tw=st.state==="RACING"?tower():{pressed:[],waiting:lanes}, at={};
+  tw.pressed.forEach(x=>at[x.lane]=x);
+  const order=tw.pressed.map(x=>x.lane).concat(lanes.filter(l=>!at[l]));
+  for(const l of order){
+    const x=at[l], cn=ht?crewOf(ht,l):"", sc=ht&&checkOf(ht,l)==="scratched";
+    h+=`<div class="rr ${sc||(ht&&!cn)?"empty":""} ${x&&x.pos===1?"lead":""}" data-lane="${l}"><span class="pl">${x?x.pos:""}</span><span class="lnno">L${l}</span>
+      <span>${esc(cn||"Lane "+l)}</span><span class="tm">${sc?"Scratched":x?esc(x.txt):""}</span></div>`;
   }
   return h+`</div>`;
 }
@@ -7863,23 +7957,8 @@ function renderBoard(){
     // between races: the heat on the start, then the next two
     h+=`<div class="two"><div>${boardStart(st.heat,"On the start",s==="ARMED"?`<span class="pill armed">SET</span>`:"")}</div><div>${boardNext2(nx[0],nx[1])}</div></div>`;
   }
-  // rows slide from lane order to finishing order (and when a DQ/DNF changes places) instead of jumping
-  const ctx=s==="RACING"?"r"+(st.race+1):s==="DONE"&&st.results?"r"+st.results.race:"", before={};   // the timing box counts a race at its finish
-  if(ctx&&ctx===boardCtx) document.querySelectorAll(".bd .rr[data-lane]").forEach(e=>before[e.dataset.lane]=e.getBoundingClientRect().top);
-  boardCtx=ctx;
-  $("race").innerHTML=h+boardRecent(skip)+stripHtml()+`</div>`+boardQr()+homeBtn();
-  fitRecent();
-  if(Object.keys(before).length&&!matchMedia("(prefers-reduced-motion: reduce)").matches){
-    const mv=[];
-    document.querySelectorAll(".bd .rr[data-lane]").forEach(e=>{ const o=before[e.dataset.lane]; if(o==null) return;
-      const d=o-e.getBoundingClientRect().top; if(Math.abs(d)<2) return;
-      e.style.transition="none"; e.style.transform=`translateY(${d}px)`; mv.push(e); });
-    if(mv.length){ document.body.offsetHeight;
-      // a redraw part-way through carries on to the same end time, rather than starting the slide again
-      const now=Date.now(); if(now>=slideEnd) slideEnd=now+1400; const ms=Math.max(150,slideEnd-now);
-      mv.forEach(e=>{ e.classList.add("moving"); e.style.transition=`transform ${ms}ms cubic-bezier(.4,0,.2,1)`; e.style.transform="";
-        setTimeout(()=>{ e.classList.remove("moving"); e.style.transition=""; },ms+80); }); }
-  }
+  // rows slide from lane order into the tower, on every press, and into finishing order
+  slideRender(".bd .rr[data-lane]","full",()=>{ $("race").innerHTML=h+boardRecent(skip)+stripHtml()+`</div>`+boardQr()+homeBtn(); fitRecent(); });
 }
 // ---------- EMERGENCY STOP: every screen, every role, until the button on the timing box is released ----------
 let esKey="", esWas=false;

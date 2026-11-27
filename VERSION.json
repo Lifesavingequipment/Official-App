@@ -1,10 +1,12 @@
 {
- "app": "1.28.0",
+ "app": "1.29.0",
  "pico": "3.12",
- "sha256": "d85879b2335306a3544de0c5711f11aaf93efb717b470271118c094f46d97c58",
+ "sha256": "08351f6b229539b99dc55a92db981b734e783dc29c32152c903bda05f433183e",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "Big results screen: while racing, the lanes show as the same rows as the results, in lane order",
-  "At the finish each row slides to its finishing place instead of the screen jumping; a DQ or DNF that changes places slides too"
+  "Timing tower: big screen, phones and all Basic screens re-order on every press \u2013 leader shows a time, everyone else +gap; a crew a lap down shows +1 lap",
+  "Hundredths everywhere (cut, not rounded). Same hundredth at the finish is a draw: =5, =5, then 7th",
+  "Basic: big clock at GO, the tower builds up as crews press; lanes with no presses are DNF automatically and not shown on the TV",
+  "Results spreadsheet: new Behind column"
  ]
 }
