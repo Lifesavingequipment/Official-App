@@ -1,12 +1,9 @@
 {
- "app": "1.29.0",
+ "app": "1.29.1",
  "pico": "3.12",
- "sha256": "08351f6b229539b99dc55a92db981b734e783dc29c32152c903bda05f433183e",
+ "sha256": "b97ec7f0dc483cefe2f145f20a1ce5a79082ec45c0cf7a23ba473aa5a19668b1",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "Timing tower: big screen, phones and all Basic screens re-order on every press \u2013 leader shows a time, everyone else +gap; a crew a lap down shows +1 lap",
-  "Hundredths everywhere (cut, not rounded). Same hundredth at the finish is a draw: =5, =5, then 7th",
-  "Basic: big clock at GO, the tower builds up as crews press; lanes with no presses are DNF automatically and not shown on the TV",
-  "Results spreadsheet: new Behind column"
+  "Marshal: heats scroll along the top again on phones (the Basic/Full chooser's styling had made them stack in a column)"
  ]
 }

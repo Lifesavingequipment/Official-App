@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.29.0"
+APP_VERSION = "1.29.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -5346,8 +5346,9 @@ body.bxb main{max-width:none}
 .bxtv:not(.ph) .bxwhy{font-size:clamp(15px,min(1.7vw,3.4vh),36px)}
 .bxtv.ph .bxo.two{grid-template-columns:1fr;grid-auto-flow:row;grid-template-rows:none}
 .bxtv.ph .bxr{font-size:22px;min-height:52px}.bxtv.ph .bxpv .bxr{font-size:16px;min-height:38px;box-shadow:none}
-.mpick{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.mpick .mbig{flex:1;min-height:86px;font-size:26px;flex-direction:column}
-.mpick .mbig small{font-size:15px;font-weight:500;opacity:.85}.mpick .minfo{flex:0 0 48px;min-height:48px;font-size:20px;border-radius:50%}.mpick p{flex-basis:100%}
+.modepick{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.modepick .mbig{flex:1;min-height:86px;font-size:26px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;text-align:left;border-radius:14px;padding:12px 16px;line-height:1.2}
+.modepick .mbig small{display:block;margin-top:4px}
+.modepick .mbig small{font-size:15px;font-weight:500;opacity:.85}.modepick .minfo{flex:0 0 48px;min-height:48px;font-size:20px;border-radius:50%}.modepick p{flex-basis:100%}
 @media (max-width:700px){.bxo.two{grid-template-columns:1fr;grid-auto-flow:row;grid-template-rows:none}.btn.bxprev{flex-basis:120px}.bxr .mini .btn{padding:6px 10px}}
 </style></head><body>
 <header>
@@ -5630,7 +5631,7 @@ function modeInfo(m){ return m==="basic"
   :"Everything: LiveHeats draw and schedule, your own program, marshalling, officials on their own phones, confirming results and entering them in LiveHeats, the Results and Team Manager screens."; }
 let modeInfoOpen="";
 function renderModePick(){
-  const card=(m,t,sub)=>`<div class="card mpick"><button class="btn ${m==="basic"?"pri":""} mbig" onclick="setMode('${m}')">${t}<small>${sub}</small></button>
+  const card=(m,t,sub)=>`<div class="card modepick"><button class="btn ${m==="basic"?"pri":""} mbig" onclick="setMode('${m}')">${t}<small>${sub}</small></button>
     <button class="btn sm minfo" aria-label="About ${t}" onclick="modeInfoOpen=modeInfoOpen==='${m}'?'':'${m}';lastKey='';render()">?</button>
     ${modeInfoOpen===m?`<p class="mute" style="margin:10px 2px 0">${modeInfo(m)}</p>`:""}</div>`;
   $("race").innerHTML=`<div class="wizwrap"><div class="card"><h2 style="margin:0 0 4px">How will this kit be used?</h2><p class="mute" style="margin:0">You can change this later in System › Setup.</p></div>
