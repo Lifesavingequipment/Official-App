@@ -28,7 +28,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.29.1"
+APP_VERSION = "1.29.2"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -4705,7 +4705,7 @@ body.board header,body.board #nextbar,body.board #racewarn{display:none}
 .rst i{font:800 normal 12px var(--f);border-radius:99px;padding:2px 9px;border:2px solid var(--line);color:var(--mute);background:#fff;white-space:nowrap}
 .rst i.on{background:var(--green);border-color:var(--green);color:#fff}
 .sysnav{display:flex;gap:8px;margin-bottom:10px}.sysnav .btn{flex:1;padding:8px 12px}
-.sysnav.quiet{align-items:center;justify-content:space-between;max-width:none}.sysnav.quiet .btn{flex:0 1 auto}.sysnav.quiet>.mute{font-weight:700;font-size:18px;color:var(--ink,#111)}
+.sysnav.quiet{align-items:center;justify-content:space-between;max-width:none}.sysnav.quiet .btn{flex:0 0 auto;white-space:nowrap;padding:6px 18px}.sysnav.quiet>.mute{font-weight:700;font-size:18px;color:var(--ink,#111)}
 .syscols>div>.card:first-child{margin-top:0}
 @media (min-width:900px){.syscols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start}
   .syscols>div{display:grid;gap:12px;align-content:start}.syscols .card{margin:0}}
@@ -7617,7 +7617,7 @@ function renderSystem(){
   const test=st.connected&&st.has_test&&(master||st.role==="starter")?testCard():"";
   const batt=healthCard();
   const quiet=master&&sysView==="today"&&racedToday()&&!((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected));
-  let h=quiet?`<div class="sysnav quiet"><span class="mute">Today</span><button class="btn sm" onclick="sysView='setup';lastKey='';render()">Setup <span style="font-weight:500">(not needed during racing)</span> ›</button></div>`
+  let h=quiet?`<div class="sysnav quiet"><span class="mute">Today</span><button class="btn sm sysgo" aria-label="Setup – not needed during racing" onclick="sysView='setup';lastKey='';render()">Setup ›</button></div>`
     :setupOk?`<div class="sysnav"><button class="btn ${sysView==="today"?"pri":""}" onclick="sysView='today';lastKey='';render()">Today</button>
     <button class="btn ${sysView==="setup"?"pri":""}" onclick="sysView='setup';lastKey='';render()">Setup${master&&((st.update&&st.update.newer)||(st.pico_upd&&st.pico_upd.newer&&st.connected))?' <span class="badge">1</span>':""}</button></div>`:"";
   let c="";

@@ -1,9 +1,9 @@
 {
- "app": "1.29.1",
+ "app": "1.29.2",
  "pico": "3.12",
- "sha256": "b97ec7f0dc483cefe2f145f20a1ce5a79082ec45c0cf7a23ba473aa5a19668b1",
+ "sha256": "769cd54dbf9891b5079fce3e7a03262bf1e530985e76be4bafcac9435f3a9489",
  "pico_sha256": "7b2b2cfe0ea6b0f573c0739bd8b902c3710c399e4acd354da959a915aa830b7b",
  "notes": [
-  "Marshal: heats scroll along the top again on phones (the Basic/Full chooser's styling had made them stack in a column)"
+  "System: the Setup button is now a short one-line 'Setup \u203a' so it no longer wraps on phones"
  ]
 }
