@@ -30,7 +30,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.32.0"
+APP_VERSION = "1.32.1"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -165,7 +165,7 @@ def load_settings():
         if isinstance(s.get("upd_key"), str):
             UPD_KEY["v"] = s["upd_key"][:300]
         if isinstance(s.get("report"), dict):
-            for k in ("to", "from", "pw", "last"):
+            for k in ("to", "from", "pw", "last", "route", "err"):
                 REPORT[k] = str(s["report"].get(k, ""))[:200]
         if isinstance(s.get("kit"), str) and s["kit"].strip():
             KIT["text"] = s["kit"][:2000]
@@ -218,7 +218,7 @@ def save_settings():
                        "setup_done": SETUP["done"], "brand": BRAND, "owner_pin": OWNER["pin"], "events": EVENTS[1:],
                        "kit": KIT["text"], "upd_key": UPD_KEY["v"], "pico_prev": PICO_UPD["prev"],
                        "club_codes": CLUB_CODES, "coaches": COACHES, "lanes_use": LANES["use"], "mode": MODE["v"],
-                       "report": {k: REPORT[k] for k in ("to", "from", "pw", "last")}}, fh)
+                       "report": {k: REPORT[k] for k in ("to", "from", "pw", "last", "route", "err") if k in REPORT}}, fh)
     except OSError:
         pass                    # still used for this session
 
@@ -2320,17 +2320,90 @@ def health_table(days=2):
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+class MailFail(Exception):
+    """every way of reaching Gmail failed; .tries says how each one went"""
+    def __init__(self, tries):
+        super().__init__("; ".join("%s: %s" % t[:2] for t in tries))
+        self.tries = tries
+
+
+def mail_routes():
+    """Gmail takes mail on 465 (secure from the start) and 587 (made secure after connecting).
+    Some networks block one but not the other, so try both, the one that worked last time first."""
+    spec = os.environ.get("IRB_SMTP")
+    if spec:
+        out = []
+        for part in spec.split(","):
+            bits = part.strip().split(":")
+            mode = bits[2] if len(bits) > 2 else ("plain" if os.environ.get("IRB_SMTP_PLAIN") else "ssl")
+            out.append((bits[0], int(bits[1]), mode))
+    else:
+        out = [("smtp.gmail.com", 465, "ssl"), ("smtp.gmail.com", 587, "starttls")]
+    good = REPORT.get("route")
+    out.sort(key=lambda r: 0 if "%s:%d" % r[:2] == good else 1)
+    return out
+
+
+def mail_step(e):
+    """a plain word for where the connection to Gmail broke"""
+    import ssl
+    if isinstance(e, socket.gaierror):
+        return "no internet"
+    if isinstance(e, ssl.SSLCertVerificationError):
+        return "certificate refused (clock wrong?)"
+    if isinstance(e, ssl.SSLError):
+        return "secure link failed"
+    if isinstance(e, (smtplib.SMTPServerDisconnected, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+        return "hung up"
+    if isinstance(e, ConnectionRefusedError):
+        return "refused"
+    if isinstance(e, (socket.timeout, TimeoutError)):
+        return "timed out"
+    if isinstance(e, OSError) and getattr(e, "errno", None) in (101, 113):
+        return "no internet"
+    return type(e).__name__
+
+
 def smtp_send(subject, body, attach=None, fname=None):
-    host, port = os.environ.get("IRB_SMTP", "smtp.gmail.com:465").rsplit(":", 1)
     msg = EmailMessage()
     msg["Subject"], msg["From"], msg["To"] = subject, REPORT["from"], REPORT["to"]
     msg.set_content(body)
     if attach:
         msg.add_attachment(attach, maintype="application", subtype="zip", filename=fname)
-    cls = smtplib.SMTP if os.environ.get("IRB_SMTP_PLAIN") else smtplib.SMTP_SSL
-    with cls(host, int(port), timeout=25) as sm:
-        sm.login(REPORT["from"], REPORT["pw"])
-        sm.send_message(msg)
+    tries = []
+    for host, port, mode in mail_routes():
+        try:
+            if mode == "ssl":
+                sm = smtplib.SMTP_SSL(host, port, timeout=20)
+            else:
+                sm = smtplib.SMTP(host, port, timeout=20)
+            with sm:
+                if mode == "starttls":
+                    sm.ehlo(); sm.starttls(); sm.ehlo()
+                sm.login(REPORT["from"], REPORT["pw"])
+                sm.send_message(msg)
+        except smtplib.SMTPAuthenticationError:
+            raise
+        except Exception as e:
+            tries.append((str(port), mail_step(e), e))
+            continue
+        route = "%s:%d" % (host, port)
+        if REPORT.get("route") != route or REPORT.get("err"):
+            REPORT["route"], REPORT["err"] = route, ""
+            save_settings()
+        return port
+    REPORT["err"] = mail_problem(tries) + " (%s)" % datetime.now().strftime("%d %b %H:%M")
+    raise MailFail(tries)
+
+
+def mail_problem(tries):
+    steps = [t[1] for t in tries]
+    detail = " · ".join("port %s %s" % t[:2] for t in tries)
+    if steps and all(x == "no internet" for x in steps):
+        return "The kit has no internet right now – reports wait and send later"
+    if any("clock" in x for x in steps):
+        return "Gmail's secure link was refused – the kit's clock may be wrong (%s)" % detail
+    return "This network is blocking email (%s) – reports wait and send on another network, e.g. a phone hotspot" % detail
 
 
 def report_ready():
@@ -2357,8 +2430,10 @@ def report_setup(d):
         smtp_send("IRB kit – test email", "Problem reports from this IRB timing kit (%s) will come to this address." % (BRAND.get("club") or "no club set"))
     except smtplib.SMTPAuthenticationError:
         return "Saved, but Gmail didn't accept the login – check the kit's Gmail address and the app password"
+    except MailFail as e:
+        return "Saved, but the test didn't send. " + mail_problem(e.tries)
     except Exception as e:
-        return "Saved, but the test didn't send (%s) – it needs internet" % type(e).__name__
+        return "Saved, but the test didn't send (%s)" % type(e).__name__
     REPORT["last"] = "test sent %s" % datetime.now().strftime("%d %b %H:%M")
     save_settings()
     report_flush()
@@ -4417,7 +4492,7 @@ def snapshot(role="master", local=True, tok=None):
             d["firewall"] = {"state": FIREWALL["state"], "busy": FIREWALL["busy"]}
             d["kit"] = KIT["text"]
             d["upd_key"] = bool(UPD_KEY["v"])
-            d["report"] = {"to": REPORT["to"], "from": REPORT["from"], "last": REPORT["last"], "queued": report_queued()}
+            d["report"] = {"to": REPORT["to"], "from": REPORT["from"], "last": REPORT["last"], "queued": report_queued(), "err": REPORT.get("err", "")}
             d["wifi"] = {k: WIFI[k] for k in ("on", "mode", "name", "ip", "hotspot", "hs_ssid", "hs_ip", "saved", "busy", "msg")}
             d["inet"] = inet_view()
             d["power"] = {"on": IS_LINUX, "pi": IS_PI}
@@ -8220,7 +8295,7 @@ function locKitRows(){ const L=st.loc, row=(n,v,b)=>`<div class="srow"><div clas
     +row("Tide key",L.keys.worldtides?`<span class="ok">Set</span><span class="mute"> · proper tide times from WorldTides</span>`:`<span class="mute">Not set – tide times are approximate</span>`,`<button class="btn" onclick="tideKey()">${L.keys.worldtides?"Change":"Add"}</button>`); }
 // ---------- problem reports: emailed to the kit owner, queued until there's internet ----------
 function reportRow(row,ownLocked){ const r=st.report||{};
-  return row("Problem report email",r.from&&r.to?`<span class="ok">Sends from ${esc(r.from)}</span><span class="mute"> to ${esc(r.to)}</span>${r.last?`<div class="mute" style="font-size:13px">Last: ${esc(r.last)}</div>`:""}`
+  return row("Problem report email",r.from&&r.to?`<span class="ok">Sends from ${esc(r.from)}</span><span class="mute"> to ${esc(r.to)}</span>${r.last?`<div class="mute" style="font-size:13px">Last: ${esc(r.last)}</div>`:""}${r.err?`<div class="rperr" style="font-size:13px;color:#8a5a00">${esc(r.err)}</div>`:""}`
       :`<span class="mute">Not set – reports wait on the kit until the owner's email and the kit's Gmail are added</span>`,
     ownLocked?`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`:`<button class="btn" onclick="reportSetSheet()">${r.from?"Change":"Set up"}</button>`); }
 function reportSetSheet(){ const r=st.report||{};

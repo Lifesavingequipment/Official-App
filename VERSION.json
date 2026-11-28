@@ -1,13 +1,10 @@
 {
- "app": "1.32.0",
+ "app": "1.32.1",
  "pico": "3.13",
- "sha256": "e5b0a349b49d710d5631a6685007904efc724b30f660bb9807a5c2935bca73d1",
+ "sha256": "a6b738ef93aa59083d710551cce1ebe191cda90bf7168424d3db71cfa9294136",
  "pico_sha256": "77fc68420c545dca0f90c82675ee0af3eee5eca935901d4a26b048cff2d74e05",
  "notes": [
-  "Power warning: if the Pi's power dips too low it now says so on the Race screen (red at 3 dips in 10 minutes), and after a sudden switch-off it says what happened on the next start",
-  "Kit health shows Power dips today",
-  "Problem reports now include the Pi's temperature, 5 V supply and power dips a minute at a time (kept about a week, even through a power cut)",
-  "Problem reports leave out the Wi-Fi housekeeping lines that used to fill the app log",
-  "Wi-Fi status is checked once a minute without sudo (was 8 sudo commands every 15 s)"
+  "Email: if Gmail's usual port is blocked by the network, the kit now tries Gmail's second port (587) and remembers the one that works",
+  "Email: clearer messages \u2013 no internet, network blocking email (with each port), or wrong password \u2013 and System shows why reports are waiting"
  ]
 }
