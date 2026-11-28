@@ -1,13 +1,11 @@
 {
- "app": "1.33.0",
+ "app": "1.34.0",
  "pico": "3.13",
- "sha256": "747eeaa7a64851024c495b48e7621a7f3f5c666b7d010fb382ad6f43d2314508",
+ "sha256": "3b15c1ffd46b816b6a13861c302cad561771c6ad1827cb5a73692ec3b14e997e",
  "pico_sha256": "77fc68420c545dca0f90c82675ee0af3eee5eca935901d4a26b048cff2d74e05",
  "notes": [
-  "Kit email: results, kit report and problem reports can now send through a small web helper in the kits' Gmail \u2013 same route as updates, so Wi-Fi that blocks email doesn't stop them (Gmail app password stays as a back-up)",
-  "Power off sends the day's results (spreadsheet attached, top 3 per race in the email) and a separate kit report to the kit owner first, shown on the countdown \u2013 up to 30 s, with Turn off now",
-  "Days missed by a power cut or no internet send at the next start-up with internet",
-  "Each kit has a daily email limit (default 50); the last 10 are kept for results. Problem reports: 5 a day straight away, then one bundle an hour, then at the end of the day",
-  "Kit name for email subjects; System \u203a Advanced \u203a Kit email shows today's count and anything waiting"
+  "System tab tidied: Ready to race is a fixed list in a fixed order \u2013 Timing box, Emergency stop, Button test, Heats for today, Practice, Join card, Power, Backup stick. Fine rows stay one line; anything to fix turns orange with its button",
+  "Every setting now lives in one folder. Event day: Event setup, Race setup (mode, lanes, changeovers, practice), Timing box and buttons (incl. button test), Venue and weather (incl. GPS and tide key), Officials (incl. timing desk PIN), Screens and QR codes",
+  "Kit owner: Wi-Fi, Power, Results and backup, Email and reports (kit email + problem reports together), Updates, Owner and hire. Advanced is gone"
  ]
 }

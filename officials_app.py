@@ -30,7 +30,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.33.0"
+APP_VERSION = "1.34.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -1264,7 +1264,7 @@ def update_view():
 
 
 # ---------------- hire kits: owner lock, branding, events, Windows firewall, packs ----------------
-OWNER_MSG = "Locked by the owner – unlock with the owner PIN (System › Kit owner › Owner lock and hire)"
+OWNER_MSG = "Locked by the owner – unlock with the owner PIN (System › Kit owner › Owner and hire)"
 
 
 def owner_ok():
@@ -5764,6 +5764,11 @@ body.board header,body.board #nextbar,body.board #racewarn{display:none}
 .chk1 .mk{flex:0 0 30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font:900 16px var(--f);color:#fff;background:var(--amber)}
 .chk1.ok .mk{background:var(--green)}.chk1.opt .mk{background:#8e9cab}.chk1.ok.opt .mk{background:var(--green)}
 .chk1 .tx{flex:1;min-width:0;font-weight:700}.chk1 .tx small{display:block;font-weight:500;color:var(--mute)}
+.chk1.one{padding:5px 0}.chk1.one .mk{flex-basis:22px;height:22px;font-size:12px}.chk1.one .tx{font-weight:600;font-size:15px}.chk1.one .tx small{display:inline;margin-left:6px;font-size:14px}
+.flist{padding-bottom:6px}.fhead{font-size:13px;font-weight:700;color:var(--mute);text-transform:none;margin:0 0 2px}
+.frow{display:flex;align-items:center;gap:12px;width:100%;background:none;border:0;border-top:1px solid var(--line);padding:10px 0;font:inherit;color:inherit;text-align:left;cursor:pointer;min-height:52px}
+.frow:first-of-type{border-top:0}.fic{flex:0 0 28px;height:28px;border-radius:8px;background:var(--soft);display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--mute)}
+.fn{flex:1;min-width:0;font-weight:700}.fn small{display:block;font-weight:500;color:var(--mute);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ready{background:var(--green);color:#fff;border-radius:12px;padding:12px 14px;font:800 20px var(--f);margin-top:10px;text-align:center}
 .notready{background:#fff4d6;border:2px solid var(--amber);border-radius:12px;padding:10px 14px;font-weight:700;margin-top:10px}
 .morew{align-self:flex-start}
@@ -6592,7 +6597,7 @@ function wizard(){
       ${on?`<div class="wsb">${x.body()}</div>`:""}</div>`; });
   const ready=need.every(x=>x.ok);
   h+=`<div class="row" style="justify-content:space-between;align-items:center">${ready?`<span class="ok">Ready to race ✓</span>`:`<span class="mute">${need.filter(x=>!x.ok).length} must-do step${need.filter(x=>!x.ok).length===1?"":"s"} left</span>`}
-    <span class="row" style="margin:0"><button class="btn ${ready?"pri":""}" onclick="brandDo({setup_done:true},${ready?"'Ready to race'":"'You can come back from System › Event'"})">${ready?"Done – go to racing":"Skip for now"}</button></span></div></div>`;
+    <span class="row" style="margin:0"><button class="btn ${ready?"pri":""}" onclick="brandDo({setup_done:true},${ready?"'Ready to race'":"'You can come back from System › Event setup'"})">${ready?"Done – go to racing":"Skip for now"}</button></span></div></div>`;
   return h;
 }
 async function brandDo(d,ok){ try{ const j=await (await fetch("/api/brand",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)})).json();
@@ -6675,7 +6680,7 @@ function renderModePick(){
   const card=(m,t,sub)=>`<div class="card modepick"><button class="btn ${m==="basic"?"pri":""} mbig" onclick="setMode('${m}')">${t}<small>${sub}</small></button>
     <button class="btn sm minfo" aria-label="About ${t}" onclick="modeInfoOpen=modeInfoOpen==='${m}'?'':'${m}';lastKey='';render()">?</button>
     ${modeInfoOpen===m?`<p class="mute" style="margin:10px 2px 0">${modeInfo(m)}</p>`:""}</div>`;
-  $("race").innerHTML=`<div class="wizwrap"><div class="card"><h2 style="margin:0 0 4px">How will this kit be used?</h2><p class="mute" style="margin:0">You can change this later in System › Event.</p></div>
+  $("race").innerHTML=`<div class="wizwrap"><div class="card"><h2 style="margin:0 0 4px">How will this kit be used?</h2><p class="mute" style="margin:0">You can change this later in System › Race setup.</p></div>
     ${card("basic","Basic","Time races and see the finish order")}${card("full","Full","LiveHeats, program, marshalling, officials' phones, screens")}</div>`;
 }
 async function setMode(m,sure){
@@ -6780,10 +6785,10 @@ const HELP={
 const TROUBLE=[
  ["Phones and tablets",[
   ["No internet at the beach (LiveHeats, updates)","The timing works without internet – only LiveHeats and updates need it.",[
-    "With a USB Wi-Fi adapter in the Pi: System › Kit owner › Wi-Fi and phones › Internet › Choose, then join the club's Wi-Fi. The timing hotspot stays on.",
+    "With a USB Wi-Fi adapter in the Pi: System › Kit owner › Wi-Fi › Internet › Choose, then join the club's Wi-Fi. The timing hotspot stays on.",
     "Says 'needs a sign-in page'? That Wi-Fi wants you to accept terms in a browser – pick a different Wi-Fi, or sign in on the Pi's own screen.",
     "Says 'check the password'? Join again and tick Show password to check it.",
-    "No USB Wi-Fi adapter? Switch the Pi to another Wi-Fi under System › Kit owner › Wi-Fi and phones – but phones lose the app until it's back on the hotspot."]],
+    "No USB Wi-Fi adapter? Switch the Pi to another Wi-Fi under System › Kit owner › Wi-Fi – but phones lose the app until it's back on the hotspot."]],
   ["Forgot the timing desk PIN","Nobody can get in as the timing desk, and the Pi is in its sealed box.",[
     "The kit owner's PIN also works as the timing desk PIN: Officials › Use the timing desk PIN.",
     "No owner nearby? At the timing box, between races: hold FINISH and GO down together for 15 seconds until it beeps 3 times.",
@@ -6795,13 +6800,13 @@ const TROUBLE=[
     "Opened inside Messenger, Facebook or the Google app (an X at the top, no address bar)? Open it in Chrome, Samsung Internet or Safari instead.",
     "Android + Chrome: phone Settings › Apps › Chrome › Permissions › Nearby devices (or Local network) › Allow. Close Chrome fully and open it again. Do the same for the Google app if you scan with Google Lens.",
     "Still not in Chrome? Chrome › Settings › Privacy and security › turn off Always use secure connections. Or use Samsung Internet.",
-    "No phone at all can connect? On the timing computer: System › Kit owner › Wi-Fi and phones › Allow phones, and answer Yes on the Windows prompt.",
+    "No phone at all can connect? On the timing computer: System › Kit owner › Wi-Fi › Allow phones, and answer Yes on the Windows prompt.",
     "Check the address on the join card matches the one under System. If the computer's address has changed, print a new join card."],true],
   ["Raspberry Pi: the IRB Timing Wi-Fi isn't there","Phones can't see the timing hotspot, or it was switched to home Wi-Fi.",[
     "Give the Pi a minute after switching on – the hotspot starts by itself.",
     "Still missing? Switch the Pi's power off at the wall, wait 10 seconds, switch it on. It always starts on the timing hotspot.",
     "Then join IRB Timing on the phone and open {HS}.",
-    "To switch Wi-Fi or power the Pi off without opening the case: System › Kit owner › Wi-Fi and phones, or Battery and power (timing desk only)."]],
+    "To switch Wi-Fi or power the Pi off without opening the case: System › Kit owner › Wi-Fi, or Power (timing desk only)."]],
   ["\"No link to the timing computer\"","A red banner on a phone or tablet.",[
     "The device has dropped off the timing Wi-Fi, gone out of range, or its screen slept.",
     "Move closer to the Wi-Fi router, check Wi-Fi is on, then reload the page.",
@@ -6825,7 +6830,7 @@ const TROUBLE=[
     "Unplug the USB cable, wait 5 seconds, plug it back in. The app finds the box by itself.",
     "Try another USB port. Still not? Close the app window and start the app again."],true],
   ["Two buttons \"went off together\"","A red fault in the button test, e.g. Lane 1 and Lane 2 under 1 ms apart.",[
-    "Check System › Kit owner › Advanced › Versions says timing box program v2.9 or later – it ignores electrical spikes between wires.",
+    "Check System › Kit owner › Updates › Versions says timing box program v2.9 or later – it ignores electrical spikes between wires.",
     "Each button needs its own ground wire straight to the ground block. A ground that runs through another button makes both go off together.",
     "Check the two signal wires aren't touching – at the Pico, Lane 1 (pin 4) and Lane 2 (pin 5) sit side by side: look for a solder bridge or a stray strand.",
     "Fix it, then end the test and start a new one."]],
@@ -6882,7 +6887,7 @@ const TROUBLE=[
     "The USB stick needs a folder called IRB_backup at the top level.",
     "Plug it in, then System › Kit owner › Results and backup › Back up now."]],
   ["Still stuck","",[
-    "Tap ? › Send a problem report – it goes to the kit owner. Or System › Kit owner › Results and backup › Problem report › Download.",
+    "Tap ? › Send a problem report – it goes to the kit owner. Or System › Kit owner › Email and reports › Problem report › Download.",
     "Send the file to whoever you hired the kit from – it has no passwords in it."],true]]]];
 const FIXES=TROUBLE.flatMap(s=>s[1]).filter(x=>x[3]).map(x=>[x[0],x[2].join(" ")]);
 // the hotspot's real address (it can be changed on the Pi) for help texts
@@ -6928,24 +6933,37 @@ function openHelp(){
 // ---------- one status for every race: Raced → Confirmed → Entered ----------
 function raceStatus(conf,ent){ return `<span class="rst"><i class="on">Raced ✓</i><i class="${conf?"on":""}">Confirmed${conf?" ✓":""}</i><i class="${ent?"on":""}">Entered${ent?" ✓":""}</i></span>`; }
 // ---------- start-of-day checks (Master) ----------
+// Ready to race: always the same rows in the same order (people find things by where they are). Fine rows stay one line;
+// anything needing attention turns orange with its fix button. Every row also lives in its own folder.
+function powerProblems(){ const P=[], b=st.batt, p=st.pi_temp, bx=st.box, d=st.storage, w=st.pwr;
+  if(w&&w.d10) P.push("power dipped "+w.d10+"× in 10 min");
+  if(b!=null){ const x=battWord(b); if(x[1]!=="good") P.push("battery "+b.toFixed(1)+" V – "+x[0].toLowerCase()); }
+  if(p){ const x=tempWord(p); if(x&&x[1]!=="good") P.push("Pi "+p.temp.toFixed(0)+" °C"); if(p.volt!=null&&voltWord(p)[1]==="bad") P.push("Pi supply "+p.volt.toFixed(2)+" V"); }
+  if(bx&&bx.temp!=null&&boxWord(bx.temp)[1]!=="good") P.push("box "+bx.temp.toFixed(0)+" °C");
+  if(d&&diskWord(d)[1]!=="good") P.push("storage "+d.free_gb.toFixed(1)+" GB free");
+  if(st.now_ms&&clockBad()) P.push("clock is wrong");
+  return P; }
+function powerOkLine(){ const b=st.batt, p=st.pi_temp, w=st.pwr, x=[];
+  if(b!=null) x.push("battery "+b.toFixed(1)+" V"); if(p) x.push("Pi "+Math.round(p.temp)+" °C"); if(w) x.push(w.today?w.today+" dips today":"no dips");
+  return x.length?x.join(" · "):"No readings"; }
 function dayChecks(){
-  const pg=st.program||{}, lt=st.last_test, a=st.access||{officials:[]}, c=[];
-  c.push({ok:st.connected&&!st.faults.length,label:"Timing box connected",hint:!st.connected?"Plug the timing box's USB cable into this computer":st.faults.length?"Check wiring: "+st.faults.join(", "):"Wiring OK"});
+  const pg=st.program||{}, lt=st.last_test, c=[];
+  c.push({ok:st.connected&&!st.faults.length,label:"Timing box",hint:!st.connected?"Not connected – plug the timing box's USB cable into this computer":st.faults.length?"Check wiring: "+st.faults.join(", "):"Connected · wiring OK",home:"Timing box and buttons"});
   { const e=st.estop||{};
-    if(st.connected) c.push({ok:!!(e.req&&!e.on),label:"Emergency stop",hint:!e.req?"Update the timing box program to v3.12 – the emergency stop is required to race"
-      :e.on?"STOP – pressed or not connected. Twist to release, or check GP28 (pin 34) to GND":"Connected and released",btn:!e.req?"Updates":"",act:"sysGo('upd')"}); }
-  if(!isBasic()&&st.loc&&st.loc.venues.length) c.push({ok:!!st.loc.venue,opt:true,label:"Venue",hint:st.loc.venue?st.loc.venue.name:"Choose today's venue",btn:st.loc.venue?"":"Choose",act:"venueSheet()"});
-  if(!isBasic()) c.push({ok:pg.mode!=null,label:"Heats for today",hint:pg.mode==="on"?"Program on":pg.mode==="off"?"No program – heats chosen by hand":"Choose the program, or No program",btn:"Program",act:"goTab('program')"});
+    c.push({ok:!!(st.connected&&e.req&&!e.on),label:"Emergency stop",hint:!st.connected?"Waiting for the timing box":!e.req?"Update the timing box program to v3.12 – the emergency stop is required to race"
+      :e.on?"STOP – pressed or not connected. Twist to release, or check GP28 (pin 34) to GND":"Connected and released",btn:st.connected&&!e.req?"Updates":"",act:"sysGo('upd')",home:"Timing box and buttons"}); }
   if(st.has_test){ const today=lt&&lt.date===st.today, bad=today&&(lt.missing.length||(lt.clash||[]).length);
     const can=st.connected&&(st.state==="IDLE"||st.state==="DONE")&&!st.test;
+    c.push({ok:today&&!bad,label:"Button test",hint:st.test?"Running now – press every button, then end the test":!today?"Not done today – the only way to find a broken FINISH cable"
+      :bad?"Found "+lt.missing.map(x=>x+" – no press").concat((lt.clash||[]).map(x=>x+" – went off together")).join(" · ")+". Fix and test again":"Done at "+lt.at+" · all buttons working",
+      btn:can?(today?"Test again":"Start"):"",act:"cmd('test on')",always:true,home:"Timing box and buttons"});
     const la=lanesAsk();
-    if(la&&!st.test) c.push({ok:false,label:"Lanes for today",hint:la.top<la.n?`Only lanes 1–${la.top} responded in the button test`:`Lanes up to ${la.top} were pressed in the button test`,btn:`Use ${la.top} lanes`,act:`setLanes(${la.top})`});
-    c.push({ok:today&&!bad,label:"Button test",hint:st.test?"Running now – press every button, then end the test":!today?"Every morning – the only way to find a broken FINISH cable"
-      :bad?"Found "+lt.missing.map(x=>x+" – no press").concat((lt.clash||[]).map(x=>x+" – went off together")).join(" · ")+". Fix and test again":"Done today at "+lt.at+", all buttons working",
-      btn:can?(today?"Test again":"Start button test"):"",act:"cmd('test on')"}); }
-  if(st.firewall&&st.firewall.state===false) c.push({opt:true,ok:false,label:"Phones can connect",hint:"Windows is blocking phones",btn:"Allow",act:"post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))"});
-  c.push({opt:true,ok:!!(st.join&&st.join.ssid),label:"Join card ready",hint:st.join&&st.join.ssid?"Wi-Fi: "+st.join.ssid:"Add the Wi-Fi name and password",btn:st.join&&st.join.ssid?"":"Add",act:"sysGo('net')"});
-  c.push({opt:true,ok:!!(st.backup&&st.backup.ok),label:"Backup stick",hint:st.backup?(st.backup.ok?"Copied to "+st.backup.where:st.backup.msg):"Not checked yet",btn:st.backup&&st.backup.ok?"":"Check",act:"post('/api/backup',{}).then(()=>{lastKey='';render()})"});
+    if(la&&!st.test) c.push({ok:false,label:"Lanes for today",hint:la.top<la.n?`Only lanes 1–${la.top} responded in the button test`:`Lanes up to ${la.top} were pressed in the button test`,btn:`Use ${la.top} lanes`,act:`setLanes(${la.top})`,home:"Race setup"}); }
+  if(!isBasic()) c.push({ok:pg.mode!=null,label:"Heats for today",hint:pg.mode==="on"?"Program on":pg.mode==="off"?"No program – heats chosen by hand":"Choose the program, or No program",btn:"Program",act:"goTab('program')",always:true,home:"Event setup"});
+  if(!isBasic()||st.practice) c.push({ok:!st.practice,label:"Practice",hint:st.practice?"On – races aren't saved":"Off – results saved",btn:st.practice?"Turn off":"Turn on",act:`post('/api/practice',{on:${!st.practice}})`,always:true,home:"Race setup"});
+  c.push({opt:true,ok:!!(st.join&&st.join.ssid),label:"Join card",hint:st.join&&st.join.ssid?"Ready · Wi-Fi "+st.join.ssid:"Add the Wi-Fi name and password",btn:st.join&&st.join.ssid?"QR":"Add",act:st.join&&st.join.ssid?"joinSheet()":"sysGo('net')",always:true,home:"Screens and QR codes"});
+  { const pp=powerProblems(); c.push({ok:!pp.length,label:"Power",hint:pp.length?pp.join(" · "):powerOkLine(),btn:"Open",act:"sysGo('power')",home:"Power"}); }
+  c.push({opt:true,ok:!!(st.backup&&st.backup.ok),label:"Backup stick",hint:st.backup?(st.backup.ok?"Copied to "+st.backup.where:st.backup.msg):"Not checked yet",btn:st.backup&&st.backup.ok?"":"Check",act:"post('/api/backup',{}).then(()=>{lastKey='';render()})",home:"Results and backup"});
   return c;
 }
 function dayReady(){ return dayChecks().filter(x=>!x.opt).every(x=>x.ok); }
@@ -8250,7 +8268,7 @@ function wxCard(){
   const w=L.wx, n=(w&&w.now)||{}, t=nextTides(w), old=w&&Date.now()-w.at>45*60000;
   let h=`<div class="card wxc"><div class="wxtop"><div class="wxv">${venueLine(L)}</div><button class="btn sm" onclick="venueSheet()">Change</button></div>`;
   if(L.newspot&&st.role==="master") h+=`<div class="wxnew">Not at a saved venue. <button class="btn sm" onclick="hereSave()">Save this spot</button></div>`;
-  else if(!L.venues.length) h+=`<p class="mute" style="margin:6px 0 0">No saved venues yet – add them under Event › Venue and weather${L.gps.state==="3d"?", or save this spot":""}.</p>`;
+  else if(!L.venues.length) h+=`<p class="mute" style="margin:6px 0 0">No saved venues yet – add them under System › Venue and weather${L.gps.state==="3d"?", or save this spot":""}.</p>`;
   if(w){
     const tn=L.tide_now;
     const line=[n.wind!=null?`Wind ${Math.round(n.wind)} km/h ${compass(n.wind_dir)}`:"",n.swell!=null?`Swell ${r1(n.swell)} m`:"",n.water!=null?`Water ${Math.round(n.water)}°`:"",
@@ -8633,7 +8651,7 @@ const GUIDES=[
     "Team managers: System › Today › Club codes › Print club codes. Hand each club its slip at check-in – it lets their team manager set Driver, Crew and Patient for their own crews.",
     "Watch the blue Next bar at the top. It always shows the next thing to do.",
     "After each race, check it on the Results tab and press Confirm results (or let the Admin do it).",
-    "End of day: every race ticked on the Results tab, then System › Event › Start a new event. That saves everything.",
+    "End of day: every race ticked on the Results tab, then System › Event setup › Start a new event. That saves everything.",
     "Something wrong? Press ? on any screen for fixes."]],
   ["Starter","SET, GO and FINISH.",[
     "Scan the join card: 1 for the Wi-Fi, 2 for the app. Tap Officials, type your name and show the code to the timing desk.",
@@ -8664,11 +8682,11 @@ const PI_DESK=["Timing desk","Your phone or tablet. You run the day – the Pi s
     "Officials scan the join card and tap Officials. Their name and a 3-digit code show under System – check the code on their phone, then tap their job.",
     "Team managers: System › Today › Club codes › Print club codes. Hand each club its slip at check-in – it lets their team manager set Driver, Crew and Patient for their own crews.",
     "Watch the blue Next bar at the top. After each race, check it on the Results tab and press Confirm results (or let the Admin do it).",
-    "End of day: every race ticked on the Results tab, System › Event › Start a new event, then System › Kit owner › Battery and power › Power off. When the green light stops, switch off at the wall."]];
+    "End of day: every race ticked on the Results tab, System › Event setup › Start a new event, then System › Kit owner › Power › Power off. When the green light stops, switch off at the wall."]];
 const PI_PIN=["Timing desk PIN","Getting in – and what to do if it's forgotten.",[
     "The timing desk PIN lets a phone or tablet do everything the Pi's own screen can, so the box never needs opening.",
     "A new kit has no PIN: the first phone to open the app is asked to set one.",
-    "Change it: System › Kit owner › Advanced › Timing desk PIN. Other timing desk phones then need the new PIN.",
+    "Change it: System › Officials › Timing desk PIN. Other timing desk phones then need the new PIN.",
     "Forgot it? The kit owner's PIN also logs in as timing desk – ask the owner.",
     "Or, at the timing box, between races: hold FINISH and GO down together for 15 seconds until it beeps 3 times. The PIN is cleared and timing desk phones are logged out. The next phone to open the app sets a new PIN.",
     "6 wrong PINs in 10 minutes blocks more tries for up to 10 minutes. The owner's PIN and the FINISH + GO reset still work."]];
@@ -8680,7 +8698,7 @@ function printGuides(){ let p=$("printcard"); if(!p){ p=document.createElement("
     +`<div class="guide">${top}<h1>Hire kit checklist</h1><p class="gsub">Tick each item out, and back in when you pack up.</p>
       <table class="gkit"><tr><th>Item</th><th>Out</th><th>Back</th></tr>${(st.kit||"").split("\n").map(x=>x.trim()).filter(Boolean).map(x=>`<tr><td>${esc(x)}</td><td>☐</td><td>☐</td></tr>`).join("")}</table>
       <h2>Packing up</h2><ol><li>Every race ticked on the Results tab.</li><li>System › Kit owner › Results and backup › Results to take home › Today – save the zip.</li>
-      <li>System › Event › Start a new event.</li><li>Battery on charge. Everything back in the box.</li></ol></div>`+troublePages(top);
+      <li>System › Event setup › Start a new event.</li><li>Battery on charge. Everything back in the box.</li></ol></div>`+troublePages(top);
   try{ window.print(); }catch(e){ toast("Printing isn't available here"); } }
 // ================= System tab: Ready to race · Screens and QR codes · Event · Kit owner =================
 let sysPage=null, kitOpen=false, sysQ="", readyOpen=null, sysPages={};
@@ -8688,16 +8706,8 @@ function sysFind(n){ for(const [id,p] of Object.entries(sysPages||{})) if(p.h&&p
 function sysGo(p){ sysPage=p; sysQ=""; lastKey=""; render(); try{ window.scrollTo(0,0); }catch(e){} }
 // anything wrong anywhere on the kit shows in Ready to race, with the button to fix it. soft = worth knowing, not a problem
 function kitIssues(){ const I=[], u=st.update||{}, pu=st.pico_upd||{};
-  if(st.practice) I.push({label:"Practice is on",hint:"Races aren't saved",btn:"Turn off",act:"post('/api/practice',{on:false})"});
-  if(st.backup&&!st.backup.ok) I.push({label:"Backup problem",hint:st.backup.msg||"Check the backup stick",btn:"Open",act:"sysGo('results')"});
-  const b=st.batt; if(b!=null){ const w=battWord(b); if(w[1]!=="good") I.push({label:`Battery ${b.toFixed(1)} V`,hint:w[0],btn:"Open",act:"sysGo('power')"}); }
-  const p=st.pi_temp; if(p){ const w=tempWord(p); if(w&&w[1]!=="good") I.push({label:"Pi temperature "+p.temp.toFixed(0)+" °C",hint:w[0],btn:"Open",act:"sysGo('power')"});
-    if(p.volt!=null){ const v=voltWord(p); if(v[1]==="bad") I.push({label:"Pi power supply "+p.volt.toFixed(2)+" V",hint:v[0]+" – check the 5 V converter and cable",btn:"Open",act:"sysGo('power')"}); } }
-  const bx=st.box; if(bx&&bx.temp!=null){ const w=boxWord(bx.temp); if(w[1]!=="good") I.push({label:"Inside the box "+bx.temp.toFixed(0)+" °C",hint:w[0],btn:"Open",act:"sysGo('power')"}); }
-  const d=st.storage; if(d){ const w=diskWord(d); if(w[1]!=="good") I.push({label:"Storage "+d.free_gb.toFixed(1)+" GB free",hint:w[0],btn:"Open",act:"sysGo('power')"}); }
-  if(st.now_ms&&clockBad()) I.push({label:"Clock is wrong",hint:"Race times and dates will be off",btn:"Open",act:"sysGo('power')"});
   if(st.firewall&&st.firewall.state===false) I.push({label:"Windows is blocking phones",hint:"Phones can't open the app",btn:"Open",act:"sysGo('net')"});
-  if(st.power&&st.power.pi&&st.access&&!st.access.master_pin) I.push({label:"Timing desk PIN not set",hint:"The first phone to open the app will be asked to choose one",btn:"Open",act:"sysGo('adv')"});
+  if(st.power&&st.power.pi&&st.access&&!st.access.master_pin) I.push({label:"Timing desk PIN not set",hint:"The first phone to open the app will be asked to choose one",btn:"Open",act:"sysGo('officials')"});
   if(u.newer) I.push({soft:true,label:"Update ready",hint:"Timing app v"+u.latest,btn:"Open",act:"sysGo('upd')"});
   else if(pu.newer&&st.connected) I.push({soft:true,label:"Update ready",hint:"Timing box program v"+pu.latest,btn:"Open",act:"sysGo('upd')"});
   return I; }
@@ -8709,19 +8719,16 @@ function reqHtml(){ const a=st.access; if(!a||!a.requests.length) return "";
     <label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="rem_${r.id}" ${r.usual?"checked":""} style="width:auto"> Remember ${esc(r.name)} for next time</label></div>`).join(""); }
 function readyCard(master,test){
   const c=dayChecks(), need=c.filter(x=>!x.ok&&!x.opt), iss=master?kitIssues():[], hard=iss.filter(x=>!x.soft), req=master&&st.access?st.access.requests.length:0;
-  const allOk=!need.length&&!hard.length&&!req&&!st.test, open=allOk?!!readyOpen:true;
-  if(!open) return `<div class="card rdy one"><button class="rdyline" onclick="readyOpen=true;lastKey='';render()"><span class="tick">✓</span><b>Ready to race</b><span class="mute">All checks done${iss.length?" · "+iss.length+" to look at":""}</span><span class="cv">▾</span></button></div>`;
-  const n=need.length+hard.length+req;
+  const n=need.length+hard.length+req, allOk=!n&&!st.test;
   let h=`<div class="card rdy ${allOk?"":"todo"}"><div class="rdyh"><h2>Ready to race</h2><span class="rpill ${allOk?"ok":""}">${allOk?"All done":n+" to fix"}</span></div>`;
-  for(const x of c) h+=`<div class="chk1 ${x.ok?"ok":""} ${x.opt?"opt":""}"><span class="mk">${x.ok?"✓":x.opt?"–":"!"}</span>
-    <span class="tx">${esc(x.label)}${x.opt?" <span class='mute' style='font-weight:500'>(optional)</span>":""}<small>${esc(x.hint)}</small></span>
-    ${master&&x.btn&&!x.ok?`<button class="btn sm" onclick="${x.act}">${x.btn}</button>`:""}</div>`;
+  if(req) h+=reqHtml();
+  for(const x of c){ const good=x.ok, btn=master&&x.btn&&(!good||x.always)?`<button class="btn sm ${good||x.opt?"":"amber"}" onclick="${x.act}">${x.btn}</button>`:"";
+    h+=good?`<div class="chk1 ok one"><span class="mk">✓</span><span class="tx">${esc(x.label)}<small>${esc(x.hint)}</small></span>${btn}</div>`
+      :`<div class="chk1 ${x.opt?"opt":""}"><span class="mk">${x.opt?"–":"!"}</span><span class="tx">${esc(x.label)}<small>${esc(x.hint)}</small></span>${btn}</div>`; }
   for(const x of iss) h+=`<div class="chk1 ${x.soft?"opt":""}"><span class="mk">${x.soft?"i":"!"}</span><span class="tx">${esc(x.label)}<small>${esc(x.hint)}</small></span>
     <button class="btn sm" onclick="${x.act}">${x.btn}</button></div>`;
-  if(req) h+=reqHtml();
   if(test) h+=test;
   if(!master) h+=`<p class="mute" style="margin:8px 0 0;font-size:14px">Only the timing desk can change these.</p>`;
-  if(allOk) h+=`<div class="row"><button class="btn sm" onclick="readyOpen=false;lastKey='';render()">Hide</button></div>`;
   return h+`</div>`; }
 function appBase(){ return (((st.join||{}).url)||location.origin).replace(/#.*$/,"").replace(/\/+$/,""); }
 function screensCard(master){
@@ -8737,7 +8744,7 @@ function qrSheet(url,title){ $("sheetin").innerHTML=`<h2>${esc(title)}</h2><p cl
   <div style="text-align:center">${qrSvg(url,260)}<div style="font-weight:700;margin-top:6px">${esc(url)}</div></div>
   <div class="row"><a class="btn pri" href="${esc(url.replace(/^https?:\/\/[^/]+/,""))||"/"}" target="_blank" style="text-decoration:none">Open here</a><button class="btn" onclick="closeSheet()">Close</button></div>`; $("sheet").classList.add("on"); }
 function joinSheet(){ const j=st.join||{};
-  $("sheetin").innerHTML=`<h2>Join card</h2>${j.ssid?"":`<p class="warn" style="margin-top:0">${st.role==="master"?"Add the Wi-Fi name and password (Kit owner › Wi-Fi and phones) to put a Wi-Fi code on the card.":"Ask the timing desk to add the Wi-Fi for the Wi-Fi code."}</p>`}
+  $("sheetin").innerHTML=`<h2>Join card</h2>${j.ssid?"":`<p class="warn" style="margin-top:0">${st.role==="master"?"Add the Wi-Fi name and password (Kit owner › Wi-Fi) to put a Wi-Fi code on the card.":"Ask the timing desk to add the Wi-Fi for the Wi-Fi code."}</p>`}
     ${joinCodes(200)}<div class="row"><button class="btn pri" onclick="downloadCard()">Download</button><button class="btn" onclick="printCard()">Print</button><button class="btn" onclick="closeSheet()">Close</button></div>`; $("sheet").classList.add("on"); }
 function eventCard(P,racing){
   const b=st.brand||{}, r=(n,v,act,extra)=>`<button class="erow" onclick="${act}"><span class="en">${n}</span><span class="ev">${v}</span><span class="cv">›</span></button>`;
@@ -8751,6 +8758,11 @@ function eventCard(P,racing){
   if(!isBasic()) h+=`<div class="erow nob"><span class="en">Practice <span class="mute" style="font-weight:500">(results not saved)</span></span><span class="ev ${st.practice?"bad":""}">${st.practice?"On":"Off"}</span><button class="btn sm ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Turn off":"Turn on"}</button></div>`;
   h+=r(`<span class="mute">Start a new event</span>`,(st.past_events||[]).length?"Last: "+esc(st.past_events[0]):"",racing?"toast('Finish the race first')":"askNewEvent()");
   return h+`</div>`; }
+const FOLDER_ICON={event:"⚑",race:"⏱",box:"▣",venue:"☀",officials:"☺",screens:"⌗",net:"≋",power:"⚡",results:"⇩",email:"✉",upd:"↻",owner:"⚿"};
+function folderList(P,g,title){ let h=`<div class="card flist"><div class="fhead">${esc(title)}</div>`;
+  for(const [id,p] of Object.entries(P)){ if(p.g!==g||!p.h) continue;
+    h+=`<button class="frow" onclick="sysGo('${id}')"><span class="fic" aria-hidden="true">${FOLDER_ICON[id]||"›"}</span><span class="fn">${esc(p.t)}<small>${esc(p.s||"")}</small></span><span class="cv">›</span></button>`; }
+  return h+`</div>`; }
 function kitCard(P){
   let h=`<div class="card kcard"><button class="khead" onclick="kitOpen=!kitOpen;lastKey='';render()"><span class="kic" aria-hidden="true">${kitOpen?"▾":"▸"}</span><span><b>Kit owner</b><small>Updates, Wi-Fi, backup, power, hire</small></span></button>`;
   if(kitOpen) for(const id of ["box","upd","net","results","power","owner","adv"]){ const p=P[id]; if(!p.h) continue;
@@ -8758,16 +8770,14 @@ function kitCard(P){
   return h+`</div>`; }
 // ---------- one search for settings and fixes ----------
 function sysIndex(){ const out=[], P=sysPages||{};
-  const KW={net:"wifi wi-fi hotspot internet phones password network join",box:"timing box emergency stop e-stop wiring restart log pico usb",upd:"update updates version upgrade key go back",
-    results:"backup usb stick zip results take home download problem report",power:"battery power voltage volts temperature heat storage clock shut down restart turn off charge",
-    owner:"owner lock pin hire reset kit list checklist",adv:"app address ip pin desk tide key worldtides gps name screen versions report email gmail",
-    venue:"venue weather tide tides surf swell uv wind location beach",officials:"officials approve phones roles close event starter marshal",clubs:"club codes team managers"};
+  const KW={net:"wifi wi-fi hotspot internet phones password network join app address ip",box:"timing box emergency stop e-stop wiring restart log pico usb button test buttons finish",upd:"update updates version versions upgrade key go back",
+    results:"backup usb stick zip results take home download",email:"email gmail report problem reports helper kit email send",power:"battery power voltage volts temperature heat storage clock shut down restart turn off charge dips screen",
+    owner:"owner lock pin hire reset kit list checklist",event:"club event name logo program heats new event",race:"mode basic full lanes changeovers teams taplin relay practice training",
+    venue:"venue weather tide tides surf swell uv wind location beach gps tide key worldtides",officials:"officials approve phones roles close event starter marshal desk pin timing desk name club codes team managers",
+    screens:"join card qr results screen tv board marshalling team manager print guides"};
   for(const [id,p] of Object.entries(P)){ if(!p.h) continue;
     const names=[...p.h.matchAll(/class="sn">([^<]+)</g)].map(m=>m[1]), txt=(p.t+" "+names.join(" ")+" "+(KW[id]||"")).toLowerCase();
-    out.push({kind:"set",id:id,title:p.t,where:p.g==="kit"?"Kit owner":"Event",txt:txt,names:names}); }
-  const ev=[["Club and event","brandSheet()","club event name logo"],["Mode","","basic full mode"],["Lanes","lanesSheet()","lanes number how many"],["Practice","","practice training not saved"],["Start a new event","askNewEvent()","new event clear fresh start"],
-    ["Join card","joinSheet()","join card qr wifi wi-fi password scan"],["Results screen","qrSheet(appBase()+'/#board','Results screen')","results screen tv board big screen"]];
-  for(const [t,act,k] of ev) out.push({kind:"set",title:t,act:act||"sysQ='';sysSearch()",where:/Join|Results screen/.test(t)?"Screens and QR codes":"Event",txt:(t+" "+k).toLowerCase(),names:[]});
+    out.push({kind:"set",id:id,title:p.t,where:p.g==="kit"?"Kit owner":"Event day",txt:txt,names:names}); }
   FIXES.forEach(([q,a],i)=>out.push({kind:"fix",i:i,title:q,txt:(q+" "+a).toLowerCase()}));
   return out; }
 function sysResults(){ const q=sysQ.trim().toLowerCase(); if(!q) return "";
@@ -8884,7 +8894,7 @@ function renderSystem(){
       const racing=st.state==="ARMED"||st.state==="RACING";
       const row=(name,status,btns,cls)=>`<div class="srow ${cls||""}"><div class="sn">${name}</div><div class="ss">${status}</div><div class="sb">${btns||""}</div></div>`;
       let L="";
-      G={event:"",box:"",upd:"",net:"",results:"",power:"",owner:"",adv:""};
+      G={event:"",race:"",box:"",venue:"",people:"",screens:"",upd:"",net:"",results:"",email:"",power:"",owner:""};
       const ownLocked=!!(st.owner&&st.owner.set&&!st.owner.open);
       if(master&&st.update&&ownLocked){ const u=st.update;
         G.upd+=row("Timing app", `v${esc(u.current)}${u.newer?` · <b class="okb">v${esc(u.latest)} is out</b>`:""} · <span class="mute">the owner installs updates</span>`,
@@ -8895,8 +8905,8 @@ function renderSystem(){
           (u.newer?`<button class="btn pri" ${racing||updBusy?"disabled":""} onclick="askUpdate()">Update</button>`:"")
           +`<button class="btn" ${updBusy?"disabled":""} onclick="updDo({check:true},'Checked')">Check</button>`
           +(u.prev?`<button class="btn" ${racing||updBusy?"disabled":""} onclick="askRollback()">Go back${u.prev!=="earlier"?" to v"+esc(u.prev):""}</button>`:""), u.newer?"hi":""); }
-      if(master&&st.power&&st.power.pi&&st.access&&!st.access.master_pin) G.adv+=row("Timing desk PIN", `<b class="bad">Not set</b><span class="mute"> – the first phone to open the app will be asked to choose one. Set it now if you're at the Pi's screen.</span>`,
-        ownLocked?`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`:`<button class="btn pri" onclick="setTimeout(()=>{const e=$('mpin');if(e){e.scrollIntoView({block:'center'});e.focus();}},50)">Set PIN</button>`,"hi");
+      if(master&&st.power&&st.power.pi&&st.access&&!st.access.master_pin) G.people+=row("Timing desk PIN", `<b class="bad">Not set</b><span class="mute"> – the first phone to open the app will be asked to choose one. Set it now if you're at the Pi's screen.</span>`,
+        `<button class="btn pri" onclick="setTimeout(()=>{const e=$('mpin');if(e){e.scrollIntoView({block:'center'});e.focus();}},50)">Set PIN</button>`,"hi");
       if(master&&st.wifi&&st.wifi.on) G.net+=(st.inet&&st.inet.two)?hotspotRow(row)+inetRow(row):wifiRow(row,racing);
       if(master&&st.access&&st.wifi&&st.wifi.on&&st.wifi.hotspot){ if(!(st.inet&&st.inet.two)) G.net+=hsRow(row,racing,ownLocked); }
       else if(master&&st.access) G.net+=row("Wi-Fi for join card", `<div class="sin"><input type="text" id="wssid" value="${esc(a.net.ssid)}" placeholder="Wi-Fi name">
@@ -8919,8 +8929,6 @@ function renderSystem(){
         st.firewall.state||st.firewall.busy?"":`<button class="btn pri" onclick="post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))">Allow phones</button>`);
       if(master) G.results+=row("Results to take home", `<span class="mute">Results spreadsheet, program and race log as a zip file</span>`,
         `<a class="btn" href="/event_pack.zip" download>Today</a>${(st.past_events||[]).length?`<button class="btn" onclick="packSheet()">Saved events</button>`:""}`);
-      if(master) G.results+=row("Problem report", `<span class="mute">Logs and settings for the kit owner – no passwords, no crew names</span>${(st.report||{}).queued?`<div class="mute" style="font-size:13px">${st.report.queued} email${st.report.queued>1?"s":""} waiting to send</div>`:""}${st.report&&!st.report.ready?`<div class="mute" style="font-size:13px">Kit email isn't set up yet – <a href="#" onclick="sysGo('adv');return false">set it up in Advanced</a></div>`:""}`,
-        `<button class="btn" onclick="reportSheet()">Send</button><a class="btn" href="/diagnostics.zip" download>Download</a><button class="btn" onclick="post('/api/diagnostics',{}).then(()=>toast('Checked the USB stick'))">Save to USB</button>`);
       if(master&&st.owner) G.owner+=row("Owner lock", !st.owner.set?`<span class="mute">Off · set an owner PIN before hiring the kit out – it locks updates and advanced settings</span>`
           :st.owner.open?`<b class="okb">Unlocked</b><span class="mute"> · locks again in ${st.owner.mins} min</span>`:`<b>On</b><span class="mute"> · updates and advanced settings are locked</span>`,
         !st.owner.set?`<button class="btn" onclick="ownerSheet('set')">Set PIN</button>`:st.owner.open?`<button class="btn" onclick="ownDo({lock:true},'Locked')">Lock now</button><button class="btn" onclick="ownerSheet('set')">Change PIN</button>`
@@ -8933,63 +8941,89 @@ function renderSystem(){
       if(master&&st.power&&st.power.on) G.power+=row("Power", `<span class="mute">Turn the timing ${st.power.pi?"Pi":"computer"} off safely – no need to open the case</span>`,
         `<button class="btn" ${racing?"disabled":""} onclick="powerAsk('restart')">Restart</button><button class="btn red" ${racing?"disabled":""} onclick="powerAsk('off')">Power off</button>`);
       {
-        let A="";
-        if(master&&st.access&&ownLocked) A+=row("App address and timing desk PIN", `<span class="mute">Locked by the owner</span>`, `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
-        if(master&&st.access&&!ownLocked) A+=row("App address", `<div class="sin"><input type="text" id="waddr" value="${esc(a.net.addr)}" placeholder="${esc(a.auto_url)}"></div>
+        if(master&&st.access&&ownLocked) G.net+=row("App address", `<span class="mute">Locked by the owner</span>`, `<button class="btn" onclick="ownerSheet('open')">Unlock</button>`);
+        if(master&&st.access&&!ownLocked) G.net+=row("App address", `<div class="sin"><input type="text" id="waddr" value="${esc(a.net.addr)}" placeholder="${esc(a.auto_url)}"></div>
             <div class="mute" style="font-size:13px">Empty = ${esc(a.auto_url)} · set it once the router gives this computer a fixed address</div>`,
-            `<button class="btn" onclick="offDo({net:{ssid:a_ssid(),pass:a_pass(),addr:$('waddr').value}},'Saved')">Save</button>`)
-          +row("Timing desk PIN", `<div class="sin"><input type="text" id="mpin" inputmode="numeric" value="${esc(a.master_pin)}" placeholder="off" style="max-width:140px"></div>
-            <div class="mute" style="font-size:13px">Lets a phone or tablet do everything the ${st.power&&st.power.pi?"Pi's own screen":"timing computer"} can · stays unlocked until Close event, New event or a new PIN · empty = off</div>`, `<button class="btn" onclick="offDo({master_pin:$('mpin').value},'Saved')">Save</button>`)
-          +""; if(master&&st.access&&a.regulars&&a.regulars.length) G.net+=(row("Officials' phones", a.regulars.map(r=>`<span class="rchip">${esc(r.name)} · ${ROLE_NAME[r.role]}
-            <button class="btn sm" onclick="offDo({forget:'${esc(r.name).replace(/'/g,"")}'},'Forgotten')">✕</button></span>`).join(" ")+`<div class="mute" style="font-size:13px;margin-top:4px">These officials rejoin without asking again</div>`,""));
-        if(st.local||!st.me) A+=row("Your name", `<div class="sin"><input type="text" id="myname" value="${esc(myName())}" placeholder="Name or initials" style="max-width:200px"></div>`,
+            `<button class="btn" onclick="offDo({net:{ssid:a_ssid(),pass:a_pass(),addr:$('waddr').value}},'Saved')">Save</button>`);
+        if(master&&st.access) G.people+=row("Timing desk PIN", `<div class="sin"><input type="text" id="mpin" inputmode="numeric" value="${esc(a.master_pin)}" placeholder="off" style="max-width:140px"></div>
+            <div class="mute" style="font-size:13px">Lets a phone or tablet do everything the ${st.power&&st.power.pi?"Pi's own screen":"timing computer"} can · stays unlocked until Close event, New event or a new PIN · empty = off</div>`, `<button class="btn" onclick="offDo({master_pin:$('mpin').value},'Saved')">Save</button>`);
+        if(st.local||!st.me) G.people+=row("Timing desk name", `<div class="sin"><input type="text" id="myname" value="${esc(myName())}" placeholder="Name or initials" style="max-width:200px"></div>
+            <div class="mute" style="font-size:13px">Shown next to changes made at the timing desk</div>`,
           `<button class="btn" onclick="setMyName($('myname').value);toast('Saved');lastKey='';render()">Save</button>`);
-        A+=row("Screen", `<span class="mute">${wakeMsg}</span>`, "");
+        if(master&&st.access&&a.regulars&&a.regulars.length) G.people+=row("Officials' phones", a.regulars.map(r=>`<span class="rchip">${esc(r.name)} · ${ROLE_NAME[r.role]}
+            <button class="btn sm" onclick="offDo({forget:'${esc(r.name).replace(/'/g,"")}'},'Forgotten')">✕</button></span>`).join(" ")+`<div class="mute" style="font-size:13px;margin-top:4px">These officials rejoin without asking again</div>`,"");
+        G.power+=row("Screen", `<span class="mute">${wakeMsg}</span>`, "");
+        // Timing box and buttons: the button test lives here too
+        if(st.has_test){ const lt=st.last_test, today=lt&&lt.date===st.today, can=st.connected&&(st.state==="IDLE"||st.state==="DONE")&&!st.test;
+          G.box+=row("Button test", today?`Done today at ${esc(lt.at)}${lt.missing.length?` · <span class="bad">no press: ${esc(lt.missing.join(", "))}</span>`:` · <span class="ok">all buttons working</span>`}`:`<span class="mute">Every morning – the only way to find a broken FINISH cable</span>`,
+            can?`<button class="btn" onclick="cmd('test on')">${today?"Test again":"Start button test"}</button>`:""); }
         if(st.connected) G.box+=row("Timing box log", `<div class="msgs" style="max-height:120px;overflow:auto">${st.messages.map(m=>esc(m[0]+"  "+m[1])).join("\n")||"—"}</div>`, "");
         if(master&&!ownLocked) G.upd+=row("Updates key", st.upd_key?`<span class="ok">Set</span><span class="mute"> · updates come from the private repository</span>`
             :`<span class="mute">Not set – only needed once the GitHub repository is private</span>`,
-          ownLocked?"":`<button class="btn" onclick="keySheet()">${st.upd_key?"Change":"Add"}</button>${st.upd_key?`<button class="btn" onclick="askYes('Remove the updates key? Updates stop working if the repository is private.',()=>keyDo(''),'Yes, remove')">Remove</button>`:""}`);
+          `<button class="btn" onclick="keySheet()">${st.upd_key?"Change":"Add"}</button>${st.upd_key?`<button class="btn" onclick="askYes('Remove the updates key? Updates stop working if the repository is private.',()=>keyDo(''),'Yes, remove')">Remove</button>`:""}`);
+        G.upd+=row("Versions", `App v${esc(st.app)} · timing box program v${esc(st.fw||"?")}${st.port?" on "+esc(st.port):""}`, "");
         if(master) G.owner+=row("Hire-out reset", !(st.owner&&st.owner.set)?`<span class="mute">Set an owner PIN first – then this gets the kit ready for the next hirer</span>`
             :`<span class="mute">Ready for the next hirer: saves today, then clears results, officials, the timing desk PIN, the join-card Wi-Fi and the club name</span>`,
           st.owner&&st.owner.set?`<button class="btn red" ${racing?"disabled":""} onclick="hireSheet()">Reset for next hire</button>`:"");
         if(master) G.owner+=row("Hire kit list", `<span class="mute">${esc((st.kit||"").split("\n").length)} items · printed with the role guides</span>`, ownLocked?"":`<button class="btn" onclick="kitSheet()">Edit</button>`);
         if(master&&st.connected&&!ownLocked) G.box+=row("Restart timing program", `<span class="mute">Only if the screen says the timing program stopped – clears any race in progress</span>`,
           `<button class="btn red" onclick="askYes('Restart the timing program in the timing box? Any race in progress is cleared.',()=>cmd('restart'),'Yes, restart')">Restart</button>`);
-        if(master&&st.loc&&!isBasic()) A+=locKitRows();
-        if(master) A+=reportRow(row,ownLocked);
-        A+=row("Versions", `App v${esc(st.app)} · timing box program v${esc(st.fw||"?")}${st.port?" on "+esc(st.port):""}`, "");
-        G.adv=A+G.adv;
+        if(master&&st.loc&&!isBasic()) G.venue+=locKitRows();
+        if(master) G.email+=reportRow(row,ownLocked);
+        if(master) G.email+=row("Problem report", `<span class="mute">Logs and settings for the kit owner – no passwords, no crew names</span>${(st.report||{}).queued?`<div class="mute" style="font-size:13px">${st.report.queued} email${st.report.queued>1?"s":""} waiting to send</div>`:""}`,
+          `<button class="btn" onclick="reportSheet()">Send</button><a class="btn" href="/diagnostics.zip" download>Download</a><button class="btn" onclick="post('/api/diagnostics',{}).then(()=>toast('Checked the USB stick'))">Save to USB</button>`);
+        // Event setup and Race setup
+        const b_=st.brand||{}, pg_=st.program||{};
+        G.event+=row("Club and event", esc(b_.club?b_.club+(b_.event?" · "+b_.event:""):"Not set"), `<button class="btn" onclick="brandSheet()">Change</button>`);
+        if(!isBasic()) G.event+=row("Program", pg_.mode==="on"?"Program on":pg_.mode==="off"?"No program – heats chosen by hand":`<span class="mute">Not chosen yet</span>`, `<button class="btn" onclick="goTab('program')">Open</button>`);
+        G.event+=row("Start a new event", `<span class="mute">Saves today and clears for the next event${(st.past_events||[]).length?" · last: "+esc(st.past_events[0]):""}</span>`,
+          `<button class="btn" onclick="${racing?"toast('Finish the race first')":"askNewEvent()"}">New event</button>`);
+        G.race+=row("Mode", `<b>${isBasic()?"Basic":"Full"}</b>`, `<button class="btn" ${racing?"disabled":""} onclick="setMode('${isBasic()?"full":"basic"}')">Switch to ${isBasic()?"Full":"Basic"}</button>`);
+        G.race+=row("Lanes", st.lanes.length&&st.fw?st.lanes.length+" lanes":"–", `<button class="btn" onclick="${racing||st.test?"toast('Change lanes between races')":"lanesSheet()"}">Change</button>`);
+        if(st.co_cmd||st.co) G.race+=row("Changeovers", st.co?`<b class="okb">On</b><span class="mute"> – light 1 s on, 2 s off, then on until the next driver presses</span>`:`<span class="mute">Off – one press per arrival. Turn on for teams and Taplin relays</span>`,
+          `<button class="btn ${st.co?"amber":""}" ${racing?"disabled":""} onclick="setCo(${!st.co})">${st.co?"Turn off":"Turn on"}</button>`);
+        else G.race+=row("Changeovers", `<span class="mute">Needs timing box program v3.13 – update it under Updates</span>`, "");
+        if(!isBasic()) G.race+=row("Practice", st.practice?`<b class="bad">On – races aren't saved</b>`:`<span class="mute">Off – results saved</span>`,
+          `<button class="btn ${st.practice?"pri":""}" onclick="post('/api/practice',{on:${!st.practice}})">${st.practice?"Turn off":"Turn on"}</button>`);
+        // Screens and QR codes
+        const qb=appBase(), qo=(h,t)=>`<button class="btn" onclick="qrSheet('${qb}/${h}','${t}')">QR</button><a class="btn" href="/${h}" target="_blank" style="text-decoration:none">Open</a>`;
+        G.screens+=row("Join card", st.join&&st.join.ssid?`<span class="ok">Ready</span><span class="mute"> · Wi-Fi ${esc(st.join.ssid)}</span>`:`<span class="mute">Add the Wi-Fi under Kit owner › Wi-Fi for a Wi-Fi code</span>`, `<button class="btn" onclick="joinSheet()">QR</button>`);
+        G.screens+=row("Results screen", `<span class="mute">For a TV or tablet</span>`, qo("#board","Results screen"));
+        if(!isBasic()){ G.screens+=row("Marshalling screen", `<span class="mute">Heats and lanes for the marshals</span>`, qo("#marshalling","Marshalling screen"));
+          G.screens+=row("Team Manager", `<span class="mute">Club results and protests</span>`, qo("#team","Team Manager"));
+          G.screens+=row("Print role guides", `<span class="mute">One page for each official</span>`, `<button class="btn" onclick="printGuides()">Print</button>`); }
       }
   }
   const u=st.update||{}, pu=st.pico_upd||{}, w=st.wifi||{}, L=st.loc, ol=!!(st.owner&&st.owner.set&&!st.owner.open);
   // the pages: Event ones change per carnival, Kit owner ones are set once
+  const ev=L&&!isBasic()?wxCard()+locRows(master):"";
   const P={
-    venue:{t:"Venue and weather",g:"event",s:L&&L.venue?L.venue.name:"No venue",h:L&&!isBasic()?locRows(master):""},
-    officials:{t:"Officials",g:"event",s:st.access?st.access.officials.length+" signed in":"",h:st.access?officialsCard():""},
-    clubs:{t:"Club codes",g:"event",s:(st.clubs||[]).length+" clubs",h:clubCard()},
-    box:{t:"Timing box and emergency stop",g:"kit",s:!st.connected?"Not connected":st.faults.length?"Wiring fault":"v"+(st.fw||"?")+" · OK",h:G.box},
-    upd:{t:"Updates",g:"kit",s:u.newer?"App v"+u.latest+" ready":pu.newer&&st.connected?"Timing box v"+pu.latest+" ready":"Up to date",h:G.upd},
-    net:{t:"Wi-Fi and phones",g:"kit",s:w.on?(w.mode==="hotspot"?"Hotspot on":w.mode==="wifi"?"Wi-Fi: "+(w.name||""):"No Wi-Fi"):(st.join&&st.join.ssid?"Join card: "+st.join.ssid:""),h:G.net},
+    event:{t:"Event setup",g:"event",s:(st.brand||{}).club?(st.brand.club+((st.brand||{}).event?" · "+st.brand.event:"")):"Club, event, program",h:G.event},
+    race:{t:"Race setup",g:"event",s:(isBasic()?"Basic":"Full")+" · "+(st.lanes.length||"–")+" lanes"+(st.co?" · changeovers":"")+(st.practice?" · practice ON":""),h:G.race},
+    box:{t:"Timing box and buttons",g:"event",s:!st.connected?"Not connected":st.faults.length?"Wiring fault":(st.last_test&&st.last_test.date===st.today?"Tested today":"Button test not done"),h:G.box},
+    venue:{t:"Venue and weather",g:"event",s:L&&L.venue?L.venue.name:"No venue",h:ev+(G.venue?`<div class="card slist">${G.venue}</div>`:"")},
+    officials:{t:"Officials",g:"event",s:st.access?st.access.officials.length+" signed in":"",h:(st.access&&!isBasic()?officialsCard()+clubCard():"")+(G.people?`<div class="card slist">${G.people}</div>`:"")},
+    screens:{t:"Screens and QR codes",g:"event",s:"Join card, results"+(isBasic()?"":", marshal, TM"),h:G.screens},
+    net:{t:"Wi-Fi",g:"kit",s:w.on?(w.mode==="hotspot"?"Hotspot on":w.mode==="wifi"?"Wi-Fi: "+(w.name||""):"No Wi-Fi"):(st.join&&st.join.ssid?"Join card: "+st.join.ssid:""),h:G.net},
+    power:{t:"Power",g:"kit",s:st.batt!=null?st.batt.toFixed(1)+" V":(st.pi_temp?"Pi "+Math.round(st.pi_temp.temp)+" °C":""),h:healthCard()+(G.power?`<div class="card slist">${G.power}</div>`:"")},
     results:{t:"Results and backup",g:"kit",s:st.backup?(st.backup.ok?"Backed up "+st.backup.at:"Backup problem"):"Take-home zip, backup stick",h:G.results},
-    power:{t:"Battery and power",g:"kit",s:st.batt!=null?st.batt.toFixed(1)+" V":"",h:healthCard()+(G.power?`<div class="card slist">${G.power}</div>`:"")},
-    owner:{t:"Owner lock and hire",g:"kit",s:st.owner&&st.owner.set?(st.owner.open?"Unlocked":"Locked"):"No owner PIN",h:G.owner},
-    adv:{t:"Advanced",g:"kit",s:"App address, desk PIN, tide key, reports",h:G.adv},
+    email:{t:"Email and reports",g:"kit",s:(st.report||{}).ready?"Kit email on"+((st.report||{}).queued?" · "+st.report.queued+" waiting":""):"Kit email not set up",h:G.email},
+    upd:{t:"Updates",g:"kit",s:u.newer?"App v"+u.latest+" ready":pu.newer&&st.connected?"Timing box v"+pu.latest+" ready":"Up to date",h:G.upd},
+    owner:{t:"Owner and hire",g:"kit",s:st.owner&&st.owner.set?(st.owner.open?"Unlocked":"Locked"):"No owner PIN",h:G.owner},
   };
   sysPages=P;
   const srch=`<div class="sysq"><span aria-hidden="true">⌕</span><input id="sysq" type="search" placeholder="Search settings and fixes" value="${esc(sysQ)}" oninput="sysQ=this.value;sysSearch()" autocomplete="off"></div>`;
   const top=(master?srch:"")+`<div id="sysres">${sysQ?sysResults():""}</div>`, hide=sysQ?' style="display:none"':"";
   const ready=readyCard(master,st.test?test:"");
-  let rest=screensCard(master);
-  if(master){
-    if(!isBasic()&&L) rest+=wxCard();
-    rest+=eventCard(P,racing)+kitCard(P);
-  } else rest+=(st.role==="admin"?clubCard()+(L?wxCard():""):"")+pinCard();
+  let rest="";
+  if(master) rest+=folderList(P,"event","Event day")+folderList(P,"kit","Kit owner"+(st.owner&&st.owner.set?(st.owner.open?" · unlocked":" · locked"):""));
+  else rest+=screensCard(master)+(st.role==="admin"?clubCard()+(L?wxCard():""):"")+pinCard();
   const pg=master&&sysPage&&P[sysPage]&&P[sysPage].h?P[sysPage]:null;
   let c;
   if(pg){
     const body=/^\s*<div class="card/.test(pg.h)?pg.h:`<div class="card slist">${pg.h}</div>`;
     c=`<div class="sysw pg"><div class="sysm">${top}<div id="sysbody"${hide}>${ready}${rest}</div></div>
-      <div class="sysp"><button class="sysback" onclick="sysGo(null)">‹ System</button><h1 class="spt">${esc(pg.t)}</h1><div class="sptg">${pg.g==="kit"?"Kit owner":"Event"}</div>${body}</div></div>`;
+      <div class="sysp"><button class="sysback" onclick="sysGo(null)">‹ System</button><h1 class="spt">${esc(pg.t)}</h1><div class="sptg">${pg.g==="kit"?"Kit owner":"Event day"}</div>${body}</div></div>`;
   } else c=top+`<div class="sysw" id="sysbody"${hide}><div>${ready}</div><div>${rest}</div></div>`;
   $("system").innerHTML=c;
   if(qf!=null){ const q=$("sysq"); if(q){ q.focus(); try{ q.setSelectionRange(qf,qf); }catch(e){} } }
