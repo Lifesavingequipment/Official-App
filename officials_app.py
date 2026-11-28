@@ -30,7 +30,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.31.2"
+APP_VERSION = "1.32.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -1412,11 +1412,120 @@ def pi_temp_read():
             pass
 
 
+# ---- Pi power: short dips are what switch a Pi off on the beach. Counted from the kernel's own messages,
+# kept with the temperatures in a small file so a report made after a power cut still shows what led up to it ----
+HEALTH_FILE = os.path.join(DATA, "pi_health.jsonl")
+DIPS_FILE = os.environ.get("IRB_DIPS_FILE")        # tests: a stand-in total of "Undervoltage detected!" messages
+PREV_FILE = os.environ.get("IRB_PREV_BOOT")         # tests: a stand-in for how the last power-on ended
+PWR = {"dips": [], "today": 0, "day": "", "last": "", "total": None, "prev": None, "minute": 0}
+
+
+def dips_total():
+    """how many times the Pi has run short of power since it switched on"""
+    if DIPS_FILE:
+        try:
+            with open(DIPS_FILE) as fh:
+                return int(fh.read().strip() or 0)
+        except (OSError, ValueError):
+            return None
+    if not IS_PI or not shutil.which("journalctl"):
+        return None
+    try:
+        r = subprocess.run(["journalctl", "-k", "-b", "-q", "--no-pager", "-o", "cat"], capture_output=True, text=True, timeout=10)
+        return r.stdout.count("Undervoltage detected") if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def power_sample(sticky_hit):
+    now = time.time()
+    day = datetime.now().strftime("%Y-%m-%d")
+    if PWR["day"] != day:
+        PWR.update(day=day, today=0)
+    n = dips_total()
+    new = 0
+    if n is not None:
+        if PWR["total"] is not None and n > PWR["total"]:
+            new = n - PWR["total"]
+        elif PWR["total"] is None and n:
+            new = n                                      # dips since switch-on, before the app started
+        PWR["total"] = n
+    elif sticky_hit:
+        new = 1                                          # no kernel log: count what the 10 s check saw
+    if new:
+        PWR["dips"].append((now, new))
+        PWR["today"] += new
+        PWR["last"] = datetime.now().strftime("%H:%M")
+    PWR["dips"] = [x for x in PWR["dips"] if now - x[0] < 3600]
+    return new
+
+
+def health_write(new):
+    rec = {"d": datetime.now().strftime("%Y-%m-%d"), "t": datetime.now().strftime("%H:%M"), "pi_c": PITEMP["temp"],
+           "pi_v": PITEMP["volt"], "dips": new, "box_c": S.get("box_temp"), "batt": S.get("batt")}
+    try:
+        os.makedirs(DATA, exist_ok=True)
+        with open(HEALTH_FILE, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
+        if os.path.getsize(HEALTH_FILE) > 1_500_000:     # about a week of minutes
+            with open(HEALTH_FILE, encoding="utf-8") as fh:
+                keep = fh.readlines()[-10000:]
+            with open(HEALTH_FILE, "w", encoding="utf-8") as fh:
+                fh.writelines(keep)
+    except OSError:
+        pass
+
+
+def prev_boot():
+    """how did the last power-on end? A sudden end after power dips is worth saying on the next start"""
+    if PREV_FILE:
+        try:
+            with open(PREV_FILE) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+    if not IS_PI or not shutil.which("journalctl"):
+        return None
+    try:
+        k = subprocess.run(["journalctl", "-k", "-b", "-1", "-q", "--no-pager", "-o", "cat"], capture_output=True, text=True, timeout=20)
+        if k.returncode:
+            return None
+        last = subprocess.run(["journalctl", "-b", "-1", "-n", "40", "-q", "--no-pager", "-o", "short-iso"], capture_output=True, text=True, timeout=20)
+        lines = (last.stdout or "").strip().splitlines()
+        if not lines:
+            return None
+        m = re.match(r"(\d{4}-\d\d-\d\d)T(\d\d:\d\d)", lines[-1])
+        clean = any(w in ln for ln in lines for w in ("Reached target System Power Off", "Reached target System Reboot",
+                                                     "Reached target reboot", "Reached target poweroff", "systemd-shutdown", "Journal stopped"))
+        return {"dips": k.stdout.count("Undervoltage detected"), "day": m.group(1) if m else "", "at": m.group(2) if m else "", "clean": clean}
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def power_view():
+    now = time.time()
+    p = PWR["prev"]
+    prev = None
+    if p and (p.get("dips") or (not p.get("clean") and p.get("day") == datetime.now().strftime("%Y-%m-%d"))):
+        prev = {"dips": p.get("dips", 0), "at": p.get("at", ""), "clean": bool(p.get("clean")),
+                "today": p.get("day") == datetime.now().strftime("%Y-%m-%d"), "day": p.get("day", "")}
+    return {"d10": sum(n for t, n in PWR["dips"] if now - t < 600), "today": PWR["today"], "last": PWR["last"], "prev": prev}
+
+
 def temp_loop():
+    PWR["prev"] = prev_boot()
     while not STOPPING.is_set():
         pi_temp_read()
         stations_read()
-        time.sleep(10)
+        try:
+            if time.time() - PWR["minute"] >= (int(os.environ.get("IRB_HEALTH_EVERY", "60"))):
+                PWR["minute"] = time.time()
+                health_write(power_sample(PWR.pop("seen", False) or bool(PITEMP["under_volt"])))
+            elif PITEMP["under_volt"]:
+                PWR["seen"] = True
+        except Exception:
+            pass
+        time.sleep(float(os.environ.get("IRB_TEMP_EVERY", "10")))
 
 
 BATTLOG = {"day": "", "start": None, "samples": []}     # (time, volts) through the day, for "used today" and "hours left"
@@ -1559,6 +1668,13 @@ def as_root(args, test=False):
 
 def nm(args, timeout=15):
     test = bool(os.environ.get("IRB_NMCLI"))
+    if not test and args and args[0] in ("-t", "-g"):      # reading only: no sudo needed, and nothing in the logs
+        try:
+            r = subprocess.run([NMCLI] + args, capture_output=True, text=True, timeout=timeout)
+            if not r.returncode:
+                return 0, r.stdout or "", (r.stderr or "").strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
     r = subprocess.run(as_root([NMCLI] + args, test), capture_output=True, text=True, timeout=timeout)
     if r.returncode and "password" in (r.stderr or "") and not test:      # no sudo: try as this user
         r = subprocess.run([NMCLI] + args, capture_output=True, text=True, timeout=timeout)
@@ -1571,6 +1687,9 @@ def nm_fields(line):
 
 INET = {"two": False, "dev": "", "hs_dev": "", "state": "", "name": "", "ip": "", "net": "", "saved": [],
         "scan": [], "scanned": 0, "busy": "", "msg": "", "pinned": False}
+
+
+HS_CACHE = {}          # the hotspot's name and password: read with sudo once, again only after a change
 
 
 def wifi_refresh():
@@ -1632,8 +1751,10 @@ def wifi_refresh():
         ssid = pw = ""
         hs_ip = "10.42.0.1"                        # NetworkManager's own hotspot address, unless one was set
         if hs:
-            _, o7, _ = nm(["-s", "-g", "802-11-wireless.ssid,802-11-wireless-security.psk", "connection", "show", hs])
-            lines = o7.splitlines() + ["", ""]
+            if HS_CACHE.get("name") != hs or not HS_CACHE.get("out"):
+                _, o7, _ = nm(["-s", "-g", "802-11-wireless.ssid,802-11-wireless-security.psk", "connection", "show", hs])
+                HS_CACHE.update(name=hs, out=o7)
+            lines = HS_CACHE["out"].splitlines() + ["", ""]
             ssid, pw = lines[0].strip(), lines[1].strip()
             _, o8, _ = nm(["-g", "ipv4.addresses", "connection", "show", hs])
             hs_ip = (o8.strip().split(",")[0].split("/")[0].strip() or hs_ip) if re.match(r"^\d", o8.strip()) else hs_ip
@@ -1666,6 +1787,7 @@ def hotspot_action(d):
     if rc:
         return "Couldn't change the hotspot: %s" % (err or out).strip()[:100]
     note("Timing hotspot is now called %s%s" % (name, " (new password)" if pw else ""))
+    HS_CACHE.clear()
     def go():
         time.sleep(2)                            # let this answer reach the phone before the hotspot restarts
         if live:
@@ -1772,13 +1894,16 @@ def inet_action(d):
     return "not allowed"
 
 
+WIFI_EVERY = int(os.environ.get("IRB_WIFI_EVERY", "60"))     # changes made in the app are read straight away
+
+
 def wifi_loop():
     while True:
         if not WIFI["busy"]:
             wifi_refresh()
             if not WIFI["on"] and not os.environ.get("IRB_NMCLI"):
                 return                           # not a Pi / no NetworkManager: nothing to watch
-        time.sleep(15)
+        time.sleep(WIFI_EVERY)
 
 
 def racing_now():
@@ -2120,17 +2245,24 @@ def diagnostics():
                                                                               S["state"], S["race"], S["lanes"], S["faults"]),
                 "Battery: %s V   Firewall rule: %s   App address: %s" % (S["batt"], FIREWALL["state"], app_url()),
                 "Update: %s" % json.dumps(update_view()), "Officials: %d   Requests: %d" % (len(officials), len(requests_)),
+                power_summary(),
                 "", "Recent messages:"] + ["  ".join(str(x) for x in (m if isinstance(m, (list, tuple)) else [m])) for m in list(messages)]
     logs = sorted(glob.glob(os.path.join(DATA, "pico_log_*.txt")))[-3:]
     extra = {"report.txt": "\n".join(info), "settings.json": json.dumps(s, indent=1), "history.jsonl": "\n".join(hist[-400:])}
+    h = health_table()
+    if h:
+        extra["pi_health.txt"] = h
     if IS_LINUX and shutil.which("journalctl"):
         for name, args in (("pi_restarts.txt", ["journalctl", "--list-boots", "--no-pager"]),
-                           ("app_log_before_restart.txt", ["journalctl", "-b", "-1", "-u", "irb-timing", "-n", "300", "--no-pager"]),
+                           ("app_log_before_restart.txt", ["journalctl", "-b", "-1", "-u", "irb-timing", "-n", "4000", "--no-pager"]),
                            ("pi_warnings_before_restart.txt", ["journalctl", "-b", "-1", "-p", "warning", "-n", "200", "--no-pager"]),
-                           ("app_log_now.txt", ["journalctl", "-b", "-u", "irb-timing", "-n", "300", "--no-pager"])):
+                           ("app_log_now.txt", ["journalctl", "-b", "-u", "irb-timing", "-n", "4000", "--no-pager"])):
             try:
                 r = subprocess.run(args, capture_output=True, text=True, timeout=20)
-                extra[name] = (r.stdout or r.stderr)[-200000:]
+                out = r.stdout or r.stderr
+                if name.startswith("app_log"):
+                    out = log_clean(out)
+                extra[name] = out[-200000:]
             except (OSError, subprocess.SubprocessError):
                 pass
         if IS_PI:
@@ -2139,6 +2271,49 @@ def diagnostics():
             except (OSError, subprocess.SubprocessError):
                 pass
     return zip_bytes([FLAGS_FILE] + logs, extra)
+
+
+LOG_NOISE = re.compile(r"\bsudo\[\d+\]|pam_unix\(sudo|COMMAND=|session (opened|closed) for user root")
+
+
+def log_clean(text, keep=300):
+    """the app's log without the sudo housekeeping lines (they once filled the whole report)"""
+    lines = [ln for ln in text.splitlines() if not LOG_NOISE.search(ln)]
+    return "\n".join(lines[-keep:]) + ("\n" if lines else "")
+
+
+def power_summary():
+    t, pv = PITEMP, power_view()
+    out = "Pi: %s °C (hottest today %s °C at %s)   5 V supply: %s V   power dips: %d in the last 10 min, %d today%s" % (
+        t["temp"], t["max"], t["max_at"] or "-", t["volt"], pv["d10"], pv["today"], (" (last %s)" % pv["last"]) if pv["last"] else "")
+    p = PWR["prev"]
+    if p:
+        out += "\nLast power-on ended %s %s – %s, %d power dips before that" % (
+            p.get("day", ""), p.get("at", ""), "shut down properly" if p.get("clean") else "SUDDENLY (power lost)", p.get("dips", 0))
+    return out
+
+
+def health_table(days=2):
+    """the last couple of days of Pi temperature, power and battery, one line a minute"""
+    try:
+        with open(HEALTH_FILE, encoding="utf-8") as fh:
+            rows = fh.readlines()[-3000:]
+    except OSError:
+        return ""
+    keep = {(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)}
+    out = ["Pi health, one line a minute (a gap means the Pi was off)", "",
+           "%-10s %-5s %6s %7s %6s %6s %8s" % ("date", "time", "pi °C", "5 V", "dips", "box °C", "battery")]
+    f = lambda v, fmt: (fmt % v) if isinstance(v, (int, float)) else "-"
+    for ln in rows:
+        try:
+            r = json.loads(ln)
+        except ValueError:
+            continue
+        if r.get("d") not in keep:
+            continue
+        out.append("%-10s %-5s %6s %7s %6s %6s %8s" % (r.get("d"), r.get("t"), f(r.get("pi_c"), "%.1f"), f(r.get("pi_v"), "%.2f"),
+                                                    r.get("dips") or "", f(r.get("box_c"), "%.1f"), f(r.get("batt"), "%.2f")))
+    return "\n".join(out) + "\n" if len(out) > 3 else ""
 
 
 # ---------- problem reports: emailed to the kit owner from the kit's own Gmail; queued until there's internet ----------
@@ -4252,6 +4427,7 @@ def snapshot(role="master", local=True, tok=None):
         d["next_break"] = next_break()
         d["marsh"] = marsh_status()
         d["pi_temp"] = pi_temp_view() if official or role in ("starter",) else None
+        d["pwr"] = power_view() if official or role in ("starter",) else None
         d["elapsed"] = (time.time() - S["go_at"]) if (S["state"] == "RACING" and S["go_at"]) else None
         d["messages"] = list(messages)[-20:]
         d["app"] = APP_VERSION
@@ -7770,6 +7946,8 @@ function healthRows(){ const b=st.batt, p=st.pi_temp, d=st.storage, c=st.batt_cf
   else if(st.role==="master"&&c.cmd&&!c.on) h+=`<div class="hrow"><div class="hhd"><span class="hn">Battery</span><span class="hv">Off</span></div><div class="hx">Not measured yet – wire the battery divider to GP26, then turn it on under Setup › Battery, power and owner lock.</div></div>`;
   if(p&&p.volt!=null) h+=hRow("Pi power supply",`${p.volt.toFixed(2)} V`,voltWord(p),(p.volt-4.5)/(5.25-4.5)*100,
     "Good: 5.0–5.2 V. Under 4.8 V the Pi can slow down or restart – check the 5 V converter and use a thick USB-C cable rated 5 A.");
+  const pw=st.pwr; if(pw&&(p||pw.today)) h+=hRow("Power dips",pw.today?`${pw.today} today · last ${esc(pw.last)}`:"None today",pw.d10>=3?["Bad","bad"]:pw.d10?["Check","amb"]:pw.today?["Earlier","amb"]:["Good","good"],null,
+    "A dip is when the Pi's 5 V supply drops too low for a moment. A few in a row and the Pi switches off. Usual causes: a power bank or converter that can't keep up, a thin or long USB-C cable, or the power gear getting hot in the sun.");
   if(p) h+=hRow("Pi temperature",`${p.temp.toFixed(0)} °C`,tempWord(p),(p.temp-30)/(90-30)*100,
     `Good: under 65 °C. Shade the box or give it air above ${p.hot.toFixed(0)} °C. The Pi slows down from ${p.crit.toFixed(0)} °C. Hottest today ${p.max!=null?p.max.toFixed(0)+" °C at "+esc(p.max_at):"–"}.`);
   const bx=st.box; if(bx&&bx.temp!=null) h+=hRow("Inside the box",`${bx.temp.toFixed(0)} °C`,boxWord(bx.temp),(bx.temp-15)/(75-15)*100,
@@ -7790,12 +7968,19 @@ function battUse(){ const u=st.batt_use; if(!u) return "";
   return `<b class="hu">Today: ${u.start_v.toFixed(1)} V (${u.start_pct}%) at ${esc(u.start_at)} → ${st.batt.toFixed(1)} V (${u.pct}%)${u.hours_left!=null?` · about ${u.hours_left<1?Math.round(u.hours_left*60)+" min":u.hours_left.toFixed(1)+" hours"} left at this rate (using about ${u.per_hour}% an hour)`:" · time left shows after about 45 minutes of use"}.</b> `; }
 function healthCard(){ const h=healthRows(); return h?`<div class="card"><div class="row" style="margin:0 0 4px;align-items:center;justify-content:space-between"><h2 style="margin:0">Kit health</h2>
   <button class="btn sm" id="hxbtn" onclick="hxOpen=!hxOpen;lastKey='';render()">${hxOpen?"Hide info":"What's good?"}</button></div>${h}</div>`:""; }
+let pwPrevHide=false;
+function powerWarn(){ const w=st.pwr; if(!w) return ""; let h="";
+  if(w.d10) h+=`<div class="${w.d10>=3?"bad-warn":"warn"} pwwarn">Power too low – the Pi's supply dipped ${w.d10===1?"once":w.d10+" times"} in the last 10 minutes (last at ${esc(w.last)}). ${w.d10>=3?"It may switch off – c":"C"}heck the battery and 5 V converter, use a short thick USB-C cable, and keep the power gear out of the sun.</div>`;
+  const pv=w.prev;
+  if(pv&&!pwPrevHide&&!w.d10) h+=`<div class="warn pwprev">${pv.clean?"Last time":"The Pi switched off suddenly"}${pv.at?" at "+esc(pv.at):""}${pv.today?"":" on "+esc(pv.day)}${pv.dips?` – ${pv.clean?"its power dipped too low "+pv.dips+" times":"after its power dipped too low "+pv.dips+" times"}`:" – it lost power"}. Check the battery, 5 V converter and cable. <button class="btn sm" onclick="pwPrevHide=true;lastKey='';render()">OK</button></div>`;
+  return h; }
 function tempWarn(){ const p=st.pi_temp, b=st.batt; if(!st.official&&st.role!=="starter") return ""; let h="";
   if(b!=null){ const w=battWord(b); if(w[1]!=="good") h+=`<div class="${b<12.4?"bad-warn":"warn"}">Battery ${b.toFixed(1)} V (about ${battPct(b)}%) – ${w[0].toLowerCase()}${b<12.8?" before the next race":""}.</div>`; }
   if(p){
     if(p.level==="crit") h+=`<div class="bad-warn">Pi overheating – ${p.temp.toFixed(0)} °C${p.throttled?", slowing down to protect itself":""}. Get the box out of the sun or open it up now. Timing keeps going on the timing box.</div>`;
     else if(p.level==="hot") h+=`<div class="warn">Pi is hot – ${p.temp.toFixed(0)} °C${p.since?" since "+esc(p.since):""}. Shade the box or give it some air before it reaches ${p.crit.toFixed(0)} °C.</div>`;
-    if(p.under_volt||(p.volt!=null&&p.volt<4.8)) h+=`<div class="warn">The Pi isn't getting enough power${p.volt!=null?" ("+p.volt.toFixed(2)+" V – should be 5.0–5.2 V)":""}. Check its 5 V converter and USB-C cable.</div>`; }
+    if(!(st.pwr&&st.pwr.d10)&&(p.under_volt||(p.volt!=null&&p.volt<4.8))) h+=`<div class="warn">The Pi isn't getting enough power${p.volt!=null?" ("+p.volt.toFixed(2)+" V – should be 5.0–5.2 V)":""}. Check its 5 V converter and USB-C cable.</div>`; }
+  h+=powerWarn();
   if(st.box&&st.box.temp>=55) h+=`<div class="${st.box.temp>=65?"bad-warn":"warn"}">Inside the timing box is ${st.box.temp.toFixed(0)} °C – shade the box or open it for some air.</div>`;
   if(st.batt_use&&st.batt_use.hours_left!=null&&st.batt_use.hours_left<1.5) h+=`<div class="warn">Battery: about ${st.batt_use.hours_left<1?Math.round(st.batt_use.hours_left*60)+" minutes":st.batt_use.hours_left.toFixed(1)+" hours"} left at this rate – have a charged one ready.</div>`;
   if(st.phones&&(st.phones.wifi!=null?st.phones.wifi:st.phones.app)>25) h+=`<div class="warn">The hotspot is crowded (${st.phones.wifi!=null?st.phones.wifi:st.phones.app} phones) – it may get slow. Put results on a TV or ask spectators to leave the Wi-Fi.</div>`;
@@ -8325,13 +8510,13 @@ function pageKey(){
   if(!st) return JSON.stringify([tab,linkDown,tab==="history"?hist:0]);
   const k=[tab,linkDown,st.connected,st.at_prompt,st.state,st.race,st.faults,st.lanes,st.pi_temp&&[st.pi_temp.level,Math.round(st.pi_temp.temp),st.pi_temp.max,st.pi_temp.throttled,st.pi_temp.under_volt,st.pi_temp.volt],st.batt,st.batt_cfg,st.storage,st.box&&Math.round(st.box.temp),st.batt_use,st.phones,clockBad()];
   k.push(st.co,st.co_cmd,st.mode,st.prev,prevView,modeInfoOpen,st.role,st.official,st.test,st.test_seen,st.last_test,st.test_clash,st.confirmed,st.silent,st.practice,st.batt,st.res_flags,st.unconfirmed);
-  if(tab==="race") k.push(st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,finishSent&&Date.now()-finishSent<5000,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
+  if(tab==="race") k.push(st.pwr&&[st.pwr.d10,st.pwr.last,!!st.pwr.prev,pwPrevHide],st.setup_done,st.lanes_use,st.lanes_max,st.brand,st.firewall,st.join,wizOpen,joinDone,st.last_test,st.access&&st.access.net,st.sent,st.checkin,st.can_start,st.role,st.program,st.live,st.results,st.event,st.race_event,st.min_leg_s,st.app_start,finishAsk,finishSent&&Date.now()-finishSent<5000,setAsk,st.heat,st.race_heat,st.draw,st.faults_racing,st.raced,
     st.state==="RACING"&&(st.elapsed||0)<5);
   else if(tab==="results") k.push(st.results);
   else if(tab==="history") k.push(hist,queue,enterAsk,rView,rFilter,rDoneOpen,st.results,st.res_flags,st.confirmed,st.state,innerWidth>=1100);
   else if(tab==="program") k.push(prog,st.program,st.draw,st.heat,st.raced);
   else if(tab==="marshal") k.push(mUp,st.heat,st.race_heat);
-  else k.push(sysPage,kitOpen,sysQ,readyOpen,st.report,st.access&&st.access.requests,st.batt,st.pi_temp,st.box,st.storage,st.backup,st.practice,st.past_events,st.join,st.brand,st.mode,st.loc,wxOpen,sysView,dayOpen,hxOpen,joinOpen,racedToday(),updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.lanes,st.lanes_use,st.lanes_max,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
+  else k.push(sysPage,kitOpen,sysQ,readyOpen,st.report,st.access&&st.access.requests,st.batt,st.pi_temp,st.box,st.storage,st.backup,st.practice,st.past_events,st.join,st.brand,st.mode,st.loc,wxOpen,sysView,dayOpen,hxOpen,joinOpen,racedToday(),updBusy,advOpen,ltOpen,st.upd_key,st.pico_upd,st.lanes,st.lanes_use,st.lanes_max,st.clubs,st.role_log,st.coach,st.wifi,st.power,st.pwr&&[st.pwr.d10,st.pwr.today,st.pwr.last],st.unconfirmed,st.brand,st.owner,st.firewall,st.events,st.kit,st.setup_done,st.past_events,st.update,st.program&&st.program.mode,st.raced,st.port,st.fw,st.messages,st.app,st.draw,st.access,st.join,st.me,wakeMsg,st.test_count,st.test_last,st.backup,st.batt_old);
   return JSON.stringify(k);
 }
 function brandBar(){ const b=(st&&st.brand)||{}; if(!b.club&&!b.event&&!b.logo) return "";
