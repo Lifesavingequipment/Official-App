@@ -1,10 +1,9 @@
 {
- "app": "1.31.1",
+ "app": "1.31.2",
  "pico": "3.13",
- "sha256": "d631382ba3359ece3ae9faf1326faf873d2c8f141693459f387cc79482d37f31",
+ "sha256": "c1a76c515e1efd35cfade5deed5a14832ca98fd0fb7c22fd4aa4a5ee38ba120d",
  "pico_sha256": "77fc68420c545dca0f90c82675ee0af3eee5eca935901d4a26b048cff2d74e05",
  "notes": [
-  "Basic: SET and the Next bar show only the race number \u2013 no heat or event names, even if a program was loaded in Full",
-  "Basic: the Changeovers row sits above the buttons, full width"
+  "Basic: a phone signed in as Starter gets SET, GO and FINISH again (it was getting the read-only results board)"
  ]
 }

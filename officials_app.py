@@ -30,7 +30,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.31.1"
+APP_VERSION = "1.31.2"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -8437,7 +8437,8 @@ function render(){
   drawEstop(); rememberTab();
   if(location.hash==="#fix"){ document.body.classList.add("board"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
     const k=JSON.stringify(["fix",st&&st.brand]); if(k!==lastKey){ lastKey=k; renderFix(); } return; }
-  if(st&&st.mode==="basic"&&(["#board","#team","#marshalling"].includes(location.hash)||(st.role!=="master"&&!st.local))){
+  // Basic: the timing desk and the Starter get SET / GO / FINISH; everyone else gets the read-only board
+  if(st&&st.mode==="basic"&&(["#board","#team","#marshalling"].includes(location.hash)||(st.role!=="master"&&!st.local&&!st.can_start))){
     document.body.classList.add("board","bxb"); ["results","program","marshal","history","system"].forEach(x=>$(x).hidden=true); $("race").hidden=false;
     const k=JSON.stringify(["basic",st.state,st.race,st.live,st.results,st.res_flags,st.prev,st.strip,st.connected,linkDown,st.test,st.lanes,st.brand,st.role,innerWidth<700]);
     if(k!==lastKey){ lastKey=k; renderBasicBoard(); } return; }
