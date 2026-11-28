@@ -30,7 +30,7 @@ except ImportError:
     input("Press Enter to close...")
     sys.exit(1)
 
-APP_VERSION = "1.32.1"
+APP_VERSION = "1.33.0"
 HTTP_PORT = 8080
 PICO_PORT = None          # None = find the Pico automatically. Or e.g. "COM10" / "/dev/ttyACM0"
 PICO_VID = 0x2E8A         # Raspberry Pi USB vendor ID
@@ -41,7 +41,7 @@ os.makedirs(DATA, exist_ok=True)
 HIST_FILE = os.path.join(DATA, "history.jsonl")
 SETTINGS_FILE = os.path.join(DATA, "settings.json")
 OUTBOX = os.path.join(DATA, "outbox")                     # problem reports waiting for internet
-REPORT = {"to": "", "from": "", "pw": "", "last": "", "recent": {}}
+REPORT = {"to": "", "from": "", "pw": "", "last": "", "recent": {}, "web": "", "key": "", "kit": "", "cap": 50}
 report_lock = threading.Lock()
 DRAW_FILE = os.path.join(DATA, "liveheats_draw.json")
 FLAGS_FILE = os.path.join(DATA, "race_flags.json")
@@ -165,8 +165,12 @@ def load_settings():
         if isinstance(s.get("upd_key"), str):
             UPD_KEY["v"] = s["upd_key"][:300]
         if isinstance(s.get("report"), dict):
-            for k in ("to", "from", "pw", "last", "route", "err"):
-                REPORT[k] = str(s["report"].get(k, ""))[:200]
+            for k in ("to", "from", "pw", "last", "route", "err", "web", "key", "kit"):
+                REPORT[k] = str(s["report"].get(k, ""))[:300]
+            try:
+                REPORT["cap"] = int(s["report"].get("cap") or 50)
+            except (TypeError, ValueError):
+                REPORT["cap"] = 50
         if isinstance(s.get("kit"), str) and s["kit"].strip():
             KIT["text"] = s["kit"][:2000]
         if find_event(s.get("event", "")):
@@ -218,7 +222,7 @@ def save_settings():
                        "setup_done": SETUP["done"], "brand": BRAND, "owner_pin": OWNER["pin"], "events": EVENTS[1:],
                        "kit": KIT["text"], "upd_key": UPD_KEY["v"], "pico_prev": PICO_UPD["prev"],
                        "club_codes": CLUB_CODES, "coaches": COACHES, "lanes_use": LANES["use"], "mode": MODE["v"],
-                       "report": {k: REPORT[k] for k in ("to", "from", "pw", "last", "route", "err") if k in REPORT}}, fh)
+                       "report": {k: REPORT[k] for k in ("to", "from", "pw", "last", "route", "err", "web", "key", "kit", "cap") if k in REPORT}}, fh)
     except OSError:
         pass                    # still used for this session
 
@@ -1961,7 +1965,21 @@ def power_action(d):
         return "not allowed"
     if racing_now():
         return "Wait until the race is finished"
+    if d.get("now") and POWEROFF["phase"] == "sending":
+        POWEROFF["skip"] = True                  # "Turn off now": stop waiting for emails
+        return "ok"
+    if POWEROFF["phase"] == "sending":
+        return "ok"
+    POWEROFF["action"] = a
     def go():
+        if a == "off" and not d.get("now"):
+            # the day's results and kit report go first, shown on the countdown
+            threading.Thread(target=poweroff_mail, daemon=True).start()
+            time.sleep(0.3)
+            t0 = time.time()
+            while POWEROFF["phase"] != "off" and not POWEROFF["skip"] and time.time() - t0 < 40:
+                time.sleep(0.2)
+            POWEROFF["phase"] = "off"
         time.sleep(2)                            # let this answer reach the phone first
         note("Powering off" if a == "off" else "Restarting the Pi")
         try:
@@ -2218,8 +2236,10 @@ def diagnostics():
         for k in ("master_pin", "owner_pin", "upd_key"):
             if s.get(k):
                 s[k] = "(set)"
-        if isinstance(s.get("report"), dict) and s["report"].get("pw"):
-            s["report"]["pw"] = "(set)"
+        if isinstance(s.get("report"), dict):
+            for k in ("pw", "key"):
+                if s["report"].get(k):
+                    s["report"][k] = "(set)"
         for k in ("officials", "regulars", "coaches", "club_codes"):     # names and club codes stay on the kit
             if s.get(k):
                 s[k] = "(%d)" % len(s[k])
@@ -2407,34 +2427,169 @@ def mail_problem(tries):
 
 
 def report_ready():
-    return bool(REPORT["to"] and REPORT["from"] and REPORT["pw"])
+    """somewhere to send to, and a way to send: the web helper, or Gmail with an app password"""
+    return bool(REPORT["to"] and (REPORT.get("web") or (REPORT["from"] and REPORT["pw"])))
+
+
+# ---------- kit email: one budget per kit a day (results first), sent through the web helper or Gmail ----------
+MAIL_FILE = os.path.join(DATA, "mail_state.json")
+MAIL = {"day": "", "sent": 0, "fb_now": 0, "fb_last": 0, "res": {}, "kr": {}, "held": ""}
+RESERVE = 10                                   # the last 10 of a kit's day are kept for results and the kit report
+FB_NOW = 5                                     # problem reports that go straight away each day; after that, hourly bundles
+FB_EVERY = int(os.environ.get("IRB_FB_EVERY", "3600"))
+
+
+def mail_cap():
+    try:
+        return max(5, min(100, int(REPORT.get("cap") or 50)))
+    except (TypeError, ValueError):
+        return 50
+
+
+def mail_load():
+    try:
+        with open(MAIL_FILE, encoding="utf-8") as fh:
+            m = json.load(fh)
+        if isinstance(m, dict):
+            MAIL.update({k: m[k] for k in MAIL if k in m})
+    except (OSError, ValueError):
+        pass
+
+
+def mail_save():
+    try:
+        os.makedirs(DATA, exist_ok=True)
+        tmp = MAIL_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(MAIL, fh)
+        os.replace(tmp, MAIL_FILE)
+    except OSError:
+        pass
+
+
+def mail_day():
+    day = datetime.now().strftime("%Y-%m-%d")
+    if MAIL["day"] != day:
+        MAIL.update(day=day, sent=0, fb_now=0, held="")
+        for k in ("res", "kr"):                                    # only the last couple of weeks are worth remembering
+            MAIL[k] = {d: v for d, v in MAIL[k].items() if d >= (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d")}
+        mail_save()
+    return day
+
+
+def kit_tag():
+    return REPORT.get("kit") or BRAND.get("club") or "IRB kit"
+
+
+class MailHeld(Exception):
+    """the shared Gmail account is nearly out of emails for today: this one waits"""
+
+
+def web_send(subject, body, attach=None, fname=None, kind="feedback"):
+    import base64
+    payload = {"key": REPORT.get("key", ""), "to": REPORT["to"], "subject": subject, "body": body, "kind": kind, "kit": kit_tag()}
+    if attach:
+        payload["file"], payload["data"] = fname or "attachment.zip", base64.b64encode(attach).decode()
+    rq = urllib.request.Request(REPORT["web"], json.dumps(payload).encode(), method="POST",
+                                headers={"Content-Type": "application/json", "User-Agent": "IRB-timing/" + APP_VERSION})
+    with urllib.request.urlopen(rq, timeout=25) as r:       # Google answers with a redirect; urllib follows it
+        txt = r.read().decode("utf-8", "replace")
+    try:
+        j = json.loads(txt)
+    except ValueError:
+        raise RuntimeError("the helper link didn't answer like the IRB helper – check the link and that it's deployed for Anyone")
+    if j.get("ok"):
+        return j
+    if j.get("error") == "held":
+        raise MailHeld(j.get("left"))
+    raise RuntimeError(str(j.get("error") or "the helper refused it")[:120])
+
+
+def web_problem(e):
+    if isinstance(e, urllib.error.HTTPError):
+        return "The email helper answered %d – check the link, and that it's deployed with access for Anyone" % e.code
+    if isinstance(e, urllib.error.URLError) and isinstance(getattr(e, "reason", None), socket.gaierror):
+        return "The kit has no internet right now – emails wait and send later"
+    if isinstance(e, (urllib.error.URLError, socket.timeout, TimeoutError, OSError)):
+        return "Couldn't reach the email helper (%s) – emails wait and send later" % (getattr(e, "reason", None) or type(e).__name__)
+    return "The email helper said: %s" % str(e)[:140]
+
+
+def mail_send(subject, body, attach=None, fname=None, kind="feedback"):
+    """the web helper first (same route as updates), Gmail's own mail ports as the back-up"""
+    werr = None
+    if REPORT.get("web"):
+        try:
+            web_send(subject, body, attach, fname, kind)
+            if REPORT.get("err"):
+                REPORT["err"] = ""
+                save_settings()
+            return "web"
+        except MailHeld:
+            raise
+        except Exception as e:
+            werr = web_problem(e)
+    if REPORT["from"] and REPORT["pw"]:
+        try:
+            smtp_send(subject, body, attach, fname)
+            return "gmail"
+        except Exception:
+            if werr:
+                REPORT["err"] = werr + " · " + (REPORT.get("err") or "")
+            raise
+    REPORT["err"] = (werr or "No way to send email set up") + " (%s)" % datetime.now().strftime("%d %b %H:%M")
+    raise RuntimeError(REPORT["err"])
 
 
 def report_setup(d):
-    to, fr, pw = str(d.get("to", "")).strip()[:120], str(d.get("from", "")).strip()[:120], re.sub(r"\s+", "", str(d.get("pw", "")))[:64]
-    if not to and not fr:
-        REPORT.update({"to": "", "from": "", "pw": "", "last": ""})
+    """the kit's email: where it goes, the kit's name, how it's sent (web helper and/or Gmail app password), daily limit"""
+    to = str(d.get("to", "")).strip()[:120]
+    fr = str(d.get("from", "")).strip()[:120]
+    pw = re.sub(r"\s+", "", str(d.get("pw", "")))[:64]
+    web = str(d.get("web", REPORT.get("web", ""))).strip()[:300]
+    key = str(d.get("key", REPORT.get("key", ""))).strip()[:80]
+    if not to and not fr and not web:
+        REPORT.update({"to": "", "from": "", "pw": "", "last": "", "web": "", "err": ""})
         save_settings()
         return "ok"
     if not EMAIL_RE.match(to):
-        return "Enter the email address reports go to"
-    if not EMAIL_RE.match(fr):
+        return "Enter the email address the kit sends to"
+    if web and not re.match(r"^https?://\S+$", web):
+        return "The helper link should start with https://script.google.com/"
+    if web and len(key) < 8:
+        return "Enter the helper key (at least 8 letters) – the same one that's in the helper script"
+    if fr and not EMAIL_RE.match(fr):
         return "Enter the kit's Gmail address"
-    if not pw and fr == REPORT["from"]:
+    if fr and not pw and fr == REPORT["from"]:
         pw = REPORT["pw"]
-    if not pw:
+    if fr and not pw and not web:
         return "Enter the app password"
-    REPORT.update({"to": to, "from": fr, "pw": pw})
+    if not web and not fr:
+        return "Add the helper link, or the kit's Gmail and app password"
+    try:
+        cap = max(5, min(100, int(d.get("cap") or REPORT.get("cap") or 50)))
+    except (TypeError, ValueError):
+        return "Daily limit: a number from 5 to 100"
+    REPORT.update({"to": to, "from": fr, "pw": pw if fr else "", "web": web, "key": key, "cap": cap,
+                   "kit": re.sub(r"[\r\n]", " ", str(d.get("kit", REPORT.get("kit", "")))).strip()[:40]})
     save_settings()
     try:
-        smtp_send("IRB kit – test email", "Problem reports from this IRB timing kit (%s) will come to this address." % (BRAND.get("club") or "no club set"))
+        how = mail_send("%s – test email" % kit_tag(),
+                        "Results, kit reports and problem reports from this IRB timing kit (%s) will come to this address.\n\n"
+                        "Up to %d emails a day from this kit." % (kit_tag(), REPORT["cap"]), kind="results")
     except smtplib.SMTPAuthenticationError:
         return "Saved, but Gmail didn't accept the login – check the kit's Gmail address and the app password"
     except MailFail as e:
-        return "Saved, but the test didn't send. " + mail_problem(e.tries)
+        return "Saved, but the test didn't send. " + (REPORT.get("err") if REPORT.get("web") else mail_problem(e.tries))
+    except MailHeld:
+        return "Saved, but the kits' Gmail has used today's emails – try again tomorrow"
     except Exception as e:
-        return "Saved, but the test didn't send (%s)" % type(e).__name__
-    REPORT["last"] = "test sent %s" % datetime.now().strftime("%d %b %H:%M")
+        return "Saved, but the test didn't send. " + (REPORT.get("err") or type(e).__name__)
+    REPORT["last"] = "test sent %s%s" % (datetime.now().strftime("%d %b %H:%M"), " (web helper)" if how == "web" else "")
+    REPORT["err"] = ""
+    mail_day()
+    MAIL["sent"] += 1
+    mail_save()
     save_settings()
     report_flush()
     return "ok"
@@ -2447,64 +2602,394 @@ def report_queued():
         return 0
 
 
-def report_new(who, note):
+def outbox_add(kind, meta, attach=None, replace_key=None):
+    """a waiting email. A newer results email (or kit report) for the same day replaces an older waiting one."""
     os.makedirs(OUTBOX, exist_ok=True)
+    if replace_key:
+        for f in glob.glob(os.path.join(OUTBOX, "*.json")):
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    m = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            if m.get("kind") == kind and m.get("rkey") == replace_key:
+                for x in (f, f[:-5] + ".zip"):
+                    try:
+                        os.remove(x)
+                    except OSError:
+                        pass
     rid = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + secrets.token_hex(2)
-    with open(os.path.join(OUTBOX, rid + ".zip"), "wb") as fh:
-        fh.write(diagnostics())
-    meta = {"who": who, "note": note, "at": datetime.now().strftime("%a %d %b %Y %H:%M"), "club": BRAND.get("club", ""),
-            "event": BRAND.get("event", ""), "app": APP_VERSION, "fw": S["fw"], "race": S["race"], "mode": MODE["v"]}
+    meta = dict(meta, kind=kind, rkey=replace_key or "")
+    if attach is not None:
+        with open(os.path.join(OUTBOX, rid + ".zip"), "wb") as fh:
+            fh.write(attach)
     with open(os.path.join(OUTBOX, rid + ".json"), "w", encoding="utf-8") as fh:
         json.dump(meta, fh)
-    for old in sorted(glob.glob(os.path.join(OUTBOX, "*.json")))[:-20]:      # keep the newest 20
+    fb = sorted(f for f in glob.glob(os.path.join(OUTBOX, "*.json")) if outbox_kind(f) == "feedback")
+    for old in fb[:-30]:                                         # problem reports: keep the newest 30
         for f in (old, old[:-5] + ".zip"):
             try:
                 os.remove(f)
             except OSError:
                 pass
+    return rid
 
 
-def report_flush():
-    """send what's waiting; stops at the first failure (no internet) and tries again later"""
-    if not report_ready():
-        return 0
-    n = 0
+def outbox_kind(f):
+    try:
+        with open(f, encoding="utf-8") as fh:
+            return json.load(fh).get("kind") or "feedback"
+    except (OSError, ValueError):
+        return ""
+
+
+def report_new(who, note):
+    meta = {"who": who, "note": note, "at": datetime.now().strftime("%a %d %b %Y %H:%M"), "club": BRAND.get("club", ""),
+            "event": BRAND.get("event", ""), "app": APP_VERSION, "fw": S["fw"], "race": S["race"], "mode": MODE["v"]}
+    outbox_add("feedback", meta, diagnostics())
+
+
+def feedback_body(m):
+    return "From: %s\nWhen: %s\nClub: %s\nEvent: %s\nMode: %s · race %s · app v%s · timing box v%s\n\nWhat happened:\n%s\n" % (
+        m.get("who"), m.get("at"), m.get("club") or "-", m.get("event") or "-", m.get("mode"), m.get("race"), m.get("app"), m.get("fw"),
+        m.get("note") or "(no note)")
+
+
+def outbox_items():
+    out = []
     for mf in sorted(glob.glob(os.path.join(OUTBOX, "*.json"))):
         try:
             with open(mf, encoding="utf-8") as fh:
                 m = json.load(fh)
-            zf = mf[:-5] + ".zip"
-            with open(zf, "rb") as fh:
-                z = fh.read()
         except (OSError, ValueError):
             continue
-        body = "Problem report from an IRB timing kit\n\nFrom: %s\nWhen: %s\nClub: %s\nEvent: %s\nMode: %s · race %s · app v%s · timing box v%s\n\nWhat happened:\n%s\n" % (
-            m.get("who"), m.get("at"), m.get("club") or "-", m.get("event") or "-", m.get("mode"), m.get("race"), m.get("app"), m.get("fw"), m.get("note") or "(no note)")
+        out.append((mf, m))
+    order = {"results": 0, "kitreport": 1}
+    out.sort(key=lambda x: (order.get(x[1].get("kind") or "feedback", 2), x[0]))
+    return out
+
+
+def outbox_drop(mf):
+    for f in (mf, mf[:-5] + ".zip"):
         try:
-            smtp_send("IRB kit problem report – %s – %s" % (m.get("club") or "kit", m.get("at")), body, z, os.path.basename(zf).replace(".zip", "_IRB_report.zip"))
+            os.remove(f)
+        except OSError:
+            pass
+
+
+def read_zip(mf):
+    try:
+        with open(mf[:-5] + ".zip", "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def late(deadline):
+    return bool(deadline) and (time.time() > deadline or POWEROFF["skip"])
+
+
+def report_flush(final=False, deadline=None, progress=None):
+    """send what's waiting, within this kit's daily budget: results and kit reports first, then problem reports
+    (5 a day straight away, then one bundle an hour, then only at the end of the day). Stops at the first failure."""
+    if not report_ready():
+        return 0
+    day, cap, n = mail_day(), mail_cap(), 0
+    items = outbox_items()
+    def step(label, state):
+        if progress is not None:
+            progress.append({"label": label, "state": state})
+    def spent(kind):
+        MAIL["sent"] += 1
+        if kind == "feedback-now":
+            MAIL["fb_now"] += 1
+            if MAIL["fb_now"] >= FB_NOW:
+                MAIL["fb_last"] = time.time()          # the hourly bundles start an hour after the fifth
+        if kind == "feedback-bundle":
+            MAIL["fb_last"] = time.time()
+        mail_save()
+    fb = []
+    for mf, m in items:
+        kind = m.get("kind") or "feedback"
+        if kind == "feedback":
+            fb.append((mf, m))
+            continue
+        if late(deadline):
+            return n
+        if MAIL["sent"] >= cap:
+            MAIL["held"] = "This kit has used its %d emails for today – the rest go tomorrow" % cap
+            return n
+        label = m.get("label") or ("Results" if kind == "results" else "Kit report")
+        step(label, "sending")
+        try:
+            mail_send(m["subject"], m["body"], read_zip(mf), m.get("file"), kind)
+        except MailHeld:
+            if progress is not None: progress[-1]["state"] = "held"
+            MAIL["held"] = "The kits' shared Gmail is nearly out of emails for today – results go first, the rest wait"
+            return n
         except Exception:
-            break
-        for f in (mf, zf):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
+            if progress is not None: progress[-1]["state"] = "failed"
+            return n
+        if progress is not None: progress[-1]["state"] = "sent"
+        if kind == "results" and m.get("day"):
+            MAIL["res"][m["day"]] = max(MAIL["res"].get(m["day"], 0), m.get("sig", 0))
+        if kind == "kitreport" and m.get("day"):
+            MAIL["kr"][m["day"]] = m.get("sig", "")
+        spent(kind)
+        outbox_drop(mf)
         n += 1
+        REPORT["last"] = "%s sent %s" % (label.split(" –")[0], datetime.now().strftime("%d %b %H:%M"))
+    if not fb:
+        if n:
+            save_settings()
+        return n
+    # problem reports
+    room = cap - RESERVE - MAIL["sent"]
+    if room <= 0 and not (final and MAIL["sent"] < cap):
+        MAIL["held"] = "Problem reports wait for the end of the day – this kit has used %d of its %d emails" % (MAIL["sent"], cap)
+        if n:
+            save_settings()
+        return n
+    sent_fb = 0
+    while fb and MAIL["fb_now"] < FB_NOW and (room > 0 or final) and MAIL["sent"] < cap:
+        mf, m = fb.pop(0)
+        if late(deadline):
+            break
+        step("Problem report from %s" % m.get("who"), "sending")
+        try:
+            mail_send("IRB kit problem report – %s – %s" % (kit_tag(), m.get("at")), "Problem report from an IRB timing kit\n\n" + feedback_body(m),
+                      read_zip(mf), os.path.basename(mf).replace(".json", "_IRB_report.zip"), "feedback")
+        except MailHeld:
+            if progress is not None: progress[-1]["state"] = "held"
+            MAIL["held"] = "The kits' shared Gmail is nearly out of emails for today – problem reports wait"
+            fb = []
+            break
+        except Exception:
+            if progress is not None: progress[-1]["state"] = "failed"
+            fb = []
+            break
+        if progress is not None: progress[-1]["state"] = "sent"
+        spent("feedback-now"); outbox_drop(mf); n += 1; sent_fb += 1; room -= 1
         REPORT["last"] = "report sent %s" % datetime.now().strftime("%d %b %H:%M")
+    if fb and (final or (room > 0 and time.time() - MAIL["fb_last"] >= FB_EVERY)) and MAIL["sent"] < cap and not (late(deadline)):
+        step("%d problem reports in one email" % len(fb), "sending")
+        body = "%d problem reports from an IRB timing kit (%s), sent together to save emails. The logs attached are from the newest one.\n" % (len(fb), kit_tag())
+        for i, (mf, m) in enumerate(fb, 1):
+            body += "\n---- %d of %d ----\n%s" % (i, len(fb), feedback_body(m))
+        try:
+            mail_send("IRB kit – %d problem report%s – %s – %s" % (len(fb), "" if len(fb) == 1 else "s", kit_tag(), datetime.now().strftime("%a %d %b %H:%M")), body,
+                      read_zip(fb[-1][0]), os.path.basename(fb[-1][0]).replace(".json", "_IRB_report.zip"), "feedback")
+            if progress is not None: progress[-1]["state"] = "sent"
+            spent("feedback-bundle")
+            for mf, m in fb:
+                outbox_drop(mf)
+            n += 1
+            REPORT["last"] = "reports sent %s" % datetime.now().strftime("%d %b %H:%M")
+        except MailHeld:
+            if progress is not None: progress[-1]["state"] = "held"
+            MAIL["held"] = "The kits' shared Gmail is nearly out of emails for today – problem reports wait"
+        except Exception:
+            if progress is not None: progress[-1]["state"] = "failed"
+    elif fb and not sent_fb:
+        MAIL["held"] = "Problem reports now go together, once an hour, to save emails"
     if n:
         save_settings()
     return n
 
 
+# ---------- the day's results and kit report: queued at Power off, and at start-up for days that were missed ----------
+def history_all_days(days=8):
+    """every saved race of the last few days: today's history plus events saved with New event"""
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    recs = []
+    files = [HIST_FILE] + sorted(glob.glob(os.path.join(EVENTS_DIR, "*", "history.jsonl")))[-15:]
+    for f in files:
+        try:
+            with open(f, encoding="utf-8") as fh:
+                for ln in fh:
+                    try:
+                        h = json.loads(ln)
+                    except ValueError:
+                        continue
+                    if str(h.get("saved_at", ""))[:10] >= since:
+                        recs.append(h)
+        except OSError:
+            pass
+    return recs
+
+
+def results_summary(recs):
+    """the email's own text: each race's latest version, top three"""
+    latest = {}
+    for h in recs:
+        k = (h.get("saved_at", "")[:10], h.get("race"))
+        if h.get("version", 0) >= latest.get(k, {}).get("version", -1):
+            latest[k] = h
+    lines = []
+    for h in sorted(latest.values(), key=lambda x: (x.get("go_wall") or 0, x.get("race") or 0)):
+        ht = h.get("heat") or {}
+        crews = ht.get("crews") or {}
+        what = " · ".join(x for x in (h.get("event") or "", ht.get("div", ""), ht.get("round", ""),
+                                      ("Heat %s" % ht["no"]) if ht.get("no") else "") if x) or "Race"
+        rows = sorted((r for r in h.get("rows", []) if r.get("place")), key=lambda r: r["place"])[:3]
+        pl = ", ".join("%s %s%s %s" % ({1: "1st", 2: "2nd", 3: "3rd"}.get(r["place"], r["place"]), "lane %s" % r.get("lane"),
+                                       (" " + crews[str(r.get("lane"))]) if crews.get(str(r.get("lane"))) else "", fmt_s(r.get("t_us"))) for r in rows)
+        lines.append("Race %s  %s  %s\n   %s" % (h.get("race"), datetime.fromtimestamp(h["go_wall"]).strftime("%H:%M") if h.get("go_wall") else "",
+                                               what, pl or "no finishers"))
+    return lines
+
+
+def results_queue(day, label="results so far"):
+    """queue the day's results if there's anything not emailed yet; returns the number of races"""
+    recs = [h for h in history_all_days() if str(h.get("saved_at", ""))[:10] == day and not h.get("practice")]
+    sig = len(recs)
+    if not sig or sig <= MAIL["res"].get(day, 0):
+        return 0
+    races = len({h.get("race") for h in recs})
+    dname = datetime.strptime(day, "%Y-%m-%d").strftime("%a %d %b")
+    events = sorted({h.get("event") for h in recs if h.get("event")})
+    head = "%s – %s\n%s · %d race%s%s\n\nThe results spreadsheet (every lane, time and press) is attached.\n\n" % (
+        kit_tag(), dname, BRAND.get("event") or ", ".join(events) or "Results", races, "" if races == 1 else "s",
+        " · " + label if label else "")
+    body = head + "\n".join(results_summary(recs)) + "\n"
+    att = zip_bytes([], {"results_%s.csv" % day: history_csv(recs, {} if day != datetime.now().strftime("%Y-%m-%d") else None)})
+    what = (BRAND.get("event") if day == datetime.now().strftime("%Y-%m-%d") else "") or ", ".join(events[:2]) or BRAND.get("club") or "IRB"
+    outbox_add("results", {"subject": "%s – Results – %s – %s (%d race%s)" % (kit_tag(), what, dname, races, "" if races == 1 else "s"),
+                           "body": body, "file": "IRB_results_%s.zip" % day, "day": day, "sig": sig,
+                           "label": "Results – %d races" % races}, att, replace_key=day)
+    return races
+
+
+def health_rows(day):
+    try:
+        with open(HEALTH_FILE, encoding="utf-8") as fh:
+            return [r for r in (json.loads(x) for x in fh.readlines()[-12000:] if x.strip()) if r.get("d") == day]
+    except (OSError, ValueError):
+        return []
+
+
+def kitreport_text(day):
+    rows = health_rows(day)
+    recs = [h for h in history_all_days() if str(h.get("saved_at", ""))[:10] == day]
+    races = len({h.get("race") for h in recs})
+    dips = sum(r.get("dips") or 0 for r in rows)
+    num = lambda k: [r[k] for r in rows if isinstance(r.get(k), (int, float))]
+    pic, box, bat = num("pi_c"), num("box_c"), num("batt")
+    spikes = reconnects = 0
+    try:
+        with open(os.path.join(DATA, "pico_log_%s.txt" % day), encoding="utf-8", errors="replace") as fh:
+            for ln in fh:
+                if "Ignored electrical spikes" in ln:
+                    spikes += 1
+                if '"ev": "hello"' in ln or '"ev":"hello"' in ln:
+                    reconnects += 1
+    except OSError:
+        pass
+    p = PWR.get("prev") or {}
+    sudden = p if (p and p.get("day") == day and not p.get("clean")) else None
+    lt = S.get("last_test") or {}
+    problems = []
+    if dips:
+        problems.append("Power dipped too low %d time%s – check the battery, 5 V converter and cable" % (dips, "" if dips == 1 else "s"))
+    if sudden:
+        problems.append("The Pi switched off suddenly at %s" % sudden.get("at", "?"))
+    if pic and max(pic) >= 75:
+        problems.append("The Pi got hot: %.0f °C" % max(pic))
+    if box and max(box) >= 50:
+        problems.append("The timing box got hot: %.0f °C" % max(box))
+    if spikes:
+        problems.append("Electrical spikes on the lane cables %d time%s" % (spikes, "" if spikes == 1 else "s"))
+    if reconnects > 1:
+        problems.append("The timing box reconnected %d times" % (reconnects - 1))
+    test = ("done at %s" % lt.get("at")) if lt.get("date") == day else ("not recorded" if (lt.get("date") or "") > day else "not done")
+    if races and test == "not done":
+        problems.append("No button test was done")
+    on = len(rows)
+    lines = ["%s – kit report – %s" % (kit_tag(), datetime.strptime(day, "%Y-%m-%d").strftime("%a %d %b %Y")), "",
+             ("Things to check:\n" + "\n".join("  • " + x for x in problems)) if problems else "Nothing to check – no faults seen.", "",
+             "Races timed: %d" % races,
+             "On for: about %d h %02d min%s" % (on // 60, on % 60, (" (%s to %s)" % (rows[0]["t"], rows[-1]["t"])) if rows else ""),
+             "Power dips: %d" % dips,
+             "Pi temperature: %s" % (("%.0f–%.0f °C" % (min(pic), max(pic))) if pic else "-"),
+             "Timing box temperature: %s" % (("%.0f–%.0f °C" % (min(box), max(box))) if box else "-"),
+             "Battery: %s" % (("%.2f V at the start, %.2f V at the end" % (bat[0], bat[-1])) if bat else "-"),
+             "Button test: %s" % test,
+             "Mode: %s · app v%s · timing box v%s" % (MODE["v"], APP_VERSION, S["fw"] or "-"), ""]
+    sig = "%d|%d|%d|%s" % (races, dips, spikes, bool(sudden))
+    return "\n".join(lines), sig, bool(races or dips or sudden), problems
+
+
+def kitreport_queue(day):
+    text, sig, worth, problems = kitreport_text(day)
+    if not worth or MAIL["kr"].get(day) == sig:
+        return False
+    dname = datetime.strptime(day, "%Y-%m-%d").strftime("%a %d %b")
+    outbox_add("kitreport", {"subject": "%s – Kit report – %s%s" % (kit_tag(), dname, (" – %d to check" % len(problems)) if problems else " – all good"),
+                             "body": text, "day": day, "sig": sig, "label": "Kit report"}, None, replace_key=day)
+    return True
+
+
+def missed_days_queue():
+    """at start-up: any earlier day with results or a kit report that never went (power cut, no internet)"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    days = sorted({str(h.get("saved_at", ""))[:10] for h in history_all_days()} | {r.get("d") for r in health_rows_all()})
+    for d in days:
+        if d and d < today:
+            results_queue(d, "full day")
+            kitreport_queue(d)
+
+
+def health_rows_all():
+    try:
+        with open(HEALTH_FILE, encoding="utf-8") as fh:
+            return [json.loads(x) for x in fh.readlines()[-12000:] if x.strip()]
+    except (OSError, ValueError):
+        return []
+
+
 def report_loop():
+    first = True
     while True:
         time.sleep(int(os.environ.get("IRB_REPORT_EVERY", "120")))
         try:
-            if report_queued():
-                with report_lock:
+            with report_lock:
+                if first and report_ready():
+                    first = False
+                    missed_days_queue()
+                if report_queued():
                     report_flush()
         except Exception:
             pass
+
+
+# ---------- Power off: send the day's emails first, with the progress on the countdown ----------
+POWEROFF = {"phase": "", "steps": [], "until": 0, "skip": False, "action": ""}
+
+
+def poweroff_mail():
+    """queue today's results and kit report, then send for up to 30 s (less if there's no internet)"""
+    POWEROFF.update(phase="sending", steps=[], until=time.time() + float(os.environ.get("IRB_OFF_WAIT", "30")), skip=False)
+    try:
+        with report_lock:
+            day = mail_day()
+            results_queue(day)
+            kitreport_queue(day)
+            if report_queued() and report_ready():
+                report_flush(final=True, deadline=POWEROFF["until"], progress=POWEROFF["steps"])
+            elif report_queued():
+                POWEROFF["steps"].append({"label": "Emails", "state": "noemail"})
+    except Exception as e:
+        POWEROFF["steps"].append({"label": "Emails (%s)" % type(e).__name__, "state": "failed"})
+    if report_queued() and report_ready() and not any(x["state"] == "noemail" for x in POWEROFF["steps"]):
+        POWEROFF["steps"].append({"label": "%d waiting – they send next time the kit is on with internet" % report_queued(), "state": "later"})
+    POWEROFF["phase"] = "off"
+
+
+def poweroff_view():
+    if not POWEROFF["phase"]:
+        return None
+    return {"phase": POWEROFF["phase"], "steps": POWEROFF["steps"][-8:], "left": max(0, int(POWEROFF["until"] - time.time())),
+            "action": POWEROFF["action"]}
 
 
 def allowed(role, path, data):
@@ -3887,9 +4372,11 @@ def to_hundredths(d):
     return d
 
 
-def history_csv():
+def history_csv(recs=None, flg=None):
+    history_ = history if recs is None else recs
+    flags_ = flags if flg is None else flg
     latest = {}
-    for h in history:
+    for h in history_:
         latest[h.get("race")] = max(latest.get(h.get("race"), -1), h.get("version", 0))
     out = io.StringIO()
     w = csv.writer(out)
@@ -3897,14 +4384,14 @@ def history_csv():
                 "time_s", "behind_s", "status", "dq_code", "presses_s", "officials_changes", "changes_by", "note", "video_go",
                 "venue", "air_c", "wind_kmh", "wind_dir", "gust_kmh", "swell_m", "swell_period_s", "swell_dir", "water_c",
                 "tide_m", "tide", "next_tide", "uv", "conditions_from", "changeovers", "co_event", "changeover_s", "early_tag_s"])
-    for h in history:
+    for h in history_:
         ch = "; ".join("lane %s %s" % (k, v) for k, v in sorted(h.get("changes", {}).items()))
         if h.get("legs_set"):
             ch = ("legs set to %d; " % h["legs_set"]) + ch
         final = "yes" if latest.get(h.get("race")) == h.get("version") else "no"
         ht = h.get("heat") or {}
         crews = ht.get("crews") or {}
-        fl = flags.get(str(h.get("race")), {})
+        fl = flags_.get(str(h.get("race")), {})
         by = "; ".join("%s %s: %s" % tuple(x) for x in fl.get("log", []))
         go = datetime.fromtimestamp(h["go_wall"]).strftime("%H:%M:%S.%f")[:-3] if h.get("go_wall") else ""
         c = h.get("cond") or {}
@@ -4492,7 +4979,11 @@ def snapshot(role="master", local=True, tok=None):
             d["firewall"] = {"state": FIREWALL["state"], "busy": FIREWALL["busy"]}
             d["kit"] = KIT["text"]
             d["upd_key"] = bool(UPD_KEY["v"])
-            d["report"] = {"to": REPORT["to"], "from": REPORT["from"], "last": REPORT["last"], "queued": report_queued(), "err": REPORT.get("err", "")}
+            mail_day()
+            d["report"] = {"to": REPORT["to"], "from": REPORT["from"], "last": REPORT["last"], "queued": report_queued(), "err": REPORT.get("err", ""),
+                           "web": bool(REPORT.get("web")), "kit": REPORT.get("kit", ""), "cap": mail_cap(), "sent": MAIL["sent"],
+                           "held": MAIL["held"] if report_queued() else "", "key": REPORT.get("key", "") if owner_ok() else "",
+                           "ready": report_ready()}
             d["wifi"] = {k: WIFI[k] for k in ("on", "mode", "name", "ip", "hotspot", "hs_ssid", "hs_ip", "saved", "busy", "msg")}
             d["inet"] = inet_view()
             d["power"] = {"on": IS_LINUX, "pi": IS_PI}
@@ -4503,6 +4994,7 @@ def snapshot(role="master", local=True, tok=None):
         d["marsh"] = marsh_status()
         d["pi_temp"] = pi_temp_view() if official or role in ("starter",) else None
         d["pwr"] = power_view() if official or role in ("starter",) else None
+        d["poweroff"] = poweroff_view()
         d["elapsed"] = (time.time() - S["go_at"]) if (S["state"] == "RACING" and S["go_at"]) else None
         d["messages"] = list(messages)[-20:]
         d["app"] = APP_VERSION
@@ -4756,7 +5248,7 @@ class H(BaseHTTPRequestHandler):
                 self.send(200, json.dumps({"result": r}))
                 return
             role, key, now = self.role(), self.token() or self.client_address[0], time.time()
-            if now - REPORT["recent"].get(key, 0) < 600:
+            if now - REPORT["recent"].get(key, 0) < int(os.environ.get("IRB_REPORT_GAP", "600")):
                 r = "One report every 10 minutes – the last one is on its way"
             else:
                 REPORT["recent"][key] = now
@@ -4770,7 +5262,7 @@ class H(BaseHTTPRequestHandler):
                     who = str(data.get("who", ""))[:80] or "Someone on the results screen"
                 with report_lock:
                     report_new(who, str(data.get("note", ""))[:1000])
-                    r = "sent" if report_flush() else "queued"
+                    r = "sent" if report_flush() else ("held" if report_ready() and MAIL["held"] and "internet" not in (REPORT.get("err") or "") and not REPORT.get("err") else "queued")
             self.send(200, json.dumps({"result": r}))
             return
         if self.path.startswith("/api/updkey"):
@@ -5345,7 +5837,7 @@ body.board header,body.board #nextbar,body.board #racewarn{display:none}
 .mb.t2 .mbbig .mbl .ml>span{font-size:clamp(12px,calc(1.8*var(--u)),22px);padding:0}.mb.t2 .mbbig .mbl .ml>b{width:1.4em;height:1.4em}.mb.t2 .mbm{font-size:clamp(12px,calc(1.8*var(--u)),20px)}
 .mwarn{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;border-radius:16px;padding:12px 14px;margin:0 0 10px;box-shadow:var(--sh)}
 .mwarn b{font-size:17px}.mwarn span{grid-column:1;font-weight:600;font-size:15px}.mwarn .btn{grid-row:1/3;grid-column:2}
-.mwarn.red{background:var(--red);color:#fff}.mwarn.amb{background:#fff3d6;color:#3d2600;box-shadow:inset 0 0 0 2px var(--amber)}.mwarn.ok{background:#e3f4ea;color:#0b4a2f}
+.rpform label{display:block;margin-top:10px}.rpform label input{display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:10px;font-size:16px;border:1px solid #c9ced6;border-radius:10px}.rpform #rpcap{max-width:110px}.offstep{padding:6px 0;font-size:16px}.offstep b{display:inline-block;width:22px}.offstep.sent b{color:var(--green)}.offstep.failed b,.offstep.held b{color:var(--amber)}.mwarn.red{background:var(--red);color:#fff}.mwarn.amb{background:#fff3d6;color:#3d2600;box-shadow:inset 0 0 0 2px var(--amber)}.mwarn.ok{background:#e3f4ea;color:#0b4a2f}
 .mwarn.red .btn{background:#fff;color:var(--red)}
 .mb .mbrow{padding:calc(.5*var(--u)) 1vw}
 @media (max-width:699px){.mb .mbbig .mbl .ml>span{white-space:normal}}
@@ -8294,19 +8786,70 @@ function locKitRows(){ const L=st.loc, row=(n,v,b)=>`<div class="srow"><div clas
       L.gps.state==="none"?`<button class="btn" onclick="post('/api/loc',{gps_setup:true}).then(()=>toast('Setting up GPS…'))">Set up GPS</button>`:"")
     +row("Tide key",L.keys.worldtides?`<span class="ok">Set</span><span class="mute"> · proper tide times from WorldTides</span>`:`<span class="mute">Not set – tide times are approximate</span>`,`<button class="btn" onclick="tideKey()">${L.keys.worldtides?"Change":"Add"}</button>`); }
 // ---------- problem reports: emailed to the kit owner, queued until there's internet ----------
-function reportRow(row,ownLocked){ const r=st.report||{};
-  return row("Problem report email",r.from&&r.to?`<span class="ok">Sends from ${esc(r.from)}</span><span class="mute"> to ${esc(r.to)}</span>${r.last?`<div class="mute" style="font-size:13px">Last: ${esc(r.last)}</div>`:""}${r.err?`<div class="rperr" style="font-size:13px;color:#8a5a00">${esc(r.err)}</div>`:""}`
-      :`<span class="mute">Not set – reports wait on the kit until the owner's email and the kit's Gmail are added</span>`,
-    ownLocked?`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`:`<button class="btn" onclick="reportSetSheet()">${r.from?"Change":"Set up"}</button>`); }
+function reportRow(row,ownLocked){ const r=st.report||{}, how=r.web&&r.from?"web helper, Gmail as back-up":r.web?"web helper":"Gmail "+esc(r.from||"");
+  return row("Kit email",r.ready?`<span class="ok">${esc(r.kit||"This kit")} sends to ${esc(r.to)}</span><span class="mute"> · ${how}</span>
+      <div class="mute" style="font-size:13px">Today: ${r.sent||0} of ${r.cap||50} emails${r.queued?` · ${r.queued} waiting`:""}${r.last?` · last: ${esc(r.last)}`:""}</div>${r.held?`<div class="mute" style="font-size:13px">${esc(r.held)}</div>`:""}${r.err?`<div class="rperr" style="font-size:13px;color:#8a5a00">${esc(r.err)}</div>`:""}`
+      :`<span class="mute">Not set – results, kit reports and problem reports wait on the kit until it's set up${r.queued?` (${r.queued} waiting)`:""}</span>`,
+    ownLocked?`<button class="btn" onclick="ownerSheet('open')">Unlock</button>`:`<button class="btn" onclick="reportSetSheet()">${r.ready?"Change":"Set up"}</button>`); }
+function rndKey(){ const c="abcdefghjkmnpqrstuvwxyz23456789"; let k=""; const a=new Uint8Array(16); (window.crypto||{getRandomValues:x=>x.map(()=>Math.random()*256|0)}).getRandomValues(a); for(const x of a) k+=c[x%c.length]; return k; }
+function helperScript(key,to){ return `// IRB timing kit – email helper. Paste into script.google.com while signed in as the kits' Gmail,
+// then Deploy › New deployment › Web app › Execute as: Me › Who has access: Anyone.
+// Every kit uses the same link and key. It only ever emails OWNER.
+const KEY = "${key}";
+const OWNER = "${to}";
+const RESERVE = 10;   // when the Gmail has fewer than this left today, only results and kit reports go
+
+function doPost(e) {
+  let d;
+  try { d = JSON.parse(e.postData.contents); } catch (x) { return out({ ok: false, error: "bad request" }); }
+  if (d.key !== KEY) return out({ ok: false, error: "wrong helper key" });
+  const left = MailApp.getRemainingDailyQuota();
+  const urgent = d.kind === "results" || d.kind === "kitreport";
+  if (left < 1 || (!urgent && left < RESERVE)) return out({ ok: false, error: "held", left: left });
+  const opts = { name: String(d.kit || "IRB kit").slice(0, 60) };
+  if (d.data) opts.attachments = [Utilities.newBlob(Utilities.base64Decode(d.data), "application/zip", String(d.file || "attachment.zip"))];
+  MailApp.sendEmail(OWNER, String(d.subject || "IRB kit").slice(0, 200), String(d.body || "").slice(0, 150000), opts);
+  return out({ ok: true, left: left - 1 });
+}
+
+function doGet() { return out({ ok: true, helper: "IRB", left: MailApp.getRemainingDailyQuota() }); }
+
+function out(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+`; }
+function helperShow(){ const key=$("rpkey").value.trim(), to=$("rpt").value.trim();
+  if(key.length<8||!to){ $("rpmsg").textContent="Fill in Send to and the helper key first"; return; }
+  const txt=helperScript(key,to), url="data:text/plain;charset=utf-8,"+encodeURIComponent(txt);
+  $("rphelp").innerHTML=`<p class="mute" style="font-size:14px;margin:6px 0">Press and hold in the box › Select all › Copy. Or download it as a file.</p>
+    <textarea id="rpscript" rows="8" readonly style="font-family:monospace;font-size:12px;width:100%">${esc(txt)}</textarea>
+    <div class="row"><button class="btn" onclick="const t=$('rpscript');t.focus();t.select();try{navigator.clipboard.writeText(t.value).then(()=>toast('Copied'),()=>document.execCommand('copy'))}catch(e){document.execCommand('copy')}">Copy</button><a class="btn" download="IRB_email_helper.gs" href="${url}">Download</a></div>`; }
+function helperHow(){ $("rphelp").innerHTML=`<ol class="mute" style="font-size:14px;padding-left:18px">
+    <li>On a computer or phone, sign in to the kits' Gmail and open <b>script.google.com</b> › <b>New project</b>.</li>
+    <li>Delete what's there and paste the helper script (tap <b>Show helper script</b> here). Save.</li>
+    <li><b>Deploy › New deployment</b> › type <b>Web app</b> › Execute as <b>Me</b> › Who has access <b>Anyone</b> › Deploy.</li>
+    <li>Allow it to send email as the kits' Gmail (Advanced › Go to project, if Google warns – it's your own script).</li>
+    <li>Copy the <b>Web app URL</b> and paste it into Helper link here. Save and send a test.</li>
+    <li>Second kit: same link and the same helper key.</li></ol>`; }
 function reportSetSheet(){ const r=st.report||{};
-  $("sheetin").innerHTML=`<h2>Problem report email</h2><p class="mute" style="margin-top:0">Reports go to the kit owner. The kit sends them from its own Gmail.</p>
-    <label>Send reports to<input id="rpt" type="email" value="${esc(r.to||"")}" placeholder="owner@yourbusiness.com"></label>
-    <ol class="mute" style="font-size:14px;padding-left:18px"><li>Make a Gmail for the kits and turn on 2-Step Verification.</li><li>Google Account › Security › App passwords › make one called “IRB kit”.</li><li>Enter the Gmail and the 16-letter app password here.</li></ol>
-    <label>Kit's Gmail<input id="rpf" type="email" value="${esc(r.from||"")}" placeholder="irbkit@gmail.com"></label>
-    <label>App password<input id="rpp" type="password" placeholder="${r.from?"(saved – leave empty to keep)":"16 letters"}"></label>
-    <div class="row"><button class="btn pri" id="rpgo">Save and send a test</button><button class="btn" onclick="closeSheet()">Cancel</button>${r.from?`<button class="btn red" onclick="post('/api/report',{setup:{from:'',pw:''}}).then(()=>{closeSheet();toast('Removed')})">Remove</button>`:""}</div><p class="bad" id="rpmsg"></p>`;
+  $("sheetin").innerHTML=`<div class="rpform"><h2>Kit email</h2><p class="mute" style="margin-top:0">Results and the kit report at Power off, and problem reports, go to the kit owner. Nothing goes to hirers.</p>
+    <label>Send to<input id="rpt" type="email" value="${esc(r.to||"")}" placeholder="owner@yourbusiness.com"></label>
+    <label>Kit name <span class="mute">(in the email subjects)</span><input id="rpk" value="${esc(r.kit||"")}" maxlength="40" placeholder="IRB Kit 1"></label>
+    <h3 style="margin:14px 0 2px">Web helper <span class="mute" style="font-weight:400">– recommended</span></h3>
+    <p class="mute" style="font-size:14px;margin:0">Sends the same way updates download, so Wi-Fi that blocks email doesn't stop it. Set up once in the kits' Gmail.</p>
+    <label>Helper link<input id="rpw" value="" placeholder="${r.web?"(saved – leave empty to keep)":"https://script.google.com/macros/s/…/exec"}"></label>
+    <label>Helper key <span class="mute">(same on every kit)</span><input id="rpkey" value="${esc(r.key||rndKey())}" maxlength="80"></label>
+    <div class="row"><button class="btn" onclick="helperHow()">How to set up</button><button class="btn" onclick="helperShow()">Show helper script</button></div><div id="rphelp"></div>
+    <details style="margin-top:10px"${r.from?" open":""}><summary><b>Gmail app password</b> <span class="mute">– back-up, optional</span></summary>
+      <ol class="mute" style="font-size:14px;padding-left:18px"><li>Turn on 2-Step Verification in the kits' Gmail.</li><li>Google Account › Security › App passwords › make one called “IRB kit”.</li><li>Enter the Gmail and the 16-letter app password here.</li></ol>
+      <label>Kit's Gmail<input id="rpf" type="email" value="${esc(r.from||"")}" placeholder="irbkit@gmail.com"></label>
+      <label>App password<input id="rpp" type="password" placeholder="${r.from?"(saved – leave empty to keep)":"16 letters"}"></label></details>
+    <label style="margin-top:10px">Emails a day from this kit<input id="rpcap" type="number" min="5" max="100" value="${r.cap||50}" style="max-width:110px"></label>
+    <p class="mute" style="font-size:13px;margin-top:2px">The kits share one Gmail – about 100 emails a day between them. Two kits: 50 each.</p>
+    <div class="row"><button class="btn pri" id="rpgo">Save and send a test</button><button class="btn" onclick="closeSheet()">Cancel</button>${r.ready?`<button class="btn red" onclick="post('/api/report',{setup:{from:'',pw:'',web:''}}).then(()=>{closeSheet();toast('Removed')})">Remove</button>`:""}</div><p class="bad" id="rpmsg"></p></div>`;
   $("sheet").classList.add("on");
-  $("rpgo").onclick=async()=>{ $("rpmsg").textContent="Sending a test…"; const x=await post("/api/report",{setup:{to:$("rpt").value.trim(),from:$("rpf").value.trim(),pw:$("rpp").value.replace(/\s+/g,"")}});
+  $("rpgo").onclick=async()=>{ $("rpmsg").textContent="Sending a test…";
+    const w=$("rpw").value.trim(), body={to:$("rpt").value.trim(),kit:$("rpk").value.trim(),from:$("rpf").value.trim(),pw:$("rpp").value.replace(/\s+/g,""),key:$("rpkey").value.trim(),cap:+$("rpcap").value||50};
+    if(w||!r.web) body.web=w;
+    const x=await post("/api/report",{setup:body});
     if(x!=="ok"){ $("rpmsg").textContent=x; return; } closeSheet(); toast("Saved – test email sent"); }; }
 function reportSheet(tm){
   $("sheetin").innerHTML=`<h2>${tm?"Report a kit problem":"Send a problem report"}</h2>
@@ -8318,8 +8861,8 @@ function reportSheet(tm){
   $("rpsend").onclick=async()=>{ $("rpsend").disabled=true;
     let who=""; if(tm){ try{ who="Team Manager"+(localStorage.getItem("irb_club")?" – "+localStorage.getItem("irb_club"):""); }catch(e){ who="Team Manager"; } }
     let j; try{ j=await (await fetch("/api/report",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({note:$("rpn").value.slice(0,1000),who:who,name:myName()})})).json(); }catch(e){ j={result:"No link to the timing computer"}; }
-    if(j.result!=="sent"&&j.result!=="queued"){ $("rpmsg").textContent=j.result; $("rpsend").disabled=false; return; }
-    closeSheet(); toast(j.result==="sent"?"Sent to the kit owner ✓":"Saved – it sends when the kit next has internet",5000); }; }
+    if(j.result!=="sent"&&j.result!=="queued"&&j.result!=="held"){ $("rpmsg").textContent=j.result; $("rpsend").disabled=false; return; }
+    closeSheet(); toast(j.result==="sent"?"Sent to the kit owner ✓":j.result==="held"?"Saved ✓ – it goes to the kit owner with the next batch of reports":"Saved – it sends when the kit next has internet",5000); }; }
 function renderSystem(){
   if(!st){ $("system").innerHTML=""; return; }
   const master=st.role==="master";
@@ -8376,7 +8919,7 @@ function renderSystem(){
         st.firewall.state||st.firewall.busy?"":`<button class="btn pri" onclick="post('/api/firewall',{}).then(()=>toast('Answer Yes on the Windows prompt'))">Allow phones</button>`);
       if(master) G.results+=row("Results to take home", `<span class="mute">Results spreadsheet, program and race log as a zip file</span>`,
         `<a class="btn" href="/event_pack.zip" download>Today</a>${(st.past_events||[]).length?`<button class="btn" onclick="packSheet()">Saved events</button>`:""}`);
-      if(master) G.results+=row("Problem report", `<span class="mute">Logs and settings for the kit owner – no passwords, no crew names</span>${(st.report||{}).queued?`<div class="mute" style="font-size:13px">${st.report.queued} waiting to send – they go when the kit next has internet</div>`:""}`,
+      if(master) G.results+=row("Problem report", `<span class="mute">Logs and settings for the kit owner – no passwords, no crew names</span>${(st.report||{}).queued?`<div class="mute" style="font-size:13px">${st.report.queued} email${st.report.queued>1?"s":""} waiting to send</div>`:""}${st.report&&!st.report.ready?`<div class="mute" style="font-size:13px">Kit email isn't set up yet – <a href="#" onclick="sysGo('adv');return false">set it up in Advanced</a></div>`:""}`,
         `<button class="btn" onclick="reportSheet()">Send</button><a class="btn" href="/diagnostics.zip" download>Download</a><button class="btn" onclick="post('/api/diagnostics',{}).then(()=>toast('Checked the USB stick'))">Save to USB</button>`);
       if(master&&st.owner) G.owner+=row("Owner lock", !st.owner.set?`<span class="mute">Off · set an owner PIN before hiring the kit out – it locks updates and advanced settings</span>`
           :st.owner.open?`<b class="okb">Unlocked</b><span class="mute"> · locks again in ${st.owner.mins} min</span>`:`<b>On</b><span class="mute"> · updates and advanced settings are locked</span>`,
@@ -8576,7 +9119,23 @@ function powerAsk(a){ const off=a==="off", what=st.power.pi?"Pi":"timing compute
       +(un?` ${un} heat${un>1?"s aren't":" isn't"} confirmed yet.`:"")
       +(off?` Every phone loses the app. To start it again, switch the power off and on at the wall.`:` Phones lose the app for about a minute, then reconnect.`),
       async()=>{ const r=await post("/api/power",{action:a}); if(r==="ok") powerGone(off,what); }, off?"Yes, power off":"Yes, restart"); }, "Next", false); }
-function powerGone(off,what){ $("sheetin").innerHTML=off?`<h2>Powering off…</h2><p>Wait about 20 seconds until the ${what}'s green light stops flashing, then switch the power off at the wall.</p><p class="mute">To start again: switch the power on. The timing app and hotspot start by themselves in about a minute.</p>`
+let pwOffOpen=false, offWhat="Pi";
+function offDraw(){ const p=st.poweroff; if(!p){ return; }
+  const icon={sending:"…",sent:"✓",failed:"✗",held:"⏸",later:"⏳",noemail:"–"};
+  const word=x=>x.state==="failed"?" – no internet or the email didn't go; it sends next time the kit is on with internet":x.state==="held"?" – waits until tomorrow (the kits' Gmail is nearly out of emails)":x.state==="noemail"?" – kit email isn't set up, they wait on the kit":"";
+  const steps=(p.steps||[]).map(x=>`<div class="offstep ${x.state}"><b>${icon[x.state]||""}</b> ${esc(x.label)}${word(x)}</div>`).join("");
+  if(p.phase==="sending"){
+    $("sheetin").innerHTML=`<h2>Sending today's emails…</h2><p class="mute" style="margin-top:0">Don't switch off at the wall yet. Up to ${p.left} s more – then the ${offWhat} powers off by itself.</p>
+      <div id="offsteps">${steps||`<div class="offstep sending"><b>…</b> Getting today's results and kit report ready</div>`}</div>
+      <div class="row"><button class="btn" id="offnow" onclick="post('/api/power',{action:'off',now:true});this.disabled=true;this.textContent='Turning off…'">Turn off now</button></div>
+      <p class="mute" style="font-size:13px">Turn off now is safe – anything not sent goes next time the kit is on with internet.</p>`;
+  } else {
+    pwOffOpen=false;
+    $("sheetin").innerHTML=`<h2>Powering off…</h2>${steps?`<div id="offsteps">${steps}</div>`:""}<p>Wait about 20 seconds until the ${offWhat}'s green light stops flashing, then switch the power off at the wall.</p><p class="mute">To start again: switch the power on. The timing app and hotspot start by themselves in about a minute.</p>`;
+  }
+  $("sheet").classList.add("on"); }
+function powerGone(off,what){ if(off){ pwOffOpen=true; offWhat=what; $("sheetin").innerHTML=`<h2>Sending today's emails…</h2><div class="offstep sending"><b>…</b> Getting today's results and kit report ready</div>`; $("sheet").classList.add("on"); return; }
+  $("sheetin").innerHTML=off?`<h2>Powering off…</h2><p>Wait about 20 seconds until the ${what}'s green light stops flashing, then switch the power off at the wall.</p><p class="mute">To start again: switch the power on. The timing app and hotspot start by themselves in about a minute.</p>`
     :`<h2>Restarting…</h2><p>The app comes back in about a minute.</p>`;
   $("sheet").classList.add("on"); }
 let lastKey="";
@@ -8744,6 +9303,7 @@ async function poll(){
   if((tab==="marshal"||location.hash==="#marshalling")&&st&&Date.now()-mAt>2500) await loadMarshal();
   if(location.hash==="#team"&&Date.now()-tmAt>((tmData&&(tmData.upcoming||[]).some(u=>u.alert))?2500:5000)){ tmAt=Date.now(); if(tmView==="program") await loadProg(); else if(tmView==="results") await loadHist(); else await loadTeam(); }
   if(!holding) render();
+  if(pwOffOpen&&st&&!linkDown) offDraw();
   if(inetOpen&&!inetPick&&st&&st.inet&&$("sheet").classList.contains("on")){ const k=JSON.stringify(st.inet); if(k!==inetKey){ inetKey=k; inetDraw(); } }
   const c=$("clock"); if(c&&st&&!linkDown) c.textContent=clock(st.elapsed||0);
   setTimeout(poll, tab==="race"&&st&&st.state==="RACING"?100:400);
@@ -8881,6 +9441,7 @@ def main():
     threading.Thread(target=firewall_check, daemon=True).start()     # Windows: can phones get in?
     threading.Thread(target=temp_loop, daemon=True).start()          # Pi temperature (box in the sun)
     loc_load()
+    mail_load()
     threading.Thread(target=report_loop, daemon=True).start()        # problem reports waiting for internet
     threading.Thread(target=loc_loop, daemon=True).start()           # venue, GPS, weather and tides
     threading.Thread(target=resil_setup, daemon=True).start()        # Pi: watchdogs + logs kept (once)

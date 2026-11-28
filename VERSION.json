@@ -1,10 +1,13 @@
 {
- "app": "1.32.1",
+ "app": "1.33.0",
  "pico": "3.13",
- "sha256": "a6b738ef93aa59083d710551cce1ebe191cda90bf7168424d3db71cfa9294136",
+ "sha256": "747eeaa7a64851024c495b48e7621a7f3f5c666b7d010fb382ad6f43d2314508",
  "pico_sha256": "77fc68420c545dca0f90c82675ee0af3eee5eca935901d4a26b048cff2d74e05",
  "notes": [
-  "Email: if Gmail's usual port is blocked by the network, the kit now tries Gmail's second port (587) and remembers the one that works",
-  "Email: clearer messages \u2013 no internet, network blocking email (with each port), or wrong password \u2013 and System shows why reports are waiting"
+  "Kit email: results, kit report and problem reports can now send through a small web helper in the kits' Gmail \u2013 same route as updates, so Wi-Fi that blocks email doesn't stop them (Gmail app password stays as a back-up)",
+  "Power off sends the day's results (spreadsheet attached, top 3 per race in the email) and a separate kit report to the kit owner first, shown on the countdown \u2013 up to 30 s, with Turn off now",
+  "Days missed by a power cut or no internet send at the next start-up with internet",
+  "Each kit has a daily email limit (default 50); the last 10 are kept for results. Problem reports: 5 a day straight away, then one bundle an hour, then at the end of the day",
+  "Kit name for email subjects; System \u203a Advanced \u203a Kit email shows today's count and anything waiting"
  ]
 }
